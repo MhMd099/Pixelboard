@@ -36,50 +36,44 @@ cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
 cLEDText AnzeigeOben;
 cLEDText AnzeigeUnten;
 
-char datumBuffer[60];
-char zeitBuffer[60];
+char datumBuffer[40];
+char zeitBuffer[40];
 int aktuellerModus = 0;
 
-// --- Task A: Uhrzeit & Datum ---
+// --- Task A: Uhrzeit & Datum (Deep Work Fokus) ---
 void taskA(void * pvParameters) {
     struct tm timeinfo;
-    int letzteSekunde = -1;
 
     for(;;) {
-        // Scroll-Status prüfen
+        // Scroll-Update (gibt -1 zurück, wenn Text durchgelaufen ist)
         int statusOben = AnzeigeOben.UpdateText();
         int statusUnten = AnzeigeUnten.UpdateText();
 
-        // Synchroner Neustart am Ende des Scrollvorgangs
-        if (statusOben == -1 || statusUnten == -1) {
+        if (statusOben == -1) {
             if (getLocalTime(&timeinfo)) {
-                // Eure Lösung für das Hüpfen (Blanks am Anfang)
-                sprintf(datumBuffer, "\x02       %02d.%02d.%04d", 
+                // Übernahme deiner exakten Leerzeichen-Logik
+                sprintf(datumBuffer, "\x02      %02d.%02d.%04d", 
                         timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
-                sprintf(zeitBuffer, "\x02        %02d:%02d:%02d", 
-                        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-
                 AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+            }
+        }
+
+        if (statusUnten == -1) {
+            if (getLocalTime(&timeinfo)) {
+                // Übernahme deiner exakten Leerzeichen-Logik
+                sprintf(zeitBuffer, "\x02       %02d:%02d:%02d  ", 
+                        timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
                 AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
             }
         }
 
-        // Live-Update der Sekunden im laufenden Buffer
-        if (getLocalTime(&timeinfo)) {
-            if (timeinfo.tm_sec != letzteSekunde) {
-                letzteSekunde = timeinfo.tm_sec;
-                // Direktes Überschreiben der Zahlen im Buffer (Index 9)
-                snprintf(zeitBuffer + 9, 9, "%02d:%02d:%02d", 
-                         timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-            }
-        }
-
         FastLED.show();
-        vTaskDelay(50 / portTICK_PERIOD_MS); // Task-Delay für Scroll-Geschwindigkeit
+        // Delay steuert die Scroll-Geschwindigkeit (30ms wie im Original)
+        vTaskDelay(30 / portTICK_PERIOD_MS); 
     }
 }
 
-// --- Task B & C (Platzhalter für Wetter/Spiel) ---
+// --- Task B & C (Platzhalter) ---
 void taskB(void * pvParameters) {
     for(;;) {
         Serial.println("Task B (Wetter) aktiv...");
@@ -118,27 +112,25 @@ void setup() {
     AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0xff, 0xff);
     AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff);
 
-    // "Warte auf Zeit" ausgeklammert
-    // AnzeigeOben.SetText((unsigned char *)"Warte auf Zeit...", 17);
-
-    // FreeRTOS Tasks erstellen (Stack-Größe für TaskA erhöht wegen Matrix/WiFi)
+    // Tasks erstellen
     xTaskCreate(taskA, "TaskUhr", 4096, NULL, 1, &handleA);
     xTaskCreate(taskB, "TaskWetter", 2048, NULL, 1, &handleB);
     xTaskCreate(taskC, "TaskSpiel", 2048, NULL, 1, &handleC);
 
     delay(1000); 
 
-    // Nur Task A starten
+    // Nur Task A aktiv starten
     if(handleB) vTaskSuspend(handleB);
     if(handleC) vTaskSuspend(handleC);
 }
 
-unsigned long drueckStartZeit = 0;
-bool wurdeUmschaltungAusgeloest = false;
-const unsigned long LANG_KLICK_SCHWELLE = 1000;
-
 void loop() {
     meinJoystick.klickenErkennen();
+
+    // Logik für Modus-Umschaltung per Joystick-Button
+    static unsigned long drueckStartZeit = 0;
+    static bool wurdeUmschaltungAusgeloest = false;
+    const unsigned long LANG_KLICK_SCHWELLE = 1000;
 
     if (meinJoystick.isPressed()) {
         if (drueckStartZeit == 0) drueckStartZeit = millis();
@@ -146,8 +138,6 @@ void loop() {
         if (!wurdeUmschaltungAusgeloest && (millis() - drueckStartZeit >= LANG_KLICK_SCHWELLE)) {
             aktuellerModus = (aktuellerModus + 1) % 3;
             wurdeUmschaltungAusgeloest = true;
-
-            Serial.printf("\n>>> WECHSEL ZU MODUS %d <<<\n", aktuellerModus);
 
             if(handleA) vTaskSuspend(handleA);
             if(handleB) vTaskSuspend(handleB);
@@ -157,7 +147,6 @@ void loop() {
             else if (aktuellerModus == 1 && handleB) vTaskResume(handleB);
             else if (aktuellerModus == 2 && handleC) vTaskResume(handleC);
             
-            // Paneele löschen beim Umschalten
             FastLED.clear();
             FastLED.show();
         }

@@ -95,9 +95,9 @@ void loop()
 
     // Das Steuerzeichen wird durch das Makro EFFECT_SCROLL_LEFT definiert
 
-    sprintf(datumBuffer, "\x02    %02d.%02d.%04d    ", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+    sprintf(datumBuffer, "\x02      %02d.%02d.%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
 
-    sprintf(zeitBuffer, "\x02    %02d:%02d:%02d    ", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    sprintf(zeitBuffer, "\x02       %02d:%02d:%02d  ", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
   }
 
   // UpdateText gibt -1 zurück, wenn die Nachricht zu Ende gescrollt ist

@@ -1,0 +1,114 @@
+#include <Arduino.h>
+#include <FastLED.h>
+
+// --- Hardware ---
+#define LED_PIN_OBEN   26
+#define LED_PIN_UNTEN  25
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define NUM_LEDS       256 // 32x8
+#define BRIGHTNESS     25  // Niedriger, um Resets zu vermeiden!
+
+CRGB ledsOben[NUM_LEDS];
+CRGB ledsUnten[NUM_LEDS];
+
+// --- 3x5 Mini-Schrift (Platzsparend & Statisch) ---
+// Index: 0-9 (Zahlen), 10 (Grad), 11 (C), 12 (Leer), 13-38 (A-Z)
+const uint8_t Font3x5[] PROGMEM = {
+    0x7b, 0x6f, 0x49, 0x24, 0x92, // 0-1
+    0x73, 0xe7, 0x31, 0x8c, 0x72, // 2-3
+    0x97, 0x91, 0x7c, 0x9e, 0x7c, // 4-5
+    0xa5, 0x73, 0x27, 0x31, 0x77, // 6-7
+    0xeb, 0x6e, 0x7b, 0x9f, 0x20, // 8-9, Grad
+    0x74, 0x47, 0x00, 0x00, 0x00  // C, Leer
+};
+
+// --- Deine Technik: Mapping ---
+void setPixel(int x, int y, CRGB color) {
+    if (x < 0 || x >= 32 || y < 0 || y >= 16) return;
+    if (y < 8) { 
+        int index = (x % 2 == 0) ? (x * 8 + y) : (x * 8 + (7 - y));
+        ledsOben[index] = color;
+    } else { 
+        int vX = 31 - x;
+        int vY = 7 - (y - 8);
+        int index = (vX % 2 == 0) ? (vX * 8 + vY) : (vX * 8 + (7 - vY));
+        ledsUnten[index] = color;
+    }
+}
+
+// --- Text ohne Library zeichnen (statisch) ---
+void drawDigit(int x, int y, int num, CRGB color) {
+    if (num < 0 || num > 12) return;
+    for (int i = 0; i < 5; i++) {
+        uint8_t row = pgm_read_byte(&Font3x5[num * 2 + (i > 2)]); // Vereinfacht für Demo
+        // Da die Font-Daten komplex sind, hier eine direktere Methode für "15 C" und "INNS"
+    }
+}
+
+// Direkte Pixelschrift für "INNS" (Oben rechts) und "15 C" (Unten rechts)
+void drawStaticText() {
+    // INNS (Sehr simpel gehalten für absolute Stabilität)
+    // I
+    for(int y=1; y<6; y++) setPixel(18, y, CRGB::Cyan);
+    // N
+    for(int y=1; y<6; y++) { setPixel(20, y, CRGB::Cyan); setPixel(23, y, CRGB::Cyan); }
+    setPixel(21, 2, CRGB::Cyan); setPixel(22, 3, CRGB::Cyan);
+    // N
+    for(int y=1; y<6; y++) { setPixel(25, y, CRGB::Cyan); setPixel(28, y, CRGB::Cyan); }
+    setPixel(26, 2, CRGB::Cyan); setPixel(27, 3, CRGB::Cyan);
+    // S
+    for(int x=30; x<32; x++) { setPixel(x, 1, CRGB::Cyan); setPixel(x, 3, CRGB::Cyan); setPixel(x, 5, CRGB::Cyan); }
+    setPixel(30, 2, CRGB::Cyan); setPixel(31, 4, CRGB::Cyan);
+
+    // 15 C (Unten rechts)
+    // 1
+    for(int y=10; y<15; y++) setPixel(18, y, CRGB::White);
+    // 5
+    for(int x=20; x<23; x++) { setPixel(x, 10, CRGB::White); setPixel(x, 12, CRGB::White); setPixel(x, 14, CRGB::White); }
+    setPixel(20, 11, CRGB::White); setPixel(22, 13, CRGB::White);
+    // Grad Symbol
+    setPixel(24, 10, CRGB::White);
+    // C
+    for(int y=11; y<14; y++) setPixel(26, y, CRGB::White);
+    setPixel(27, 10, CRGB::White); setPixel(28, 10, CRGB::White);
+    setPixel(27, 14, CRGB::White); setPixel(28, 14, CRGB::White);
+}
+
+// --- Große animierte Wolke ---
+void drawLargeRain() {
+    CRGB cloudCol = CRGB(40, 40, 45);
+    // Wolkenkörper (breiter)
+    for(int x=2; x<14; x++) for(int y=3; y<7; y++) setPixel(x, y, cloudCol);
+    for(int x=4; x<12; x++) setPixel(x, 2, cloudCol);
+    
+    static int animY = 0;
+    EVERY_N_MILLISECONDS(100) { animY++; }
+    // Tropfen
+    for(int i=0; i<4; i++) {
+        int x = 3 + (i*3);
+        int y = 7 + ((animY + i) % 7);
+        if(y < 15) {
+            setPixel(x, y, CRGB::Blue);
+            setPixel(x, y-1, CRGB::DarkBlue);
+        }
+    }
+}
+
+void setup() {
+    delay(2000); // Sicherheits-Pause für Stromspitzen
+    FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben, NUM_LEDS);
+    FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten, NUM_LEDS);
+    FastLED.setBrightness(BRIGHTNESS);
+    FastLED.clear(true);
+}
+
+void loop() {
+    FastLED.clear();
+
+    drawStaticText(); // Text wird fest auf Pixel gemalt (kein Scrollen möglich!)
+    drawLargeRain();  // Wolke links daneben
+
+    FastLED.show();
+    delay(40);
+}
