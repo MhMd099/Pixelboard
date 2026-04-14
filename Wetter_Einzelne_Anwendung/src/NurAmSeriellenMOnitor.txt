@@ -1,0 +1,84 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
+
+const char* ssid = "Nothin";
+const char* password = "nothin099";
+
+// Dein OpenWeatherMap Key (muss gültig sein!)
+const char* apiKey = "343df2364dc5541a3efd274bf2f845df";
+
+// Variablen für die automatische Ortung
+String dynamischeStadt = "";
+String dynamischerLandCode = "";
+
+void setup() {
+    Serial.begin(115200);
+    WiFi.begin(ssid, password);
+    
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWLAN verbunden!");
+
+    // SCHRITT 1: Ort über IP ermitteln
+    if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin("http://ip-api.com/json/");
+        int httpCode = http.GET();
+
+        if (httpCode == 200) {
+            String payload = http.getString();
+            DynamicJsonDocument doc(1024);
+            deserializeJson(doc, payload);
+
+            dynamischeStadt = doc["city"].as<String>();
+            dynamischerLandCode = doc["countryCode"].as<String>();
+
+            Serial.println("--- IP-Ortung erfolgreich ---");
+            Serial.printf("Ermittelter Ort: %s, %s\n", dynamischeStadt.c_str(), dynamischerLandCode.c_str());
+        } else {
+            Serial.println("Fehler bei der IP-Ortung, nutze Default...");
+            dynamischeStadt = "Innsbruck"; // Backup
+            dynamischerLandCode = "AT";
+        }
+        http.end();
+    }
+}
+
+void loop() {
+    if (WiFi.status() == WL_CONNECTED && dynamischeStadt != "") {
+        HTTPClient http;
+
+        // URL mit den dynamischen Daten zusammenbauen
+        String url = "http://api.openweathermap.org/data/2.5/weather?q=" 
+                     + dynamischeStadt + "," + dynamischerLandCode 
+                     + "&appid=" + String(apiKey) 
+                     + "&units=metric&lang=de";
+
+        http.begin(url);
+        int httpCode = http.GET();
+
+        if (httpCode == 200) {
+            String payload = http.getString();
+            DynamicJsonDocument doc(1024);
+            deserializeJson(doc, payload);
+
+            float temp = doc["main"]["temp"];
+            const char* desc = doc["weather"][0]["description"];
+
+            Serial.println("--- Aktuelles Wetter am Standort ---");
+            Serial.printf("Stadt: %s\n", dynamischeStadt.c_str());
+            Serial.printf("Wetter: %s bei %.1f Grad\n", desc, temp);
+            Serial.println("------------------------------------");
+        } else {
+            Serial.println("Wetter-Abfrage fehlgeschlagen.");
+        }
+        http.end();
+    }
+
+    // Warte 15 Minuten bis zum nächsten Check
+    delay(900000); 
+}
