@@ -1,6 +1,8 @@
 ﻿#include <Arduino.h>
 #include <WiFi.h>
 #include "time.h"
+#include "HardwareUtils.h" // <--- Hier sind AnzeigeOben/AnzeigeUnten definiert
+
 #include <FastLED.h>
 #include <LEDMatrix.h>
 #include <LEDText.h>
@@ -8,7 +10,10 @@
 #include <DHT.h>
 #include <ESP_Google_Sheet_Client.h>
 #include "Joystick.h"
-
+#include "TaskUhr.h"
+#include "TaskWetter.h"
+#include "TaskDHT.h"
+#include "Config.h"
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
 // ==========================================
@@ -40,28 +45,17 @@
 #define J2_PIN_Y       39
 #define J2_PIN_TASTER  14
 
-// ==========================================
-// 2. GOOGLE SHEETS & WLAN KONFIGURATION
-// ==========================================
-const char *ssid = "Nothin";
-const char *password = "nothin099";
 
-#define PROJECT_ID "dataloggingpb"
-#define CLIENT_EMAIL "datalogging-pb@dataloggingpb.iam.gserviceaccount.com"
-const char PRIVATE_KEY[] PROGMEM = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCj1HTpxeHGlSXK\nKU0rH93KLh8mDshrQAtDdMSMS7YEd7T5vU0ihlOI5T39H/QXai1VN+rdfJQ8VrMI\nO5VJUusU1vaiqdPkn2HSXIMjBwKZuUVnUCjVEiWdX+Z/zjyIV6685Z4h2D3GBzQ7\n9GFUB5E1wS+ZKd1K+4k758kHARGT1u+cVZ2+IEu7NLqb1UV4QR4y6zH3skgLP1GE\nnfxWMmx5elGvFBcZmMm4Ncx3m8JZNqzpbUeXI+i+fvebZoM4Wu3JjuXLiiyX5u68\nwi8I2Y/HDQF6w475ieRngKbJdHXRo1HGwcocysCvm47/4Vol62onr9PqlHwYm7E9\nWYgxVGRjAgMBAAECggEAM079kp1buWLKpAbNWT0wq/pH3RZyJEy5elXenIW1qq6G\n6lQkDTT+gngxMs5IFvE042SQ1O8ISeFpTqHCfmVOpIcyVP1VFFvqOgSpOVYftV81\n4kZTk2+Mgj4fpVVE1fqICjbrkHP13MgyzrgZp0R7cNdg/doDqVEfyLgt2Fi4VZFR\nogNYEEcg+Tu9LxQSfEWZF8dtdKAU7uzYLuc6BkVDuHnPvGDzQK76Dn65jUrVIhxA\nLwpjccSPiTow0LHAdRguI5FfgpskBlyGZrSGkpxs+y1phd4UhsziVDtOsxQd/L7s\nPrCyucJR5KzEDPIvO/XxmA6xg1A4Yf1Y7ag+aJIZYQKBgQDYATzGttJ8RJblBFIw\nMkoXti5jXXks3pbuJlJU92t5jpFbGi8fpLfhN4EYt+gFOiAqtOBPZsRkoe1QTcEL\nUmIdJO3sFeDnq2BQLAfXslB9+7Xd3lbmZhm6z66+3ksCGjxxSZYmZM43JfSY1X4N\n58thzbNOC0fevYJIn41xhR4p8QKBgQDCKhh6L+/wQwIvApk6NnxD+PITFrrzjIZf\nwSK+nOl5ID+oVrKOl2/vSC7LuJAfyvfMI6F0tqDIBwtvdwX6uax+BxskvYX2w68I\nl40jE37I4mwYyAVny3W8caVXmxpFpPS9hUdC2c/D1a1J4p4dx8ufqBLhEmC8nAwj\niwlKb7A/kwKBgCcR4jpXKy9LALgf1fXdwsUTMMTMTXSuNkKRL+cqcYglH2mJDOj+\nVDwqW/Fqok7/un2/BauW/QLuvwv9ZGN13UVEPryrIGkG+H7H2AtNt31yH+0noDRA\nV3sQwZzIfGy+7hvXoY8EQMB83wcd5pUBTio8mKgPJkrFoGEeaukTmOchAoGBAJyZ\nyygxpboIsags1l0HOO6xyLzwplRs0KxGX7mRYRValz00v8sWBSfe9i9FaqjZ0UaK\nrlwuODtcwzJhsybnvmHfZVsaqQPADFpHsYPK44UuabULDqEKjqkwmASyilwFkYeS\nCUm310TCAIQJDTJDxM2+h4uUgQVebsP0DchFkMeVAoGAKTpShbfT8GzqIQei501D\nF8fS+US/3WjqutNL136N/YMYnJzOF8w2vz9Ab7h+lADCrUjeKCpfGH51AKAFlUXD\nAiyqMiqgWvjxKo9LVyFcJqGp0P5RJSbr0OWq1+LkV3wofGAQWXsH7OFym2BULpJt\nnL39C2joy478eDdRLAyFd7A=\n-----END PRIVATE KEY-----\n";
-const char spreadsheetId[] = "1UVF6XSF4KJbVI_b5s-QQKZMaB36BXMaAlNBZLHzkiVc";
+
+
+
 
 // ==========================================
 // 3. INSTANZEN & GLOBALE VARIABLEN
 // ==========================================
 Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN); // Snake
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);   // Menü
-DHT dht(DHTPIN, DHTTYPE);
 
-cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
-cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
-cLEDText AnzeigeOben;
-cLEDText AnzeigeUnten;
 
 TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, handleE = NULL; 
 
@@ -83,21 +77,7 @@ const uint32_t menuIcons[5] = {
 
 struct Point { int x, y; };
 
-// ==========================================
-// 4. LOW-LEVEL GRAFIK & HILFSFUNKTIONEN
-// ==========================================
-void setPixel(int x, int y, CRGB color) {
-    if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
-    if (y < 8) { 
-        int index = (x % 2 == 0) ? (x * 8 + y) : (x * 8 + (7 - y));
-        ledsOben[0][index] = color;
-    } else { 
-        int vX = 31 - x;
-        int vY = 7 - (y - 8);
-        int index = (vX % 2 == 0) ? (vX * 8 + vY) : (vX * 8 + (7 - vY));
-        ledsUnten[0][index] = color;
-    }
-}
+
 
 void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
   for (int i = 0; i < 15; i++) {
@@ -167,7 +147,9 @@ void wechsleZuTask(int zielTask) {
     TaskHandle_t zielHandle = getTaskHandle(zielTask);
 
     FastLED.clear(true);
-    if (aktiverTask >= 0 && aktuellerHandle != NULL && aktuellerHandle != zielHandle) {
+    
+    // DHT-Task (Index 3) wird NIEMALS schlafen gelegt
+    if (aktiverTask >= 0 && aktiverTask != 3 && aktuellerHandle != NULL && aktuellerHandle != zielHandle) {
         vTaskSuspend(aktuellerHandle);
     }
 
@@ -180,20 +162,25 @@ void wechsleZuTask(int zielTask) {
     joystick2.doppelklickZaehler = 0;
     joystick2.langKlickZaehler = 0;
 
-    vTaskResume(zielHandle);
+    // DHT-Task (Index 3) braucht kein vTaskResume, da er schon läuft
+    if (zielTask != 3 && zielHandle != NULL) {
+        vTaskResume(zielHandle);
+    }
+    
     setEventSperre(750);
     Serial.printf("Task %d aktiv\n", zielTask);
 }
 
 void zurueckZumMenue() {
-    if (aktiverTask >= 0) {
+    // DHT-Task (Index 3) wird hier ignoriert und läuft im Hintergrund weiter
+    if (aktiverTask >= 0 && aktiverTask != 3) {
         TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
         if (aktuellerHandle != NULL) {
             vTaskSuspend(aktuellerHandle);
         }
     }
 
-    aktiverTask = -1;
+    aktiverTask = -1; // Schaltet die Display-Ausgabe im DHT-Task automatisch stumm!
     navigationsSperre = false;
     lastXPerc = 0;  
     lastYPerc = 0;
@@ -209,35 +196,15 @@ void zurueckZumMenue() {
     Serial.println("Zurück zum Menü");
 }
 
+
 void starteTask(int nummer) { wechsleZuTask(nummer); }
 void stopAlleTasks() { zurueckZumMenue(); }
 
 // ==========================================
 // 5. FREE-RTOS TASKS
 // ==========================================
-void taskA(void * pv) {
-    struct tm timeinfo;
-    for(;;) {
-        if (getLocalTime(&timeinfo)) {
-            FastLED.clear();
-            if (millis() % 6000 < 3000) { 
-                sprintf(datumBuffer, "\x02%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-                sprintf(zeitBuffer, "\x02   %02d", timeinfo.tm_sec);
-            } else {
-                sprintf(datumBuffer, "\x02 %04d", timeinfo.tm_year + 1900);
-                sprintf(zeitBuffer, "\x02%02d.%02d.", timeinfo.tm_mday, timeinfo.tm_mon + 1);
-            }
-            AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
-            AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
-            AnzeigeOben.UpdateText();
-            AnzeigeUnten.UpdateText();
-            FastLED.show();
-        }
-        vTaskDelay(500 / portTICK_PERIOD_MS); 
-    }
-}
 
-void taskB(void * pv) { for(;;) { Serial.println("B..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+
 void taskE(void * pv) { for(;;) { Serial.println("E..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
 
 // --- TASK C: SNAKE (KORRIGIERT) ---
@@ -284,55 +251,6 @@ void taskC(void * pvParameters) {
     }
 }
 
-// --- VERSCHMOLZENER TASK (DHT + Sheets) --- (Code 100% unverändert)
-void taskDataHandler(void *pvParameters) {
-    dht.begin();
-    GSheet.setTokenCallback(tokenStatusCallback);
-    GSheet.setPrerefreshSeconds(10 * 60);
-    GSheet.begin(CLIENT_EMAIL, PROJECT_ID, PRIVATE_KEY);
-
-    unsigned long lastLogTime = 0;
-
-    for (;;) {
-        float h = dht.readHumidity();
-        float t = dht.readTemperature();
-
-        // 1. DISPLAY AKTUALISIEREN (Immer wenn Task aktiv ist)
-        if (!isnan(h) && !isnan(t)) {
-            snprintf(bufferOben, 64, "\x02 %.1f C", t); 
-            snprintf(bufferUnten, 64, "\x02 %.0f %%", h);
-        } else {
-            snprintf(bufferOben, 64, "\x02 FEHLER");
-            snprintf(bufferUnten, 64, "\x02 SENSOR");
-        }
-
-        FastLED.clear();
-        AnzeigeOben.SetText((unsigned char *)bufferOben, strlen(bufferOben));
-        AnzeigeUnten.SetText((unsigned char *)bufferUnten, strlen(bufferUnten));
-        AnzeigeOben.UpdateText();
-        AnzeigeUnten.UpdateText();
-        FastLED.show();
-
-        // 2. GOOGLE SHEETS LOGGING (Alle 60 Sek im Hintergrund)
-        if (GSheet.ready() && (millis() - lastLogTime > 60000)) {
-            lastLogTime = millis();
-            FirebaseJson valueRange;
-            valueRange.add("majorDimension", "COLUMNS");
-            time_t now;
-            time(&now);
-            valueRange.set("values/[0]/[0]", (uint32_t)now);
-            valueRange.set("values/[1]/[0]", t);
-            valueRange.set("values/[2]/[0]", h);
-
-            FirebaseJson response;
-            GSheet.values.append(&response, spreadsheetId, "Sheet1!A1", &valueRange);
-            Serial.println("Cloud-Log gesendet.");
-        }
-
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
-    }
-}
-
 // ==========================================
 // 6. SETUP & LOOP
 // ==========================================
@@ -366,15 +284,18 @@ void setup() {
     AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff);
 
     // Alle Tasks in FreeRTOS einklinken
-    xTaskCreate(taskA, "TaskA", 4096, NULL, 1, &handleA);
-    xTaskCreate(taskB, "TaskB", 2048, NULL, 1, &handleB);
+    xTaskCreate(taskUhr, "TaskA", 4096, NULL, 1, &handleA);
+    xTaskCreate(taskWetter, "TaskB", 2048, NULL, 1, &handleB);
     xTaskCreate(taskC, "TaskC", 4096, NULL, 1, &handleC);          // Snake Task (Index 2)
-    xTaskCreate(taskDataHandler, "TaskData", 8192, NULL, 1, &handleData); // DHT Task (Index 3)
+    xTaskCreate(taskDataHandler, "TaskDHT", 8192, NULL, 1, &handleData); // DHT Task (Index 3)
     xTaskCreate(taskE, "TaskE", 2048, NULL, 1, &handleE);
 
     // Alle beim Boot suspendieren
+   
     vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC);
-    vTaskSuspend(handleData); vTaskSuspend(handleE);
+   
+   // vTaskSuspend(handleData); 
+    vTaskSuspend(handleE);
 joystick2.setInverted(true, true);
 
     printMenu();
