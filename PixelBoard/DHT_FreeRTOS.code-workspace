@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "path": "../DHT_FreeRTOS"
+        },
+        {
+            "path": "../Uhrzeit_Wetter_Snake_FreeRTOS"
+        },
+        {
+            "path": "../Wetter_FreeRTOS"
+        }
+    ]
+}

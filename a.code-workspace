@@ -1,0 +1,25 @@
+{
+	"folders": [
+		{
+			"path": "DHT_FreeRTOS"
+		},
+		{
+			"path": "Joystick_Test"
+		},
+		{
+			"path": "PixelBoard"
+		},
+		{
+			"path": "Spiel_Snake_FreeRTOS"
+		},
+		{
+			"path": "Uhrzeit_FreeRTOS"
+		},
+		{
+			"path": "Uhrzeit_Wetter_Snake_FreeRTOS"
+		},
+		{
+			"path": "Wetter_FreeRTOS"
+		}
+	]
+}
