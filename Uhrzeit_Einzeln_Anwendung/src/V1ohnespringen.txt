@@ -1,0 +1,80 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+
+#define LED_PIN_OBEN   26
+#define LED_PIN_UNTEN  25
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8
+#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
+
+const char* ssid     = "Nothin";
+const char* password = "nothin099";
+
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+char datumBuffer[60];
+char zeitBuffer[60];
+
+void setup() {
+  Serial.begin(115200);
+  FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+  FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+  FastLED.setBrightness(15);
+  FastLED.clear(true);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  
+  // Zeitzone für Österreich (CET/CEST)
+  configTime(3600, 3600, "pool.ntp.org");
+
+  AnzeigeOben.SetFont(MatriseFontData);
+  AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 0, 0);
+  
+  AnzeigeUnten.SetFont(MatriseFontData);
+  AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), AnzeigeUnten.FontHeight() + 1, 0, 0);
+
+  // Initialer Aufruf, damit sofort etwas angezeigt wird
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    sprintf(datumBuffer, "\x02      %02d.%02d.%04d", timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+    sprintf(zeitBuffer, "\x02      %02d:%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+    AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+  }
+}
+
+void loop() {
+  struct tm timeinfo;
+
+  // UpdateText gibt -1 zurück, wenn der Text fertig durchgelaufen ist
+  if (AnzeigeOben.UpdateText() == -1) {
+    if (getLocalTime(&timeinfo)) {
+      sprintf(datumBuffer, "\x02      %02d.%02d.%04d", 
+              timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+      AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+    }
+  }
+
+  if (AnzeigeUnten.UpdateText() == -1) {
+    if (getLocalTime(&timeinfo)) {
+      sprintf(zeitBuffer, "\x02      %02d:%02d:%02d", 
+              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+      AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+    }
+  }
+
+  FastLED.show();
+  delay(40); 
+}

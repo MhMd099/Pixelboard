@@ -1,0 +1,101 @@
+#include <Arduino.h>
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+
+// --- Hardware ---
+#define LED_PIN_OBEN   26
+#define LED_PIN_UNTEN  25
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8
+#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
+
+// --- Deine WLAN Daten (Für später vorbereitet) ---
+const char* ssid = "Galaxy A51 F165";
+const char* password = "uipn2341";
+
+// --- Deine Matrizen ---
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+char bufferOben[32];
+char bufferUnten[32];
+
+// --- Deine Pixel-Logik (Korrekt für das umgedrehte untere Panel) ---
+void setPixel(int x, int y, CRGB color) {
+    if (x < 0 || x >= 32 || y < 0 || y >= 16) return;
+
+    if (y < 8) { 
+        // Oberes Panel
+        int index = (x % 2 == 0) ? (x * 8 + y) : (x * 8 + (7 - y));
+        ledsOben[0][index] = color;
+    } else { 
+        // Unteres Panel (Kopfüber)
+        int vX = 31 - x;
+        int vY = 7 - (y - 8);
+        int index = (vX % 2 == 0) ? (vX * 8 + vY) : (vX * 8 + (7 - vY));
+        ledsUnten[0][index] = color;
+    }
+}
+
+// --- Symbole (Nur linke Seite: Spalte 0 bis 15) ---
+void drawCloud(int xOff, int yOff, CRGB color) {
+    for(int x=xOff+2; x<xOff+10; x++) setPixel(x, yOff+5, color);
+    for(int x=xOff+4; x<xOff+8; x++)  setPixel(x, yOff+4, color);
+    for(int x=xOff+3; x<xOff+9; x++)  setPixel(x, yOff+6, color);
+}
+
+void drawRain() {
+    drawCloud(2, 2, CRGB::Gray);
+    static int animY = 0;
+    EVERY_N_MILLISECONDS(150) { animY++; } // Deine bevorzugte FastLED-Animation
+    for(int i=0; i<4; i++) {
+        setPixel(4 + (i*2), 8 + ((animY + i) % 6), CRGB::Blue);
+    }
+}
+
+void setup() {
+    Serial.begin(115200);
+
+    FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+    FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+    FastLED.setBrightness(20);
+    
+    // Schriftarten laden
+    AnzeigeOben.SetFont(MatriseFontData);
+    AnzeigeOben.Init(&ledsOben, ledsOben.Width(), 8, 0, 0);
+    AnzeigeUnten.SetFont(MatriseFontData);
+    AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), 8, 0, 0);
+    
+    // Farben für den Text festlegen
+    AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff); // Cyan
+    AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0xff, 0xff); // Weiß
+
+    // Statischen Text vorbereiten (mit Leerzeichen nach rechts geschoben!)
+    // So bleibt Spalte 0-15 frei für die Symbole
+    sprintf(bufferOben, "      INNS");
+    sprintf(bufferUnten, "      15 C");
+
+    AnzeigeOben.SetText((unsigned char *)bufferOben, strlen(bufferOben));
+    AnzeigeUnten.SetText((unsigned char *)bufferUnten, strlen(bufferUnten));
+}
+
+void loop() {
+    FastLED.clear();
+
+    // 1. Statischen Text aktualisieren (schreibt in den rechten Bereich)
+    AnzeigeOben.UpdateText();
+    AnzeigeUnten.UpdateText();
+
+    // 2. Symbol zeichnen (schreibt in den linken Bereich, Spalte 0-15)
+    // Wir rufen hier testweise die animierte Regenwolke auf.
+    drawRain();
+
+    FastLED.show();
+    delay(50);
+}

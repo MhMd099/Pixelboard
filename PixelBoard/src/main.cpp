@@ -1,0 +1,366 @@
+﻿#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+#include "Joystick.h"
+
+// ==========================================
+// 1. HARDWARE & KONFIGURATION
+// ==========================================
+#define LED_PIN_OBEN   26
+#define LED_PIN_UNTEN  25
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8
+#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
+
+// Initialisierung des Joysticks mit PIN 32 für den TASTER (wie erfolgreich getestet!)
+Joystick meinJoystick(36, 39, 12); 
+const char *ssid = "Nothin";
+const char *password = "nothin099";
+
+// ==========================================
+// 2. INSTANZEN & GLOBALE VARIABLEN
+// ==========================================
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleD = NULL, handleE = NULL; 
+
+char datumBuffer[40], zeitBuffer[40];
+int fokusModus = 0;    // Navigation im Menü
+int aktiverTask = -1;  // -1 = Menü, 0-4 = Task läuft
+bool navigationsSperre = false;
+unsigned long navigationSperreZeit = 0;  // Zeitstempel für timeout-basierte Sperre
+int lastXPerc = 0;     // Letzter Joystick X-Wert für Change-Detection
+int lastYPerc = 0;     // Letzter Joystick Y-Wert für Change-Detection
+unsigned long eventSperreBis = 0;
+int pendingDirX = 0;               // -1 / 0 / 1 candidate direction X
+unsigned long pendingSinceX = 0;   // timestamp when candidate started
+int pendingDirY = 0;               // candidate direction Y
+unsigned long pendingSinceY = 0;   // timestamp when candidate started
+
+// FreeRTOS Mutex für sichere Klick-Zähler Synchronisierung
+SemaphoreHandle_t clickCounterMutex = NULL;
+
+// MODIFIKATION: 3x5 Bitmasken (Hexadezimal) für 5 einfache, vertikale Striche
+// Jeder Wert erzeugt einen fetten Strich in der Mitte des 3x5 Icons (einzelne Pixelspalte)
+const uint32_t menuIcons[5] = {
+  0x24924, // Strich 1 (Binär: 010 010 010 010 010)
+  0x24924, // Strich 2
+  0x24924, // Strich 3
+  0x24924, // Strich 4
+  0x24924  // Strich 5
+};
+
+// ==========================================
+// 3. LOW-LEVEL GRAFIK (MAPPING)
+// ==========================================
+void setPixel(int x, int y, CRGB color) {
+    if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
+    if (y < 8) { 
+        int index = (x % 2 == 0) ? (x * 8 + y) : (x * 8 + (7 - y));
+        ledsOben[0][index] = color;
+    } else { 
+        int vX = 31 - x;
+        int vY = 7 - (y - 8);
+        int index = (vX % 2 == 0) ? (vX * 8 + vY) : (vX * 8 + (7 - vY));
+        ledsUnten[0][index] = color;
+    }
+}
+
+void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
+  for (int i = 0; i < 15; i++) {
+    if (icon & (1 << (14 - i))) {
+      setPixel(xOffset + (i % 3), yOffset + (i / 3), color);
+    }
+  }
+}
+
+void printMenu() {
+  FastLED.clear();
+  for (int i = 0; i < 5; i++) {
+    CRGB farbe = (fokusModus == i) ? CRGB::Cyan : CRGB::DarkSlateGray;
+    drawIcon(2 + (i * 6), 5, menuIcons[i], farbe); 
+  }
+  FastLED.show();
+}
+
+// Atomares Auslesen und Zurücksetzen der Klick-Zähler
+struct ClickEvent {
+    int einfacherKlick;
+    int doppelklick;
+    int langKlick;
+};
+
+struct ClickEvent readAndClearClicks() {
+    struct ClickEvent result = {0, 0, 0};
+    if (xSemaphoreTake(clickCounterMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        result.einfacherKlick = meinJoystick.einfacherKlickZaehler;
+        result.doppelklick = meinJoystick.doppelklickZaehler;
+        result.langKlick = meinJoystick.langKlickZaehler;
+        
+        // Zähler in der Instanz sofort löschen
+        meinJoystick.einfacherKlickZaehler = 0;
+        meinJoystick.doppelklickZaehler = 0;
+        meinJoystick.langKlickZaehler = 0;
+        xSemaphoreGive(clickCounterMutex);
+    }
+    return result;
+}
+
+bool eventSperreAktiv() {
+    return (long)(millis() - eventSperreBis) < 0;
+}
+
+void setEventSperre(unsigned long dauerMs) {
+    eventSperreBis = millis() + dauerMs;
+}
+
+TaskHandle_t getTaskHandle(int nummer) {
+    switch (nummer) {
+        case 0: return handleA;
+        case 1: return handleB;
+        case 2: return handleC;
+        case 3: return handleD;
+        case 4: return handleE;
+        default: return NULL;
+    }
+}
+
+void wechsleZuTask(int zielTask) {
+    if (zielTask < 0 || zielTask > 4) return;
+
+    TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
+    TaskHandle_t zielHandle = getTaskHandle(zielTask);
+
+    FastLED.clear(true);
+
+    if (aktiverTask >= 0 && aktuellerHandle != NULL && aktuellerHandle != zielHandle) {
+        vTaskSuspend(aktuellerHandle);
+    }
+
+    aktiverTask = zielTask;
+    navigationsSperre = false;
+    lastXPerc = 0;  
+    lastYPerc = 0;
+    
+    // Radikaler Hardware-Zähler-Reset vor dem Aufwachen des Tasks
+    meinJoystick.einfacherKlickZaehler = 0;
+    meinJoystick.doppelklickZaehler = 0;
+    meinJoystick.langKlickZaehler = 0;
+
+    vTaskResume(zielHandle);
+    
+    // Software-Filter für den "Entlastungsklick" beim Loslassen des Tasters
+    setEventSperre(750);
+    Serial.printf("Task %d aktiv\n", zielTask);
+}
+
+void zurueckZumMenue() {
+    if (aktiverTask >= 0) {
+        TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
+        if (aktuellerHandle != NULL) {
+            vTaskSuspend(aktuellerHandle);
+        }
+    }
+
+    aktiverTask = -1;
+    navigationsSperre = false;
+    lastXPerc = 0;  
+    lastYPerc = 0;
+    FastLED.clear(true);
+    
+    // Radikaler Hardware-Zähler-Reset vor dem Menüaufruf
+    meinJoystick.einfacherKlickZaehler = 0;
+    meinJoystick.doppelklickZaehler = 0;
+    meinJoystick.langKlickZaehler = 0;
+
+    vTaskDelay(30 / portTICK_PERIOD_MS);
+    printMenu();
+    
+    // Höhere Sperre (750ms), damit der Doppel-Klick nicht rückwirkend ins Menü schlägt
+    setEventSperre(750);
+    Serial.println("Zurück zum Menü");
+}
+
+// ==========================================
+// 4. TASK MANAGEMENT
+// ==========================================
+void starteTask(int nummer) {
+    wechsleZuTask(nummer);
+}
+
+void stopAlleTasks() {
+    zurueckZumMenue();
+}
+// ==========================================
+// 5. FREE-RTOS TASKS
+// ==========================================
+void taskA(void * pv) {
+    struct tm timeinfo;
+    for(;;) {
+        if (getLocalTime(&timeinfo)) {
+            FastLED.clear();
+            if (millis() % 6000 < 3000) { 
+                sprintf(datumBuffer, "\x02%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
+                sprintf(zeitBuffer, "\x02   %02d", timeinfo.tm_sec);
+            } else {
+                sprintf(datumBuffer, "\x02 %04d", timeinfo.tm_year + 1900);
+                sprintf(zeitBuffer, "\x02%02d.%02d.", timeinfo.tm_mday, timeinfo.tm_mon + 1);
+            }
+            AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+            AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+            AnzeigeOben.UpdateText();
+            AnzeigeUnten.UpdateText();
+            FastLED.show();
+        }
+        vTaskDelay(500 / portTICK_PERIOD_MS); 
+    }
+}
+void taskB(void * pv) { for(;;) { Serial.println("B..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+void taskC(void * pv) { for(;;) { Serial.println("C..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+void taskD(void * pv) { for(;;) { Serial.println("D..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+void taskE(void * pv) { for(;;) { Serial.println("E..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+
+// ==========================================
+// 6. SETUP & LOOP
+// ==========================================
+void setup() {
+    Serial.begin(115200);
+    
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED) { delay(500); }
+    configTime(3600, 3600, "pool.ntp.org");
+
+    clickCounterMutex = xSemaphoreCreateMutex();
+    if (clickCounterMutex == NULL) {
+        Serial.println("FEHLER: Mutex konnte nicht erstellt werden!");
+    }
+
+    FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+    FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+    FastLED.setBrightness(15);
+    
+    AnzeigeOben.SetFont(MatriseFontData);
+    AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 1, 0);
+    AnzeigeUnten.SetFont(MatriseFontData);
+    AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), AnzeigeUnten.FontHeight() + 1, 1, 0);
+    AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0xff, 0xff);
+    AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff);
+
+    xTaskCreate(taskA, "TaskA", 4096, NULL, 1, &handleA);
+    xTaskCreate(taskB, "TaskB", 2048, NULL, 1, &handleB);
+    xTaskCreate(taskC, "TaskC", 2048, NULL, 1, &handleC);
+    xTaskCreate(taskD, "TaskD", 2048, NULL, 1, &handleD);
+    xTaskCreate(taskE, "TaskE", 2048, NULL, 1, &handleE);
+
+    vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC);
+    vTaskSuspend(handleD); vTaskSuspend(handleE);
+
+    printMenu();
+}
+
+void loop() {
+    // 1. Hardware abfragen
+    meinJoystick.klickenErkennen();
+    struct ClickEvent clicks = readAndClearClicks();
+
+    // 2. Sperrzeit abwarten (Verhindert doppeltes Feuern im Umschaltmoment)
+    if (eventSperreAktiv()) {
+        meinJoystick.einfacherKlickZaehler = 0;
+        meinJoystick.doppelklickZaehler = 0;
+        meinJoystick.langKlickZaehler = 0;
+        
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        return;
+    }
+
+    // ========== IM MENÜ (aktiverTask == -1) ==========
+    if (aktiverTask == -1) {
+        static unsigned long lastMenuDebug = 0;
+        if (millis() - lastMenuDebug > 500) {
+            Serial.printf("[MENÜ MODE] fokusModus=%d, aktiverTask=%d\n", fokusModus, aktiverTask);
+            lastMenuDebug = millis();
+        }
+
+        // EVENT 1: Long-Click im Menü -> Schaltet Modus ein
+        if (clicks.langKlick > 0) {
+            Serial.printf("Menü: Long-Click erkannt → starte Task %d\n", fokusModus);
+            starteTask(fokusModus);
+            return;
+        }
+
+        // EVENT 2: Single-Click im Menü -> Schaltet Modus ein
+        if (clicks.einfacherKlick > 0) {
+            Serial.printf("Menü: Single-Click erkannt → starte Task %d\n", fokusModus);
+            starteTask(fokusModus);
+            return;
+        }
+
+        // EVENT 3: Joystick Navigation
+        int xPerc = meinJoystick.readXPercent();
+        int yPerc = meinJoystick.readYPercent();
+
+        const int TRIG_POS = 80;    
+        const int TRIG_NEG = -80;   
+        const int RELEASE_ABS = 60; 
+        const int NAV_TIMEOUT_MS = 200; 
+
+        static unsigned long lastDebugPrint2 = 0;
+        if (millis() - lastDebugPrint2 > 200) {
+            Serial.printf("[MENU NAV ABS] xPerc=%d, lastX=%d, Sperre=%d\n", xPerc, lastXPerc, navigationsSperre);
+            lastDebugPrint2 = millis();
+        }
+
+        if (!navigationsSperre) {
+            if (xPerc >= TRIG_POS) {
+                fokusModus = (fokusModus + 1) % 5;
+                navigationsSperre = true;
+                navigationSperreZeit = millis();
+                lastXPerc = xPerc; lastYPerc = yPerc;
+                printMenu();
+                Serial.printf("Navigation ABS: Zu Task %d (Rechts) - xPerc=%d\n", fokusModus, xPerc);
+            } else if (xPerc <= TRIG_NEG) {
+                fokusModus = (fokusModus - 1 + 5) % 5;
+                navigationsSperre = true;
+                navigationSperreZeit = millis();
+                lastXPerc = xPerc; lastYPerc = yPerc;
+                printMenu();
+                Serial.printf("Navigation ABS: Zu Task %d (Links) - xPerc=%d\n", fokusModus, xPerc);
+            }
+        } else {
+            if (abs(xPerc) < RELEASE_ABS) {
+                navigationsSperre = false;
+                Serial.printf("Navigation ABS: Sperre freigegeben (xPerc=%d)\n", xPerc);
+            } else if ((millis() - navigationSperreZeit) > NAV_TIMEOUT_MS) {
+                navigationsSperre = false;
+            }
+        }
+    } 
+    // ========== IN LAUFENDER TASK ==========
+    else {
+        // EVENT 1: Double-Click in Task -> Schaltet Task ab und kehrt ins Menü zurück
+        if (clicks.doppelklick > 0) {
+            Serial.printf("Task %d: Double-Click → zurück zum Menü\n", aktiverTask);
+            zurueckZumMenue();
+            return;
+        }
+
+        // EVENT 2: Long-Click in Task -> Wechselt direkt zum nächsten Task weiter
+        if (clicks.langKlick > 0) {
+            int nextTask = (aktiverTask + 1) % 5;
+            Serial.printf("Task %d: Long-Click → wechsel zu Task %d\n", aktiverTask, nextTask);
+            wechsleZuTask(nextTask);
+            return;
+        }
+    }
+
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+}

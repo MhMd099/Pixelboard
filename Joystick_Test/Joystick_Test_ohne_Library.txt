@@ -1,0 +1,79 @@
+#include <Arduino.h>
+#include "Joystick.h"
+
+#define PIN_X 34
+#define PIN_Y 35
+#define PIN_TASTER 27
+
+Joystick joystick(PIN_X, PIN_Y, PIN_TASTER);
+
+const char *richtungX(int wert) {
+  if (wert > 10) return "rechts";
+  if (wert < -10) return "links";
+  return "mitte";
+}
+
+const char *richtungY(int wert) {
+  if (wert > 10) return "oben";
+  if (wert < -10) return "unten";
+  return "mitte";
+}
+
+
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("===== Joystick Test (X- und Y-Achse) =====");
+  Serial.println("Kalibriere Mittelstellung...");
+  delay(1500);
+  joystick.kalibrieren();
+  Serial.println("Kalibrierung abgeschlossen!");
+  Serial.println();
+  pinMode(32,INPUT_PULLDOWN);
+}
+
+void loop() {
+  joystick.update();
+
+  int xRaw = joystick.readXRaw();
+  int yRaw = joystick.readYRaw();
+  int xPct = joystick.readXPercent();
+  int yPct = joystick.readYPercent();
+  bool gedrueckt = joystick.isPressed();
+
+  Serial.print("RAW X: ");
+  Serial.print(xRaw);
+  Serial.print(" | % X: ");
+  Serial.print(xPct);
+  Serial.print(" (");
+  Serial.print(richtungX(xPct));
+  Serial.print(")");
+  Serial.print(" | RAW Y: ");
+  Serial.print(yRaw);
+  Serial.print(" | % Y: ");
+  Serial.print(yPct);
+  Serial.print(" (");
+  Serial.print(richtungY(yPct));
+  Serial.print(")");
+  Serial.print(" | Taster: ");
+  Serial.print(gedrueckt ? "GEDRUECKT" : "offen");
+
+  if (joystick.einfacherKlickZaehler > 0) {
+    Serial.print(" | Einfach-Klick!");
+    joystick.einfacherKlickZaehler = 0;
+  }
+
+  if (joystick.doppelklickZaehler > 0) {
+    Serial.print(" | Doppelklick!");
+    joystick.doppelklickZaehler = 0;
+  }
+
+  if (joystick.langKlickZaehler > 0) {
+    Serial.print(" | Lang-Klick!");
+    joystick.langKlickZaehler = 0;
+  }
+
+  Serial.println();
+  delay(50);
+}

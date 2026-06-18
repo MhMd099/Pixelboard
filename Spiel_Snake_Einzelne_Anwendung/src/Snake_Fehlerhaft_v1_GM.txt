@@ -1,0 +1,128 @@
+#include <Arduino.h>
+#include <FastLED.h>
+#include "Joystick.h"
+
+// Hardware-Konfiguration (Deine Pins)
+#define LED_PIN_OBEN   26  // Datum-Panel (jetzt oberes Spielfeld)
+#define LED_PIN_UNTEN  25  // Uhrzeit-Panel (jetzt unteres Spielfeld)
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8 // Pro Panel 8, insgesamt 16
+
+const int PIN_X = 34;
+const int PIN_Y = 35;
+const int PIN_BTN = 32;
+
+// Arrays für die LEDs
+CRGB ledsOben[256];
+CRGB ledsUnten[256];
+
+Joystick joystick(PIN_X, PIN_Y, PIN_BTN);
+
+// --- Snake Logik Variablen ---
+struct Point { int x, y; };
+Point snake[100]; // Maximale Länge der Schlange
+int snakeLength = 3;
+Point direction = {1, 0}; // Start-Richtung: Rechts
+Point food;
+unsigned long lastMoveTime = 0;
+int moveInterval = 200; // Geschwindigkeit (ms)
+bool gameOver = false;
+
+// Hilfsfunktion: Zeichnet auf dem 32x16 Feld (berücksichtigt deine Panel-Montage)
+void drawPixel(int x, int y, CRGB color) {
+  if (y < 8) { // Oberes Panel (Pin 26)
+    // Deine Logik für das obere Panel (32, -8)
+    int index = (7 - y) * MATRIX_WIDTH + x; 
+    ledsOben[index] = color;
+  } else { // Unteres Panel (Pin 25)
+    // Deine Logik für das untere Panel (-32, 8)
+    int localY = y - 8;
+    int index = localY * MATRIX_WIDTH + (31 - x);
+    ledsUnten[index] = color;
+  }
+}
+
+void spawnFood() {
+  food.x = random(0, 32);
+  food.y = random(0, 16);
+}
+
+void resetGame() {
+  snakeLength = 3;
+  for(int i=0; i<snakeLength; i++) {
+    snake[i] = {10 - i, 8};
+  }
+  direction = {1, 0};
+  spawnFood();
+  gameOver = false;
+}
+
+void setup() {
+  Serial.begin(115200);
+  FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben, 256);
+  FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten, 256);
+  FastLED.setBrightness(10);
+  resetGame();
+}
+
+void loop() {
+  if (gameOver) {
+    if (joystick.isPressed()) resetGame();
+    return;
+  }
+
+  // 1. Joystick Schwellenwert-Logik
+  int xVal = analogRead(PIN_X);
+  int yVal = analogRead(PIN_Y);
+
+  if (xVal < 1000 && direction.x == 0) direction = {-1, 0};      // Links
+  else if (xVal > 3000 && direction.x == 0) direction = {1, 0}; // Rechts
+  if (yVal < 1000 && direction.y == 0) direction = {0, -1};      // Oben
+  else if (yVal > 3000 && direction.y == 0) direction = {0, 1};  // Unten
+
+  // 2. Bewegung (Zeitgesteuert)
+  if (millis() - lastMoveTime > moveInterval) {
+    lastMoveTime = millis();
+
+    // Körper bewegen
+    for (int i = snakeLength - 1; i > 0; i--) {
+      snake[i] = snake[i - 1];
+    }
+
+    // Kopf bewegen
+    snake[0].x += direction.x;
+    snake[0].y += direction.y;
+
+    // Kollision Wand
+    if (snake[0].x < 0 || snake[0].x >= 32 || snake[0].y < 0 || snake[0].y >= 16) {
+      gameOver = true;
+    }
+
+    // Kollision Futter
+    if (snake[0].x == food.x && snake[0].y == food.y) {
+      if (snakeLength < 100) snakeLength++;
+      spawnFood();
+      if (moveInterval > 50) moveInterval -= 2; // Schneller werden
+    }
+
+    // Kollision mit sich selbst
+    for (int i = 1; i < snakeLength; i++) {
+      if (snake[0].x == snake[i].x && snake[0].y == snake[i].y) gameOver = true;
+    }
+
+    // 3. Zeichnen
+    FastLED.clear();
+    
+    // Futter zeichnen (Rot)
+    drawPixel(food.x, food.y, CRGB::Red);
+    
+    // Schlange zeichnen (Grün)
+    for (int i = 0; i < snakeLength; i++) {
+      drawPixel(snake[i].x, snake[i].y, i == 0 ? CRGB::White : CRGB::Green);
+    }
+    
+    FastLED.show();
+  }
+}

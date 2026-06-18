@@ -1,0 +1,156 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+
+// Hardware Configuration
+#define LED_PIN_OBEN 26
+#define LED_PIN_UNTEN 25
+#define COLOR_ORDER GRB
+#define CHIPSET WS2812B
+#define MATRIX_WIDTH 32
+#define MATRIX_HEIGHT 8
+#define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
+
+// WiFi & NTP Configuration
+const char *ssid = "Nothin";
+const char *password = "nothin099";
+
+// LED Matrix Objects
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+// Static text buffers (fixed size - no dynamic reallocation)
+static unsigned char datumBuffer[40]; // Fixed buffer for date
+static unsigned char zeitBuffer[40];  // Fixed buffer for time
+
+// Time tracking variables
+static uint32_t lastUpdate = 0;
+static uint8_t lastSecond = 255; // Initialize to invalid value
+
+void setup()
+{
+    Serial.begin(115200);
+    
+    // Initialize LED matrices
+    FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+    FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+    FastLED.setBrightness(15);
+    FastLED.clear(true);
+    
+    // Connect to WiFi
+    WiFi.begin(ssid, password);
+    while (WiFi.status() != WL_CONNECTED)
+    {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nWiFi connected");
+    
+    // Configure NTP
+    configTime(3600, 3600, "pool.ntp.org");
+    
+    // Initialize text displays
+    AnzeigeOben.SetFont(MatriseFontData);
+    AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 0, 0);
+    AnzeigeUnten.SetFont(MatriseFontData);
+    AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), AnzeigeUnten.FontHeight() + 1, 0, 0);
+    
+    // Set colors
+    AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0xff, 0xff);
+    AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff);
+    
+    // Initialize buffers with empty strings
+    datumBuffer[0] = '\x02'; // Scroll control character
+    memcpy(datumBuffer + 1, "    DD.MM.YYYY    ", 19);
+    datumBuffer[20] = '\0';
+    
+    zeitBuffer[0] = '\x02'; // Scroll control character
+    memcpy(zeitBuffer + 1, "    HH:MM:SS    ", 17);
+    zeitBuffer[18] = '\0';
+    
+    // Set initial text once
+    AnzeigeOben.SetText(datumBuffer, strlen((char*)datumBuffer));
+    AnzeigeUnten.SetText(zeitBuffer, strlen((char*)zeitBuffer));
+    
+    lastUpdate = millis();
+}
+
+void updateTimeDisplay(struct tm* timeinfo)
+{
+    // Only update buffer content, not the structure
+    // Format: \x02 + "    HH:MM:SS    " (fixed length)
+    sprintf((char*)zeitBuffer + 1, "    %02d:%02d:%02d    ",
+            timeinfo->tm_hour,
+            timeinfo->tm_min,
+            timeinfo->tm_sec);
+}
+
+void updateDateDisplay(struct tm* timeinfo)
+{
+    // Only update buffer content, not the structure
+    // Format: \x02 + "    DD.MM.YYYY    " (fixed length)
+    sprintf((char*)datumBuffer + 1, "    %02d.%02d.%04d    ",
+            timeinfo->tm_mday,
+            timeinfo->tm_mon + 1,
+            timeinfo->tm_year + 1900);
+}
+
+void loop()
+{
+    struct tm timeinfo;
+    static bool dateInitialized = false;
+    uint32_t currentMillis = millis();
+    
+    // Update display every 100ms (smooth scrolling) and time every second
+    if (currentMillis - lastUpdate >= 100)
+    {
+        lastUpdate = currentMillis;
+        
+        // Get current time
+        if (getLocalTime(&timeinfo))
+        {
+            // Check if second has changed
+            if (timeinfo.tm_sec != lastSecond)
+            {
+                lastSecond = timeinfo.tm_sec;
+                
+                // Update time buffer (every second)
+                updateTimeDisplay(&timeinfo);
+                
+                // Update date buffer only once per day or on first run
+                static int lastDay = -1;
+                if (!dateInitialized || timeinfo.tm_mday != lastDay)
+                {
+                    lastDay = timeinfo.tm_mday;
+                    updateDateDisplay(&timeinfo);
+                    
+                    // Re-set date text only when date changes (not every loop!)
+                    AnzeigeOben.SetText(datumBuffer, strlen((char*)datumBuffer));
+                    dateInitialized = true;
+                }
+            }
+        }
+        
+        // Update scrolling (this handles the animation without resetting)
+        AnzeigeOben.UpdateText();
+        AnzeigeUnten.UpdateText();
+        
+        // Show LEDs with minimal delay for stable transmission
+        FastLED.show();
+        
+        // Small delay to prevent overwhelming the ESP32
+        // This gives enough time for LED data transmission
+        delay(10);
+    }
+    else
+    {
+        // Small delay to prevent busy-waiting
+        delay(5);
+    }
+}

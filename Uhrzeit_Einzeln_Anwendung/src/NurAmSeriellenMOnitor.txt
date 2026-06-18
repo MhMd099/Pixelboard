@@ -1,0 +1,48 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+
+// WLAN Zugangsdaten - BITTE ANPASSEN
+const char* ssid     = "Nothin";
+const char* password = "nothin099";
+
+// NTP Server Einstellungen
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 3600;      // UTC + 1 Stunde (Winterzeit)
+const int   daylightOffset_sec = 3600; // +1 Stunde für Sommerzeit (insg. UTC+2)
+
+void printLocalTime() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    Serial.println("Fehler: Zeit konnte nicht empfangen werden");
+    return;
+  }
+  // Formatierte Ausgabe: HH:MM:SS
+  Serial.println(&timeinfo, "%A, %B %d %Y %H:%M:%S");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  // WLAN Verbindung starten
+  Serial.printf("Verbinde mit %s ", ssid);
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("\nWiFi verbunden!");
+  Serial.print("IP-Adresse: ");
+  Serial.println(WiFi.localIP());
+
+  // NTP Zeit-Synchronisierung initialisieren
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
+void loop() {
+  delay(1000);
+  printLocalTime();
+}

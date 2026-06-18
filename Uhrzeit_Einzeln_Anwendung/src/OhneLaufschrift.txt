@@ -1,0 +1,78 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+
+// Hardware-Konfiguration (basierend auf deinen Angaben)
+#define LED_PIN_OBEN   25  
+#define LED_PIN_UNTEN  26
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8
+#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
+
+// WLAN - Bitte wieder deine Daten eintragen
+const char* ssid     = "Nothin";
+const char* password = "nothin099";
+
+// NTP Einstellungen
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 3600;      
+const int   daylightOffset_sec = 3600; 
+
+// Matrix Definitionen (Kopfüber-Logik integriert)
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;   //plus und minus vertsauschen
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+void setup() {
+  Serial.begin(115200);
+
+  // FastLED Setup für beide Paneele
+  FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+  FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+  FastLED.setBrightness(15);
+  FastLED.clear(true);
+
+  // WiFi verbinden
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+
+  // Zeit holen
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+
+  // Text-Konfiguration
+  AnzeigeOben.SetFont(MatriseFontData);
+  AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 0, 0);
+  
+  AnzeigeUnten.SetFont(MatriseFontData);
+  AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), AnzeigeUnten.FontHeight() + 1, 0, 0);
+}
+
+void loop() {
+  struct tm timeinfo;
+  if(getLocalTime(&timeinfo)) {
+    char zeitBuffer[15];
+    char datumBuffer[15];
+
+    // Formatieren
+    strftime(zeitBuffer, sizeof(zeitBuffer), "%H:%M:%S", &timeinfo);
+    strftime(datumBuffer, sizeof(datumBuffer), "%d.%m.%y", &timeinfo);
+
+    // Auf die Paneele schreiben (ohne Effekt-Scrollen, damit es ruhig steht)
+    AnzeigeOben.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+    AnzeigeUnten.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+    
+    FastLED.clear();
+    AnzeigeOben.UpdateText();
+    AnzeigeUnten.UpdateText();
+    FastLED.show();
+  }
+  delay(1000); 
+}

@@ -1,0 +1,31 @@
+// --- Task A: Uhrzeit & Datum (Logik aus deinem Standalone) ---
+void taskA(void * pvParameters) {
+    struct tm timeinfo;
+
+    for(;;) {
+        // 1. Zeit abrufen
+        if (getLocalTime(&timeinfo)) {
+            // Steuerzeichen \x02 und Leerzeichen exakt übernommen
+            sprintf(datumBuffer, "\x02       %02d.%02d.%04d", 
+                    timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+            
+            sprintf(zeitBuffer, "\x02       %02d:%02d:%02d  ", 
+                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        }
+
+        // 2. Scroll-Logik (SetText nur bei Ende des alten Durchlaufs)
+        if (AnzeigeOben.UpdateText() == -1) {
+            AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+        }
+
+        if (AnzeigeUnten.UpdateText() == -1) {
+            AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+        }
+
+        // 3. Anzeige rendern
+        FastLED.show();
+
+        // 30ms Delay für die Scrollgeschwindigkeit (entspricht deinem Standalone delay(30))
+        vTaskDelay(30 / portTICK_PERIOD_MS); 
+    }
+}

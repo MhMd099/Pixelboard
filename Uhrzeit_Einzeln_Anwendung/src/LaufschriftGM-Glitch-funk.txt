@@ -1,0 +1,90 @@
+#include <Arduino.h>
+#include <WiFi.h>
+#include "time.h"
+#include <FastLED.h>
+#include <LEDMatrix.h>
+#include <LEDText.h>
+#include <FontMatrise.h>
+
+#define LED_PIN_OBEN   26
+#define LED_PIN_UNTEN  25
+#define COLOR_ORDER    GRB
+#define CHIPSET        WS2812B
+#define MATRIX_WIDTH   32
+#define MATRIX_HEIGHT  8
+#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
+
+const char* ssid     = "Nothin";
+const char* password = "nothin099";
+
+cLEDMatrix<MATRIX_WIDTH, -MATRIX_HEIGHT, MATRIX_TYPE> ledsOben;
+cLEDMatrix<-MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> ledsUnten;
+
+cLEDText AnzeigeOben;
+cLEDText AnzeigeUnten;
+
+// WICHTIG: Die Buffer müssen global oder statisch sein
+char datumBuffer[60];
+char zeitBuffer[60];
+
+void setup() {
+  Serial.begin(115200);
+  FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
+  FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+  FastLED.setBrightness(15);
+  FastLED.clear(true);
+
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  configTime(3600, 3600, "pool.ntp.org");
+
+  AnzeigeOben.SetFont(MatriseFontData);
+  AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 0, 0);
+  
+  AnzeigeUnten.SetFont(MatriseFontData);
+  AnzeigeUnten.Init(&ledsUnten, ledsUnten.Width(), AnzeigeUnten.FontHeight() + 1, 0, 0);
+
+  // Initialer Text-Start
+  AnzeigeOben.SetText((unsigned char *)"Warte auf Zeit...", 17);
+  AnzeigeUnten.SetText((unsigned char *)"Warte auf Zeit...", 17);
+}
+
+void loop() {
+  struct tm timeinfo;
+  static int letzteSekunde = -1;
+
+  if (getLocalTime(&timeinfo)) {
+    // 1. Synchroner Neustart der Scroll-Animation
+    if (AnzeigeOben.UpdateText() == -1 || AnzeigeUnten.UpdateText() == -1) {
+      // Datum setzen (mit eurer Leerzeichen-Lösung)
+      sprintf(datumBuffer, "\x02       %02d.%02d.%04d", 
+              timeinfo.tm_mday, timeinfo.tm_mon + 1, timeinfo.tm_year + 1900);
+      
+      // Zeit setzen
+      sprintf(zeitBuffer, "\x02        %02d:%02d:%02d", 
+              timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+      AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
+      AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
+    }
+
+    // 2. LIVE-UPDATE der Sekunden im Buffer
+    // Wenn sich die Sekunde ändert, schreiben wir sie direkt in den laufenden zeitBuffer
+    if (timeinfo.tm_sec != letzteSekunde) {
+      letzteSekunde = timeinfo.tm_sec;
+
+      // Wir suchen die Position der Sekunden im zeitBuffer. 
+      // Da der Anfang "\x02        " (1 Steuerzeichen + 8 Leerzeichen) ist, 
+      // beginnt die Zeit ab Index 9.
+      // HH:MM:SS -> SS beginnt 6 Zeichen nach dem Start der Zeit.
+      // Also Index 9 + 6 = 15.
+      
+      // Wir überschreiben nur die Zeit-Zahlen im Buffer, OHNE SetText aufzurufen!
+      snprintf(zeitBuffer + 9, 9, "%02d:%02d:%02d", 
+               timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    }
+  }
+
+  FastLED.show();
+  delay(50); // Etwas schnelleres Scrollen für flüssiges Ticken
+}
