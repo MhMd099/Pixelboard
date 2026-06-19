@@ -214,10 +214,20 @@ void taskE(void * pv) { for(;;) { Serial.println("E..."); vTaskDelay(1000/portTI
 // ==========================================
 void setup() {
     Serial.begin(115200);
-    
+  // 1. Speichersystem mounten & Config laden
+    initLittleFS();
+// Lade Default-Daten beim Start, z.B. für einen leeren User
+loadConfigForUser("");
     // WiFi & NTP
     WiFi.begin(ssid, password);
     while (WiFi.status() != WL_CONNECTED) { delay(500); }
+  Serial.print("\nWLAN verbunden. IP: ");
+Serial.println(WiFi.localIP());
+
+    // 2. Webserver initialisieren und als Task starten
+    setupWebServer();
+    TaskHandle_t handleWeb = NULL;
+    xTaskCreate(taskWebServerHandler, "TaskWeb", 4096, NULL, 1, &handleWeb);
     configTime(3600, 3600, "pool.ntp.org");
     Serial.print("Warte auf Zeit-Sync...");
     struct tm timeinfo;
