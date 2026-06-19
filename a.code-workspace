@@ -20,6 +20,18 @@
 		},
 		{
 			"path": "Wetter_FreeRTOS"
+		},
+		{
+			"name": "Wlan-Manager_LittleFS",
+			"path": "../../../../../../../Documents/PlatformIO/Projects/Wlan-Manager_LittleFS"
+		},
+		{
+			"name": "Wlan-Manager_LittleFS",
+			"path": "Wlan-Manager_LittleFS"
+		},
+		{
+			"name": "IP-Standortermittlung",
+			"path": "IP-Standortermittlung"
 		}
 	]
 }

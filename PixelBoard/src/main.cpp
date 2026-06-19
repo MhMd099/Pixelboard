@@ -14,6 +14,7 @@
 #include "TaskWetter.h"
 #include "TaskDHT.h"
 #include "Config.h"
+#include "TaskSnake.h"
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
 // ==========================================
@@ -207,49 +208,6 @@ void stopAlleTasks() { zurueckZumMenue(); }
 
 void taskE(void * pv) { for(;;) { Serial.println("E..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
 
-// --- TASK C: SNAKE (KORRIGIERT) ---
-void taskC(void * pvParameters) {
-    Point snake[100]; int snakeLength = 3; Point dir = {1, 0}; Point food;
-    int moveInterval = 150; unsigned long lastMoveTime = 0;
-    auto spawnFood = [&]() { food.x = random(1, WIDTH - 1); food.y = random(1, HEIGHT_TOTAL - 1); };
-    auto resetGame = [&]() { snakeLength = 3; snake[0] = {15, 8}; snake[1] = {14, 8}; snake[2] = {13, 8}; dir = {1, 0}; moveInterval = 150; spawnFood(); };
-    resetGame();
-    
-    for(;;) {
-        // HIER: Achsen-Mapping direkt beim Auslesen tauschen
-        // User-Wunsch: Y(oben)=Rechts(+X), Y(unten)=Links(-X), X(rechts)=Oben(+Y), X(links)=Unten(-Y)
-        int rawX = analogRead(PIN_X); 
-        int rawY = analogRead(PIN_Y);
-        
-        // Logik: X-Achse der Schlange reagiert nun auf physikalisches Y
-        // Y-Achse der Schlange reagiert nun auf physikalisches X
-        
-        // Logik: Vorzeichen für Snake-Richtung umgekehrt
-        if (rawY > 2800 && dir.x == 0) { dir.x = 1; dir.y = 0; }      // War <400, jetzt >3700
-        else if (rawY < 400 && dir.x == 0) { dir.x = -1; dir.y = 0; } // War >3700, jetzt <400
-        else if (rawX < 400 && dir.y == 0) { dir.y = 1; dir.x = 0; }  // War >3700, jetzt <400
-        else if (rawX > 2800 && dir.y == 0) { dir.y = -1; dir.x = 0; } // War <400, jetzt >3700
-
-        if (millis() - lastMoveTime > moveInterval) {
-            lastMoveTime = millis();
-            int nextX = snake[0].x + dir.x; int nextY = snake[0].y + dir.y;
-            bool dead = (nextX < 0 || nextX >= WIDTH || nextY < 0 || nextY >= HEIGHT_TOTAL);
-            for (int i = 0; i < snakeLength; i++) if (nextX == snake[i].x && nextY == snake[i].y) dead = true;
-            if (dead) { resetGame(); vTaskDelay(1000 / portTICK_PERIOD_MS); }
-            else {
-                if (nextX == food.x && nextY == food.y) { if (snakeLength < 100) snakeLength++; spawnFood(); if (moveInterval > 70) moveInterval -= 2; }
-                for (int i = snakeLength - 1; i > 0; i--) snake[i] = snake[i - 1];
-                snake[0] = {nextX, nextY};
-            }
-            FastLED.clear();
-            for(int x=0; x<WIDTH; x++) { setPixel(x, 0, CRGB(2, 2, 10)); setPixel(x, 15, CRGB(2, 2, 10)); }
-            setPixel(food.x, food.y, CRGB::Red);
-            for (int i = 0; i < snakeLength; i++) setPixel(snake[i].x, snake[i].y, (i == 0) ? CRGB::White : CRGB::Green);
-            FastLED.show();
-        }
-        vTaskDelay(10 / portTICK_PERIOD_MS);
-    }
-}
 
 // ==========================================
 // 6. SETUP & LOOP
@@ -285,8 +243,8 @@ void setup() {
 
     // Alle Tasks in FreeRTOS einklinken
     xTaskCreate(taskUhr, "TaskA", 4096, NULL, 1, &handleA);
-    xTaskCreate(taskWetter, "TaskB", 2048, NULL, 1, &handleB);
-    xTaskCreate(taskC, "TaskC", 4096, NULL, 1, &handleC);          // Snake Task (Index 2)
+    xTaskCreate(taskWetter, "TaskB", 4096, NULL, 1, &handleB);
+    xTaskCreate(taskSnakeHandler, "TaskC", 4096, NULL, 1, &handleC);          // Snake Task (Index 2)
     xTaskCreate(taskDataHandler, "TaskDHT", 8192, NULL, 1, &handleData); // DHT Task (Index 3)
     xTaskCreate(taskE, "TaskE", 2048, NULL, 1, &handleE);
 
