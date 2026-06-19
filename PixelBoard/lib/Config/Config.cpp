@@ -169,3 +169,110 @@ void taskWebServerHandler(void * pvParameters) {
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
+void saveHighScore(String user, int score) {
+    JsonDocument doc;
+    // 1. Bestehende Datei einlesen
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    // 2. Sicherstellen, dass das User-Objekt existiert
+    if (!doc[user].is<JsonObject>()) {
+        doc[user] = JsonObject();
+    }
+
+    // 3. Nur speichern, wenn der neue Score höher ist!
+    int currentHigh = doc[user]["highscore"] | 0; // | 0 ist der Standardwert, falls noch kein Score existiert
+    if (score > currentHigh) {
+        doc[user]["highscore"] = score;
+        
+        // Datei speichern
+        File file = LittleFS.open("/config.json", "w");
+        serializeJson(doc, file);
+        file.close();
+        Serial.println("Neuer Highscore gespeichert: " + String(score));
+    } else {
+        Serial.println("Score war nicht hoch genug. Aktueller Highscore: " + String(currentHigh));
+    }
+}
+
+void printTopThree() {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return;
+    deserializeJson(doc, file);
+    file.close();
+
+    // Wir sammeln alle User und ihre Scores
+    struct Player { String name; int score; };
+    Player scores[10]; // Platz für 10 User
+    int count = 0;
+
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (count < 10) {
+            scores[count].name = kv.key().c_str();
+            scores[count].score = kv.value()["highscore"] | 0;
+            count++;
+        }
+    }
+
+    // Ganz einfacher Sortier-Algorithmus (Bubble Sort)
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
+            if (scores[j].score < scores[j + 1].score) {
+                Player temp = scores[j];
+                scores[j] = scores[j + 1];
+                scores[j + 1] = temp;
+            }
+        }
+    }
+
+    // Ausgabe
+    Serial.println("--- TOP 3 HIGHSCORES ---");
+    for (int i = 0; i < min(count, 3); i++) {
+        Serial.printf("%d. %s: %d Punkte\n", i + 1, scores[i].name.c_str(), scores[i].score);
+    }
+    Serial.println("------------------------");
+}
+
+int getHighScore(String user) {
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        JsonDocument doc;
+        deserializeJson(doc, file);
+        file.close();
+        if (doc[user].containsKey("highscore")) {
+            return doc[user]["highscore"].as<int>();
+        }
+    }
+    return 0; // Standard, wenn noch keiner existiert
+}
+void getTopScores(PlayerData* list, int& count) {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return;
+    deserializeJson(doc, file);
+    file.close();
+
+    count = 0;
+    // Extrahiere alle User
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (count < 10) {
+            list[count].name = kv.key().c_str();
+            list[count].score = kv.value()["highscore"] | 0;
+            count++;
+        }
+    }
+    // Einfacher Bubble-Sort nach Score
+    for (int i = 0; i < count - 1; i++) {
+        for (int j = 0; j < count - i - 1; j++) {
+            if (list[j].score < list[j + 1].score) {
+                PlayerData temp = list[j];
+                list[j] = list[j + 1];
+                list[j + 1] = temp;
+            }
+        }
+    }
+}

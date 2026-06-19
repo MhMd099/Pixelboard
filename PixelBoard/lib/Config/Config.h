@@ -27,5 +27,9 @@ void loadConfigForUser(String user);
 void saveConfig(String user, String city);
 void setupWebServer();
 void taskWebServerHandler(void * pvParameters);
-
+void saveHighScore(String user, int score);
+int getHighScore(String user);
+void printTopThree();
+struct PlayerData { String name; int score; };
+void getTopScores(PlayerData* list, int& count);
 #endif
