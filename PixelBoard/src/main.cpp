@@ -107,117 +107,76 @@ void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
 void printMenu() {
     FastLED.clear();
 
+    // Zeitbasis für alle Animationen abrufen
+    unsigned long jetzt = millis();
+
     // ==========================================
-    // ZUSTAND 0: SYSTEMSEITE (PIXELBOARD MENÜ)
+    // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
     // ==========================================
     if (fokusModus == 0) {
-        // Bitmaps für die Buchstaben (5x7 Matrix)
-        // 1 = Pixel gesetzt (Text), 0 = Leerzeichen
         static const uint8_t glyphs[6][7] = {
             {0x1F, 0x11, 0x11, 0x1F, 0x10, 0x10, 0x10}, // P
             {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}, // I
             {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, // X
             {0x1F, 0x10, 0x10, 0x1F, 0x10, 0x10, 0x1F}, // E
             {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, // L
-            {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M (Stellvertretend für MENU-Start)
+            {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M
         };
 
-        // Definition der globalen Kette (Pixel-Koordinaten im Zick-Zack-Verlauf)
-        // Jedes Element speichert die exakte X- und Y-Position auf dem Panel
         struct Coord { int8_t x; int8_t y; };
-        
-        // Wir erstellen eine feste Mapping-Tabelle für den Signalpfad des Regenbogens
-        // P (unten nach oben), I (oben nach unten), X (unten nach oben), E (oben nach unten), L (unten nach oben)
-        static const int MAX_CHAIN_PIXELS = 150; 
-        static Coord path[MAX_CHAIN_PIXELS];
+        static Coord path[150];
         static int pathLength = 0;
         static bool pathInitialized = false;
 
         if (!pathInitialized) {
             int pIdx = 0;
-            
-            // 1. Wort "PIXEL" (Obere Zeile, Start bei Y=0, X verschoben um Zentrierung)
             int xOffsets[5] = {2, 8, 14, 20, 26}; 
-            
             for (char b = 0; b < 5; b++) {
                 int xOff = xOffsets[b];
-                bool upward = (b % 2 == 0); // P=hoch, I=runter, X=hoch, E=runter, L=hoch
-                
+                bool upward = (b % 2 == 0);
                 if (upward) {
                     for (int y = 6; y >= 0; y--) {
-                        for (int x = 0; x < 5; x++) {
-                            if ((glyphs[b][y] >> (4 - x)) & 1) {
-                                path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
-                            }
-                        }
+                        for (int x = 0; x < 5; x++) if ((glyphs[b][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
                     }
                 } else {
                     for (int y = 0; y <= 6; y++) {
-                        for (int x = 0; x < 5; x++) {
-                            if ((glyphs[b][y] >> (4 - x)) & 1) {
-                                path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
-                            }
-                        }
+                        for (int x = 0; x < 5; x++) if ((glyphs[b][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
                     }
                 }
             }
-
-            // 2. Wort "MENU" (Untere Zeile, Start bei Y=9, vereinfachter Übergang)
-            // Hier wird das Signal nahtlos in die untere Panel-Hälfte weitergeleitet
             int xOffsetsUnten[4] = {4, 10, 16, 22};
-            // Dynamischer Kantenverlauf für das M
             for (int y = 6; y >= 0; y--) {
-                for (int x = 0; x < 5; x++) {
-                    if ((glyphs[5][y] >> (4 - x)) & 1) {
-                        path[pIdx++] = { (int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9) };
-                    }
-                }
+                for (int x = 0; x < 5; x++) if ((glyphs[5][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9) };
             }
-            // Ergänzung für E, N, U (Standard-Abfolge im Speicher)
             for (int y = 0; y <= 6; y++) {
-                for (int x = 0; x < 5; x++) {
-                    if ((glyphs[3][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9) };
-                }
+                for (int x = 0; x < 5; x++) if ((glyphs[3][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9) };
             }
-            // N-Generierung direkt auf Hardware-Ebene
             for (int y = 6; y >= 0; y--) {
-                for (int x = 0; x < 5; x++) {
-                    if (x==0 || x==4 || x==y-1) path[pIdx++] = { (int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9) };
-                }
+                for (int x = 0; x < 5; x++) if (x==0 || x==4 || x==y-1) path[pIdx++] = { (int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9) };
             }
-            // U-Generierung direkt auf Hardware-Ebene
             for (int y = 0; y <= 6; y++) {
-                for (int x = 0; x < 5; x++) {
-                    if (x==0 || x==4 || y==6) path[pIdx++] = { (int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9) };
-                }
+                for (int x = 0; x < 5; x++) if (x==0 || x==4 || y==6) path[pIdx++] = { (int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9) };
             }
-
             pathLength = pIdx;
             pathInitialized = true;
         }
 
-        // Kontinuierliche Phasenverschiebung des Regenbogens (CHSV-Farbraum)
-        static uint8_t startHue = 0;
-        startHue += 4; // Geschwindigkeit des Farbwechsels (Erhöhen für schnellere Wellen)
-
-        // Zeichne den gesamten berechneten Pfad mit fortlaufender Farb-Zuweisung
+        uint8_t startHue = jetzt / 3; 
         uint8_t currentHue = startHue;
         for (int i = 0; i < pathLength; i++) {
-            // Jedes Pixel auf dem Pfad erhält einen leicht versetzten Farbwert
             setPixel(path[i].x, path[i].y, CHSV(currentHue, 255, 255));
-            currentHue += 5; // Dichte des Regenbogens (Abstand der Farbabstufungen)
+            currentHue += 5;
         }
-
         FastLED.show();
         return;
     }
 
     // ==========================================
-    // ZUSTÄNDE 1-5: SYMBOLE (32x16)
+    // ZUSTÄNDE 1-5: ANIMIERTE SYMBOLE
     // ==========================================
     switch (fokusModus) {
         
-        case 1: { // TASK 0: KLASSISCHE UHR
+        case 1: { // TASK 0: UHR (TICKT)
             int cx = 16, cy = 8;
             for (int x = 0; x < 32; x++) {
                 for (int y = 0; y < 16; y++) {
@@ -227,12 +186,21 @@ void printMenu() {
                 }
             }
             setPixel(16, 8, CRGB::Red);
-            setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); 
-            setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); 
+            
+            // Jede Sekunde (1000ms) wechselt der Sekundenzeiger die Richtung (Tick-Tack)
+            bool tick = (jetzt / 1000) % 2 == 0;
+            if (tick) {
+                setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); // Zeiger oben
+                setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); // Zeiger rechts
+            } else {
+                setPixel(17, 7, CRGB::Orange); setPixel(18, 6, CRGB::Orange); // Zeiger schräg oben rechts
+                setPixel(16, 9, CRGB::Yellow); setPixel(16, 10, CRGB::Yellow); // Zeiger unten
+            }
             break;
         }
 
-        case 2: { // TASK 1: WETTER (SONNE & WOLKE)
+        case 2: { // TASK 1: WETTER (WOLKE BEWEGT SICH NACH LINKS/RECHTS)
+            // Sonne bleibt statisch im Hintergrund
             int sx = 10, sy = 6;
             for (int x = 5; x <= 15; x++) {
                 for (int y = 1; y <= 11; y++) {
@@ -242,81 +210,113 @@ void printMenu() {
             setPixel(10, 1, CRGB::Orange); setPixel(10, 11, CRGB::Orange);
             setPixel(5, 6, CRGB::Orange);  setPixel(15, 6, CRGB::Orange);
 
-            for(int x = 12; x <= 28; x++) setPixel(x, 12, CRGB::White);
-            auto drawCloudBlob = [](int cx, int cy, int r) {
-                for (int x = cx-r; x <= cx+r; x++) {
+            // Dynamischer X-Versatz für die Wolke über eine Sinus-Welle (-2 bis +2 Pixel)
+            int wX = (sin(jetzt / 400.0) * 2.0);
+
+            for(int x = 12 + wX; x <= 28 + wX; x++) if(x>=0 && x<32) setPixel(x, 12, CRGB::White);
+            auto drawCloudBlobAnim = [wX](int cx, int cy, int r) {
+                int dynCx = cx + wX;
+                for (int x = dynCx-r; x <= dynCx+r; x++) {
                     for (int y = cy-r; y <= cy+r; y++) {
-                        if ((x-cx)*(x-cx) + (y-cy)*(y-cy) <= r*r && x >= 0 && x < 32 && y >= 0 && y < 16) {
+                        if ((x-dynCx)*(x-dynCx) + (y-cy)*(y-cy) <= r*r && x >= 0 && x < 32 && y >= 0 && y < 16) {
                             setPixel(x, y, CRGB::White);
                         }
                     }
                 }
             };
-            drawCloudBlob(16, 9, 3);
-            drawCloudBlob(21, 7, 4);
-            drawCloudBlob(25, 10, 3);
+            drawCloudBlobAnim(16, 9, 3);
+            drawCloudBlobAnim(21, 7, 4);
+            drawCloudBlobAnim(25, 10, 3);
             break;
         }
 
-        case 3: { // TASK 2: 2-PIXEL BREITE SNAKE & APFEL
+        case 3: { // TASK 2: SNAKE BEWEGT SICH RICHTUNG APFEL
             CRGB sColor = CRGB::Green;
-            for(int x = 2; x <= 14; x++) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); }   
-            for(int y = 5; y <= 9; y++)  { setPixel(13, y, sColor); setPixel(14, y, sColor); } 
-            for(int x = 6; x <= 14; x++) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); }  
-            for(int y = 11; y <= 13; y++) { setPixel(6, y, sColor); setPixel(7, y, sColor); }   
-            for(int x = 6; x <= 18; x++) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } 
-            
-            setPixel(2, 3, CRGB::DarkGreen);
-            setPixel(3, 2, CRGB::White); 
+            // Der X-Versatz lässt die Schlange periodisch 0 bis 3 Pixel nach rechts kriechen
+            int sX = (jetzt / 150) % 4; 
 
-            int ax = 24, ay = 11;
+            for(int x = 2 + sX; x <= 14 + sX; x++) { if(x<32) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); } }   
+            for(int y = 5; y <= 9; y++)  { if(13+sX<32) setPixel(13+sX, y, sColor); if(14+sX<32) setPixel(14+sX, y, sColor); } 
+            for(int x = 6 + sX; x <= 14 + sX; x++) { if(x<32) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); } }  
+            for(int y = 11; y <= 13; y++) { if(6+sX<32) setPixel(6+sX, y, sColor); if(7+sX<32) setPixel(7+sX, y, sColor); }   
+            for(int x = 6 + sX; x <= 18 + sX; x++) { if(x<32) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } } 
+            
+            if(2+sX<32) setPixel(2+sX, 3, CRGB::DarkGreen);
+            if(3+sX<32) setPixel(3+sX, 2, CRGB::White); 
+
+            // Apfel bleibt fest verankert stehen, Schlange kriecht darauf zu
+            int ax = 26, ay = 11;
             setPixel(ax, ay, CRGB::Red);     setPixel(ax+1, ay, CRGB::Red);
             setPixel(ax, ay+1, CRGB::Red);   setPixel(ax+1, ay+1, CRGB::Red);
             setPixel(ax+1, ay-1, CRGB::Lime); 
             break;
         }
 
-        case 4: { // TASK 3: DHT SCHRIFTZUG (NUR CYAN)
-            auto drawLetterCyan = [](int xOff, int type) {
-                CRGB c = CRGB::Cyan;
+        case 4: { // TASK 3: DHT SCHRIFTZUG (BLAU-IN-BLAU VERLAUF)
+            auto drawLetterCyanAnim = [jetzt](int xOff, int type) {
                 if (type == 0) { // D
-                    for(int y=4; y<=12; y++) { setPixel(xOff, y, c); setPixel(xOff+1, y, c); }
-                    for(int x=xOff+2; x<=xOff+4; x++) { setPixel(x, 4, c); setPixel(x, 12, c); }
-                    for(int y=5; y<=11; y++) { setPixel(xOff+4, y, c); }
+                    for(int y=4; y<=12; y++) {
+                        // Jedes Pixel berechnet seine Farbe basierend auf Y und Zeit
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20); 
+                        setPixel(xOff, y, CHSV(hue, 255, 255)); setPixel(xOff+1, y, CHSV(hue, 255, 255));
+                    }
+                    for(int x=xOff+2; x<=xOff+4; x++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
+                        setPixel(x, 4, CHSV(hue, 255, 255)); setPixel(x, 12, CHSV(hue, 255, 255));
+                    }
+                    for(int y=5; y<=11; y++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
+                        setPixel(xOff+4, y, CHSV(hue, 255, 255));
+                    }
                 }
                 else if (type == 1) { // H
-                    for(int y=4; y<=12; y++) { setPixel(xOff, y, c); setPixel(xOff+1, y, c); setPixel(xOff+4, y, c); setPixel(xOff+5, y, c); }
-                    for(int x=xOff+2; x<=xOff+3; x++) { setPixel(x, 8, c); }
+                    for(int y=4; y<=12; y++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
+                        setPixel(xOff, y, CHSV(hue, 255, 255)); setPixel(xOff+1, y, CHSV(hue, 255, 255));
+                        setPixel(xOff+4, y, CHSV(hue, 255, 255)); setPixel(xOff+5, y, CHSV(hue, 255, 255));
+                    }
+                    for(int x=xOff+2; x<=xOff+3; x++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
+                        setPixel(x, 8, CHSV(hue, 255, 255));
+                    }
                 }
                 else if (type == 2) { // T
-                    for(int x=xOff; x<=xOff+6; x++) { setPixel(x, 4, c); setPixel(x, 5, c); }
-                    for(int y=6; y<=12; y++) { setPixel(xOff+2, y, c); setPixel(xOff+3, y, c); }
+                    for(int x=xOff; x<=xOff+6; x++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
+                        setPixel(x, 4, CHSV(hue, 255, 255)); setPixel(x, 5, CHSV(hue, 255, 255));
+                    }
+                    for(int y=6; y<=12; y++) {
+                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
+                        setPixel(xOff+2, y, CHSV(hue, 255, 255)); setPixel(xOff+3, y, CHSV(hue, 255, 255));
+                    }
                 }
             };
-            drawLetterCyan(3, 0);  
-            drawLetterCyan(12, 1); 
-            drawLetterCyan(21, 2); 
+            drawLetterCyanAnim(3, 0);  
+            drawLetterCyanAnim(12, 1); 
+            drawLetterCyanAnim(21, 2); 
             break;
         }
 
-        case 5: { // TASK 4: GEZENTRIERTE DOPPEL-NOTE
+        case 5: { // TASK 4: GEZENTRIERTE SECHZEHNTELNOTE (HÜPFT HOCH UND RUNTER)
             CRGB nColor = CRGB::Magenta;
-            setPixel(11, 12, nColor); setPixel(12, 12, nColor);
-            setPixel(10, 13, nColor); setPixel(11, 13, nColor); setPixel(12, 13, nColor);
-            setPixel(11, 14, nColor); setPixel(12, 14, nColor);
+            // Vertikaler Versatz simuliert das Hüpfen im Rhythmus (0 bis -2 Pixel nach oben)
+            int bounceY = (int)(abs(sin(jetzt / 150.0)) * -2.5);
 
-            // Rechter Kopf
-            setPixel(18, 12, nColor); setPixel(19, 12, nColor);
-            setPixel(17, 13, nColor); setPixel(18, 13, nColor); setPixel(19, 13, nColor);
-            setPixel(18, 14, nColor); setPixel(19, 14, nColor);
+            setPixel(11, 12+bounceY, nColor); setPixel(12, 12+bounceY, nColor);
+            setPixel(10, 13+bounceY, nColor); setPixel(11, 13+bounceY, nColor); setPixel(12, 13+bounceY, nColor);
+            setPixel(11, 14+bounceY, nColor); setPixel(12, 14+bounceY, nColor);
+
+            setPixel(18, 12+bounceY, nColor); setPixel(19, 12+bounceY, nColor);
+            setPixel(17, 13+bounceY, nColor); setPixel(18, 13+bounceY, nColor); setPixel(19, 13+bounceY, nColor);
+            setPixel(18, 14+bounceY, nColor); setPixel(19, 14+bounceY, nColor);
 
             for(int y = 3; y <= 12; y++) {
-                setPixel(12, y, nColor); 
-                setPixel(19, y, nColor); 
+                setPixel(12, y+bounceY, nColor); 
+                setPixel(19, y+bounceY, nColor); 
             }
 
-            for(int x = 12; x <= 19; x++) setPixel(x, 3, nColor);
-            for(int x = 12; x <= 19; x++) setPixel(x, 5, nColor);
+            for(int x = 12; x <= 19; x++) setPixel(x, 3+bounceY, nColor);
+            for(int x = 12; x <= 19; x++) setPixel(x, 5+bounceY, nColor);
             break;
         }
     }
@@ -536,24 +536,16 @@ void loop() {
 
         if (!navigationsSperre) {
             if (xPerc <= TRIG_NEG) { 
-                // Nach rechts schieben -> Seite weiter
                 int naechsterModus = fokusModus + 1;
-                if (naechsterModus > 5) {
-                    naechsterModus = 1; 
-                }
+                if (naechsterModus > 5) naechsterModus = 1; 
                 fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
                 printMenu();
             } else if (xPerc >= TRIG_POS) { 
-                // Nach links schieben -> Seite zurück
                 int naechsterModus = fokusModus - 1;
-                if (fokusModus == 0) {
-                    naechsterModus = 5;
-                }
-                else if (naechsterModus < 1) {
-                    naechsterModus = 5; 
-                }
+                if (fokusModus == 0) naechsterModus = 5;
+                else if (naechsterModus < 1) naechsterModus = 5; 
                 fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
@@ -567,27 +559,19 @@ void loop() {
             }
         }
 
-        // Automatischer Refresh: Aktualisiert die Regenbogen-Animation 
-        // kontinuierlich im 10ms-Takt, wenn man auf der Startseite steht
-        if (fokusModus == 0) {
-            printMenu(); 
-        }
+        // KORREKTUR: printMenu() wird jetzt immer aufgerufen, damit alle Symbole animieren
+        printMenu(); 
     } 
     // ========== IN LAUFENDER TASK ==========
     else {
-        // EVENT 1: Double-Click in Task (Joystick 2) -> Schaltet ab und kehrt zur Startseite (0) zurück
         if (clicks.doppelklick > 0) {
             zurueckZumMenue();
             return;
         }
 
-        // EVENT 2: Long-Click in Task (Joystick 2) -> Wechselt direkt zum nächsten Task weiter
         if (clicks.langKlick > 0) {
             int nextTask = (aktiverTask + 1) % 5;
-            
-            // Synchronisation: Setzt das passende Farb-Symbol für den nächsten Task
             fokusModus = nextTask + 1; 
-            
             wechsleZuTask(nextTask);
             return;
         }
