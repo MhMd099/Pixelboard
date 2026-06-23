@@ -107,57 +107,139 @@ void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
 void printMenu() {
     FastLED.clear();
 
+    // ==========================================
     // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
+    // ==========================================
     if (fokusModus == 0) {
         AnzeigeOben.SetText((unsigned char*)"PIXEL", 5);
-        AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x9B, 0x30, 0xFF); // Purple
-        AnzeigeOben.UpdateText(); // Korrigiert von Update() zu UpdateText()
+        AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x9B, 0x30, 0xFF); 
+        AnzeigeOben.UpdateText();
 
         AnzeigeUnten.SetText((unsigned char*)"MENU", 4);
-        AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xFF, 0xFF); // Cyan
-        AnzeigeUnten.UpdateText(); // Korrigiert von Update() zu UpdateText()
+        AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xFF, 0xFF); 
+        AnzeigeUnten.UpdateText();
         
         FastLED.show();
         return;
     }
 
-    // ZUSTÄNDE 1-5: DIE EINZELNEN TASK-SEITEN
-    int xOff = 14; 
-    int yOff = 5;
-
+    // ==========================================
+    // ZUSTÄNDE 1-5: SYMBOLE AUF GANZE MATRIX (32x16)
+    // ==========================================
     switch (fokusModus) {
-        case 1: // TASK 0: Uhr (Gehäuse Purple, Zeiger Cyan)
-            for(int x=0; x<3; x++) { setPixel(xOff+x, yOff, CRGB::Purple); setPixel(xOff+x, yOff+4, CRGB::Purple); }
-            setPixel(xOff, yOff+1, CRGB::Purple); setPixel(xOff+2, yOff+1, CRGB::Purple);
-            setPixel(xOff, yOff+2, CRGB::Purple); setPixel(xOff+2, yOff+2, CRGB::Purple);
-            setPixel(xOff, yOff+3, CRGB::Purple); setPixel(xOff+2, yOff+3, CRGB::Purple);
-            setPixel(xOff+1, yOff+2, CRGB::Cyan); setPixel(xOff+1, yOff+1, CRGB::Cyan);
+        
+        case 1: { // TASK 0: KLASSISCHE UHR
+            int cx = 16, cy = 8;
+            for (int x = 0; x < 32; x++) {
+                for (int y = 0; y < 16; y++) {
+                    int dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                    if (dist >= 40 && dist <= 56) setPixel(x, y, CRGB::White); 
+                    else if (dist < 40) setPixel(x, y, CRGB::Navy);            
+                }
+            }
+            setPixel(16, 8, CRGB::Red);
+            setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); 
+            setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); 
             break;
+        }
 
-        case 2: // TASK 1: Wetter (Wolke Weiß, Sonne Gelb)
-            setPixel(xOff+1, yOff, CRGB::Yellow); 
-            setPixel(xOff, yOff+2, CRGB::White); setPixel(xOff+1, yOff+1, CRGB::White); setPixel(xOff+2, yOff+2, CRGB::White);
-            setPixel(xOff, yOff+3, CRGB::White); setPixel(xOff+1, yOff+3, CRGB::White); setPixel(xOff+2, yOff+3, CRGB::White);
-            setPixel(xOff+1, yOff+4, CRGB::White);
-            break;
+        case 2: { // TASK 1: WETTER (SONNE & WOLKE)
+            int sx = 10, sy = 6;
+            for (int x = 5; x <= 15; x++) {
+                for (int y = 1; y <= 11; y++) {
+                    if ((x-sx)*(x-sx) + (y-sy)*(y-sy) < 16) setPixel(x, y, CRGB::Yellow);
+                }
+            }
+            setPixel(10, 1, CRGB::Orange); setPixel(10, 11, CRGB::Orange);
+            setPixel(5, 6, CRGB::Orange);  setPixel(15, 6, CRGB::Orange);
 
-        case 3: // TASK 2: Snake (Grüne Schlange, Roter Apfel)
-            setPixel(xOff, yOff, CRGB::Red);
-            setPixel(xOff+1, yOff, CRGB::Green); setPixel(xOff+2, yOff+1, CRGB::Green);
-            setPixel(xOff+1, yOff+2, CRGB::Green); setPixel(xOff, yOff+3, CRGB::Green);
-            setPixel(xOff+1, yOff+4, CRGB::Green); setPixel(xOff+2, yOff+4, CRGB::Green);
+            for(int x = 12; x <= 28; x++) setPixel(x, 12, CRGB::White);
+            auto drawCloudBlob = [](int cx, int cy, int r) {
+                for (int x = cx-r; x <= cx+r; x++) {
+                    for (int y = cy-r; y <= cy+r; y++) {
+                        if ((x-cx)*(x-cx) + (y-cy)*(y-cy) <= r*r && x >= 0 && x < 32 && y >= 0 && y < 16) {
+                            setPixel(x, y, CRGB::White);
+                        }
+                    }
+                }
+            };
+            drawCloudBlob(16, 9, 3);
+            drawCloudBlob(21, 7, 4);
+            drawCloudBlob(25, 10, 3);
             break;
+        }
 
-        case 4: // TASK 3: DHT (Buchstabe D in Orange)
-            for(int y=0; y<5; y++) { setPixel(xOff, yOff+y, CRGB::Orange); }
-            setPixel(xOff+1, yOff, CRGB::Orange); setPixel(xOff+2, yOff+1, CRGB::Orange);
-            setPixel(xOff+2, yOff+2, CRGB::Orange); setPixel(xOff+2, yOff+3, CRGB::Orange);
-            setPixel(xOff+1, yOff+4, CRGB::Orange);
-            break;
+        case 3: { // TASK 2: 2-PIXEL BREITE SNAKE & APFEL (BEREINIGT)
+            CRGB sColor = CRGB::Green;
+            
+            // Schlange (2 Pixel breit gezeichnet über exakte Schleifen)
+            for(int x = 2; x <= 14; x++) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); }   // Oberer horizontaler Strang
+            for(int y = 5; y <= 9; y++)  { setPixel(13, y, sColor); setPixel(14, y, sColor); } // Rechter vertikaler Abstieg
+            for(int x = 6; x <= 14; x++) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); }  // Mittlerer horizontaler Strang
+            for(int y = 11; y <= 13; y++) { setPixel(6, y, sColor); setPixel(7, y, sColor); }   // Linker vertikaler Abstieg
+            for(int x = 6; x <= 18; x++) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } // Unterer horizontaler Auslauf
+            
+            // Schlangenkopf-Details (Auge)
+            setPixel(2, 3, CRGB::DarkGreen);
+            setPixel(3, 2, CRGB::White); // Auge sitzt sauber oben auf dem Kopf
 
-        case 5: // TASK 4: Leerer Strich (Dunkelgrau)
-            for(int y=0; y<5; y++) { setPixel(xOff+1, yOff+y, CRGB::DarkSlateGray); }
+            // Roter Apfel (Rechte Seite, 4 Pixel Abstand zum Auslauf)
+            int ax = 24, ay = 11;
+            setPixel(ax, ay, CRGB::Red);     setPixel(ax+1, ay, CRGB::Red);
+            setPixel(ax, ay+1, CRGB::Red);   setPixel(ax+1, ay+1, CRGB::Red);
+            setPixel(ax+1, ay-1, CRGB::Lime); // Sauberes, einzelnes Blatt direkt auf dem Apfel
             break;
+        }
+
+        case 4: { // TASK 3: DHT SCHRIFTZUG (NUR CYAN, OHNE KONTUR)
+            auto drawLetterCyan = [](int xOff, int type) {
+                CRGB c = CRGB::Cyan;
+                if (type == 0) { // D
+                    for(int y=4; y<=12; y++) { setPixel(xOff, y, c); setPixel(xOff+1, y, c); }
+                    for(int x=xOff+2; x<=xOff+4; x++) { setPixel(x, 4, c); setPixel(x, 12, c); }
+                    for(int y=5; y<=11; y++) { setPixel(xOff+4, y, c); }
+                }
+                else if (type == 1) { // H
+                    for(int y=4; y<=12; y++) { setPixel(xOff, y, c); setPixel(xOff+1, y, c); setPixel(xOff+4, y, c); setPixel(xOff+5, y, c); }
+                    for(int x=xOff+2; x<=xOff+3; x++) { setPixel(x, 8, c); }
+                }
+                else if (type == 2) { // T
+                    for(int x=xOff; x<=xOff+6; x++) { setPixel(x, 4, c); setPixel(x, 5, c); }
+                    for(int y=6; y<=12; y++) { setPixel(xOff+2, y, c); setPixel(xOff+3, y, c); }
+                }
+            };
+            drawLetterCyan(3, 0);  // D
+            drawLetterCyan(12, 1); // H
+            drawLetterCyan(21, 2); // T
+            break;
+        }
+
+        case 5: { // TASK 4: GEZENTRIERTE DOPPEL-NOTE (SECHZEHNTELNOTE)
+            CRGB nColor = CRGB::Magenta;
+            
+            // Linker Notenkopf (Zentrierter Bereich ab X=11)
+            setPixel(11, 12, nColor); setPixel(12, 12, nColor);
+            setPixel(10, 13, nColor); setPixel(11, 13, nColor); setPixel(12, 13, nColor);
+            setPixel(11, 14, nColor); setPixel(12, 14, nColor);
+
+            // Rechter Notenkopf (Abstand von 5 Pixeln nach rechts)
+            setPixel(18, 12, nColor); setPixel(19, 12, nColor);
+            setPixel(17, 13, nColor); setPixel(18, 13, nColor); setPixel(19, 13, nColor);
+            setPixel(18, 14, nColor); setPixel(19, 14, nColor);
+
+            // Zwei vertikale Notenhälse (jeweils an der rechten Flanke des Kopfes)
+            for(int y = 3; y <= 12; y++) {
+                setPixel(12, y, nColor); // Linker Hals
+                setPixel(19, y, nColor); // Rechter Hals
+            }
+
+            // Doppelbalken oben (Verbindung der Hälse von X=12 bis X=19)
+            // Oberer Balken
+            for(int x = 12; x <= 19; x++) setPixel(x, 3, nColor);
+            // Unterer Parallelbalken (Typisch für Sechzehntelnote)
+            for(int x = 12; x <= 19; x++) setPixel(x, 5, nColor);
+            break;
+        }
     }
     FastLED.show();
 }
