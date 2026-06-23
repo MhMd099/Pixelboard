@@ -108,23 +108,112 @@ void printMenu() {
     FastLED.clear();
 
     // ==========================================
-    // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
+    // ZUSTAND 0: SYSTEMSEITE (PIXELBOARD MENÜ)
     // ==========================================
     if (fokusModus == 0) {
-        AnzeigeOben.SetText((unsigned char*)"PIXEL", 5);
-        AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x9B, 0x30, 0xFF); 
-        AnzeigeOben.UpdateText();
+        // Bitmaps für die Buchstaben (5x7 Matrix)
+        // 1 = Pixel gesetzt (Text), 0 = Leerzeichen
+        static const uint8_t glyphs[6][7] = {
+            {0x1F, 0x11, 0x11, 0x1F, 0x10, 0x10, 0x10}, // P
+            {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}, // I
+            {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, // X
+            {0x1F, 0x10, 0x10, 0x1F, 0x10, 0x10, 0x1F}, // E
+            {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, // L
+            {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M (Stellvertretend für MENU-Start)
+        };
 
-        AnzeigeUnten.SetText((unsigned char*)"MENU", 4);
-        AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xFF, 0xFF); 
-        AnzeigeUnten.UpdateText();
+        // Definition der globalen Kette (Pixel-Koordinaten im Zick-Zack-Verlauf)
+        // Jedes Element speichert die exakte X- und Y-Position auf dem Panel
+        struct Coord { int8_t x; int8_t y; };
         
+        // Wir erstellen eine feste Mapping-Tabelle für den Signalpfad des Regenbogens
+        // P (unten nach oben), I (oben nach unten), X (unten nach oben), E (oben nach unten), L (unten nach oben)
+        static const int MAX_CHAIN_PIXELS = 150; 
+        static Coord path[MAX_CHAIN_PIXELS];
+        static int pathLength = 0;
+        static bool pathInitialized = false;
+
+        if (!pathInitialized) {
+            int pIdx = 0;
+            
+            // 1. Wort "PIXEL" (Obere Zeile, Start bei Y=0, X verschoben um Zentrierung)
+            int xOffsets[5] = {2, 8, 14, 20, 26}; 
+            
+            for (char b = 0; b < 5; b++) {
+                int xOff = xOffsets[b];
+                bool upward = (b % 2 == 0); // P=hoch, I=runter, X=hoch, E=runter, L=hoch
+                
+                if (upward) {
+                    for (int y = 6; y >= 0; y--) {
+                        for (int x = 0; x < 5; x++) {
+                            if ((glyphs[b][y] >> (4 - x)) & 1) {
+                                path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
+                            }
+                        }
+                    }
+                } else {
+                    for (int y = 0; y <= 6; y++) {
+                        for (int x = 0; x < 5; x++) {
+                            if ((glyphs[b][y] >> (4 - x)) & 1) {
+                                path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 2. Wort "MENU" (Untere Zeile, Start bei Y=9, vereinfachter Übergang)
+            // Hier wird das Signal nahtlos in die untere Panel-Hälfte weitergeleitet
+            int xOffsetsUnten[4] = {4, 10, 16, 22};
+            // Dynamischer Kantenverlauf für das M
+            for (int y = 6; y >= 0; y--) {
+                for (int x = 0; x < 5; x++) {
+                    if ((glyphs[5][y] >> (4 - x)) & 1) {
+                        path[pIdx++] = { (int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9) };
+                    }
+                }
+            }
+            // Ergänzung für E, N, U (Standard-Abfolge im Speicher)
+            for (int y = 0; y <= 6; y++) {
+                for (int x = 0; x < 5; x++) {
+                    if ((glyphs[3][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9) };
+                }
+            }
+            // N-Generierung direkt auf Hardware-Ebene
+            for (int y = 6; y >= 0; y--) {
+                for (int x = 0; x < 5; x++) {
+                    if (x==0 || x==4 || x==y-1) path[pIdx++] = { (int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9) };
+                }
+            }
+            // U-Generierung direkt auf Hardware-Ebene
+            for (int y = 0; y <= 6; y++) {
+                for (int x = 0; x < 5; x++) {
+                    if (x==0 || x==4 || y==6) path[pIdx++] = { (int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9) };
+                }
+            }
+
+            pathLength = pIdx;
+            pathInitialized = true;
+        }
+
+        // Kontinuierliche Phasenverschiebung des Regenbogens (CHSV-Farbraum)
+        static uint8_t startHue = 0;
+        startHue += 4; // Geschwindigkeit des Farbwechsels (Erhöhen für schnellere Wellen)
+
+        // Zeichne den gesamten berechneten Pfad mit fortlaufender Farb-Zuweisung
+        uint8_t currentHue = startHue;
+        for (int i = 0; i < pathLength; i++) {
+            // Jedes Pixel auf dem Pfad erhält einen leicht versetzten Farbwert
+            setPixel(path[i].x, path[i].y, CHSV(currentHue, 255, 255));
+            currentHue += 5; // Dichte des Regenbogens (Abstand der Farbabstufungen)
+        }
+
         FastLED.show();
         return;
     }
 
     // ==========================================
-    // ZUSTÄNDE 1-5: SYMBOLE AUF GANZE MATRIX (32x16)
+    // ZUSTÄNDE 1-5: SYMBOLE (32x16)
     // ==========================================
     switch (fokusModus) {
         
@@ -169,29 +258,25 @@ void printMenu() {
             break;
         }
 
-        case 3: { // TASK 2: 2-PIXEL BREITE SNAKE & APFEL (BEREINIGT)
+        case 3: { // TASK 2: 2-PIXEL BREITE SNAKE & APFEL
             CRGB sColor = CRGB::Green;
+            for(int x = 2; x <= 14; x++) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); }   
+            for(int y = 5; y <= 9; y++)  { setPixel(13, y, sColor); setPixel(14, y, sColor); } 
+            for(int x = 6; x <= 14; x++) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); }  
+            for(int y = 11; y <= 13; y++) { setPixel(6, y, sColor); setPixel(7, y, sColor); }   
+            for(int x = 6; x <= 18; x++) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } 
             
-            // Schlange (2 Pixel breit gezeichnet über exakte Schleifen)
-            for(int x = 2; x <= 14; x++) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); }   // Oberer horizontaler Strang
-            for(int y = 5; y <= 9; y++)  { setPixel(13, y, sColor); setPixel(14, y, sColor); } // Rechter vertikaler Abstieg
-            for(int x = 6; x <= 14; x++) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); }  // Mittlerer horizontaler Strang
-            for(int y = 11; y <= 13; y++) { setPixel(6, y, sColor); setPixel(7, y, sColor); }   // Linker vertikaler Abstieg
-            for(int x = 6; x <= 18; x++) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } // Unterer horizontaler Auslauf
-            
-            // Schlangenkopf-Details (Auge)
             setPixel(2, 3, CRGB::DarkGreen);
-            setPixel(3, 2, CRGB::White); // Auge sitzt sauber oben auf dem Kopf
+            setPixel(3, 2, CRGB::White); 
 
-            // Roter Apfel (Rechte Seite, 4 Pixel Abstand zum Auslauf)
             int ax = 24, ay = 11;
             setPixel(ax, ay, CRGB::Red);     setPixel(ax+1, ay, CRGB::Red);
             setPixel(ax, ay+1, CRGB::Red);   setPixel(ax+1, ay+1, CRGB::Red);
-            setPixel(ax+1, ay-1, CRGB::Lime); // Sauberes, einzelnes Blatt direkt auf dem Apfel
+            setPixel(ax+1, ay-1, CRGB::Lime); 
             break;
         }
 
-        case 4: { // TASK 3: DHT SCHRIFTZUG (NUR CYAN, OHNE KONTUR)
+        case 4: { // TASK 3: DHT SCHRIFTZUG (NUR CYAN)
             auto drawLetterCyan = [](int xOff, int type) {
                 CRGB c = CRGB::Cyan;
                 if (type == 0) { // D
@@ -208,35 +293,29 @@ void printMenu() {
                     for(int y=6; y<=12; y++) { setPixel(xOff+2, y, c); setPixel(xOff+3, y, c); }
                 }
             };
-            drawLetterCyan(3, 0);  // D
-            drawLetterCyan(12, 1); // H
-            drawLetterCyan(21, 2); // T
+            drawLetterCyan(3, 0);  
+            drawLetterCyan(12, 1); 
+            drawLetterCyan(21, 2); 
             break;
         }
 
-        case 5: { // TASK 4: GEZENTRIERTE DOPPEL-NOTE (SECHZEHNTELNOTE)
+        case 5: { // TASK 4: GEZENTRIERTE DOPPEL-NOTE
             CRGB nColor = CRGB::Magenta;
-            
-            // Linker Notenkopf (Zentrierter Bereich ab X=11)
             setPixel(11, 12, nColor); setPixel(12, 12, nColor);
             setPixel(10, 13, nColor); setPixel(11, 13, nColor); setPixel(12, 13, nColor);
             setPixel(11, 14, nColor); setPixel(12, 14, nColor);
 
-            // Rechter Notenkopf (Abstand von 5 Pixeln nach rechts)
+            // Rechter Kopf
             setPixel(18, 12, nColor); setPixel(19, 12, nColor);
             setPixel(17, 13, nColor); setPixel(18, 13, nColor); setPixel(19, 13, nColor);
             setPixel(18, 14, nColor); setPixel(19, 14, nColor);
 
-            // Zwei vertikale Notenhälse (jeweils an der rechten Flanke des Kopfes)
             for(int y = 3; y <= 12; y++) {
-                setPixel(12, y, nColor); // Linker Hals
-                setPixel(19, y, nColor); // Rechter Hals
+                setPixel(12, y, nColor); 
+                setPixel(19, y, nColor); 
             }
 
-            // Doppelbalken oben (Verbindung der Hälse von X=12 bis X=19)
-            // Oberer Balken
             for(int x = 12; x <= 19; x++) setPixel(x, 3, nColor);
-            // Unterer Parallelbalken (Typisch für Sechzehntelnote)
             for(int x = 12; x <= 19; x++) setPixel(x, 5, nColor);
             break;
         }
@@ -459,13 +538,9 @@ void loop() {
             if (xPerc <= TRIG_NEG) { 
                 // Nach rechts schieben -> Seite weiter
                 int naechsterModus = fokusModus + 1;
-                
-                // Wenn wir von den Tasks (1-5) kommen und über 5 hinausgehen, 
-                // springen wir direkt zu Task 1 (Uhr) zurück und überspringen die 0
                 if (naechsterModus > 5) {
                     naechsterModus = 1; 
                 }
-                
                 fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
@@ -473,17 +548,12 @@ void loop() {
             } else if (xPerc >= TRIG_POS) { 
                 // Nach links schieben -> Seite zurück
                 int naechsterModus = fokusModus - 1;
-                
-                // Wenn wir von der Startseite (0) nach links gehen, landen wir bei Task 5
                 if (fokusModus == 0) {
                     naechsterModus = 5;
                 }
-                // Wenn wir uns bereits in den Tasks (1-5) befinden und nach links gehen,
-                // blockieren wir den Rückweg zur 0 und springen direkt zu Task 5
                 else if (naechsterModus < 1) {
                     naechsterModus = 5; 
                 }
-                
                 fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
@@ -495,6 +565,12 @@ void loop() {
             } else if ((millis() - navigationSperreZeit) > NAV_TIMEOUT_MS) {
                 navigationsSperre = false;
             }
+        }
+
+        // Automatischer Refresh: Aktualisiert die Regenbogen-Animation 
+        // kontinuierlich im 10ms-Takt, wenn man auf der Startseite steht
+        if (fokusModus == 0) {
+            printMenu(); 
         }
     } 
     // ========== IN LAUFENDER TASK ==========
