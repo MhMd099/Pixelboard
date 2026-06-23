@@ -187,20 +187,18 @@ void printMenu() {
             }
             setPixel(16, 8, CRGB::Red);
             
-            // Jede Sekunde (1000ms) wechselt der Sekundenzeiger die Richtung (Tick-Tack)
             bool tick = (jetzt / 1000) % 2 == 0;
             if (tick) {
-                setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); // Zeiger oben
-                setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); // Zeiger rechts
+                setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); 
+                setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); 
             } else {
-                setPixel(17, 7, CRGB::Orange); setPixel(18, 6, CRGB::Orange); // Zeiger schräg oben rechts
-                setPixel(16, 9, CRGB::Yellow); setPixel(16, 10, CRGB::Yellow); // Zeiger unten
+                setPixel(17, 7, CRGB::Orange); setPixel(18, 6, CRGB::Orange); 
+                setPixel(16, 9, CRGB::Yellow); setPixel(16, 10, CRGB::Yellow); 
             }
             break;
         }
 
-        case 2: { // TASK 1: WETTER (WOLKE BEWEGT SICH NACH LINKS/RECHTS)
-            // Sonne bleibt statisch im Hintergrund
+        case 2: { // TASK 1: WETTER (WOLKE ANCH SINUS-WELLE)
             int sx = 10, sy = 6;
             for (int x = 5; x <= 15; x++) {
                 for (int y = 1; y <= 11; y++) {
@@ -210,7 +208,6 @@ void printMenu() {
             setPixel(10, 1, CRGB::Orange); setPixel(10, 11, CRGB::Orange);
             setPixel(5, 6, CRGB::Orange);  setPixel(15, 6, CRGB::Orange);
 
-            // Dynamischer X-Versatz für die Wolke über eine Sinus-Welle (-2 bis +2 Pixel)
             int wX = (sin(jetzt / 400.0) * 2.0);
 
             for(int x = 12 + wX; x <= 28 + wX; x++) if(x>=0 && x<32) setPixel(x, 12, CRGB::White);
@@ -230,25 +227,56 @@ void printMenu() {
             break;
         }
 
-        case 3: { // TASK 2: SNAKE BEWEGT SICH RICHTUNG APFEL
+        case 3: { // TASK 2: CLASSIC S-SNAKE (KLASSISCHER PFAD, FLÜSSIGE REIHENFOLGE)
             CRGB sColor = CRGB::Green;
-            // Der X-Versatz lässt die Schlange periodisch 0 bis 3 Pixel nach rechts kriechen
-            int sX = (jetzt / 150) % 4; 
-
-            for(int x = 2 + sX; x <= 14 + sX; x++) { if(x<32) { setPixel(x, 3, sColor); setPixel(x, 4, sColor); } }   
-            for(int y = 5; y <= 9; y++)  { if(13+sX<32) setPixel(13+sX, y, sColor); if(14+sX<32) setPixel(14+sX, y, sColor); } 
-            for(int x = 6 + sX; x <= 14 + sX; x++) { if(x<32) { setPixel(x, 9, sColor); setPixel(x, 10, sColor); } }  
-            for(int y = 11; y <= 13; y++) { if(6+sX<32) setPixel(6+sX, y, sColor); if(7+sX<32) setPixel(7+sX, y, sColor); }   
-            for(int x = 6 + sX; x <= 18 + sX; x++) { if(x<32) { setPixel(x, 13, sColor); setPixel(x, 14, sColor); } } 
             
-            if(2+sX<32) setPixel(2+sX, 3, CRGB::DarkGreen);
-            if(3+sX<32) setPixel(3+sX, 2, CRGB::White); 
+            // Definition des exakten S-Kurven-Pfads für die Schlange (Koordinatenpaar-Tabelle)
+            struct SCoord { int8_t x; int8_t y; };
+            static const SCoord snakePath[] = {
+                {2,3}, {2,4}, {3,3}, {3,4}, {4,3}, {4,4}, {5,3}, {5,4}, {6,3}, {6,4},
+                {7,3}, {7,4}, {8,3}, {8,4}, {9,3}, {9,4}, {10,3}, {10,4}, {11,3}, {11,4},
+                {12,3}, {12,4}, {13,3}, {13,4}, {14,3}, {14,4},
+                {13,5}, {14,5}, {13,6}, {14,6}, {13,7}, {14,7}, {13,8}, {14,8},
+                {13,9}, {14,9}, {13,10}, {14,10},
+                {11,9}, {11,10}, {12,9}, {12,10}, {9,9}, {9,10}, {10,9}, {10,10},
+                {7,9}, {7,10}, {8,9}, {8,10}, {6,9}, {6,10},
+                {6,11}, {7,11}, {6,12}, {7,12}, {6,13}, {7,13},
+                {6,14}, {7,14}, {8,13}, {8,14}, {9,13}, {9,14}, {10,13}, {10,14},
+                {11,13}, {11,14}, {12,13}, {12,14}, {13,13}, {14,14}, {15,13}, {15,14},
+                {16,13}, {16,14}, {17,13}, {17,14}, {18,13}, {18,14}, {19,13}, {19,14},
+                {20,13}, {20,14}, {21,13}, {21,14}, {22,13}, {22,14}
+            };
+            const int totalPathPoints = sizeof(snakePath) / sizeof(snakePath[0]);
 
-            // Apfel bleibt fest verankert stehen, Schlange kriecht darauf zu
+            // Schrittzähler basierend auf der Zeit steuert das Vorwärtskriechen auf dem Pfad
+            int currentStep = (jetzt / 80) % (totalPathPoints - 30); 
+            int lengthInBlocks = 26; // Länge der Schlange (Doppelpixel-Segmente)
+
+            // Zeichne die Schlange auf ihrem vordefinierten S-Pfad
+            for (int i = 0; i < lengthInBlocks; i++) {
+                int ptIdx = currentStep + i;
+                if (ptIdx < totalPathPoints) {
+                    setPixel(snakePath[ptIdx].x, snakePath[ptIdx].y, sColor);
+                }
+            }
+
+            // Kopf-Detail (Das Auge reist präzise an der vordersten Spitze des Arrays mit)
+            int headIdx = currentStep + lengthInBlocks - 1;
+            if (headIdx < totalPathPoints) {
+                setPixel(snakePath[headIdx].x, snakePath[headIdx].y, CRGB::DarkGreen);
+                // Dynamische Anpassung des Auges basierend auf der aktuellen Kriechrichtung
+                if (snakePath[headIdx].y <= 4) {
+                    setPixel(snakePath[headIdx].x, snakePath[headIdx].y - 1, CRGB::White); // Kopf oben -> Auge drüber
+                } else {
+                    setPixel(snakePath[headIdx].x + 1, snakePath[headIdx].y, CRGB::White); // Kopf läuft rechts -> Auge rechts
+                }
+            }
+
+            // Statischer, sauberer 2x2 Apfel auf der rechten Seite (Absolut fehlerfrei platziert)
             int ax = 26, ay = 11;
-            setPixel(ax, ay, CRGB::Red);     setPixel(ax+1, ay, CRGB::Red);
-            setPixel(ax, ay+1, CRGB::Red);   setPixel(ax+1, ay+1, CRGB::Red);
-            setPixel(ax+1, ay-1, CRGB::Lime); 
+            setPixel(ax, ay, CRGB::Red);     setPixel(ax + 1, ay, CRGB::Red);
+            setPixel(ax, ay + 1, CRGB::Red); setPixel(ax + 1, ay + 1, CRGB::Red);
+            setPixel(ax + 1, ay - 1, CRGB::Lime); 
             break;
         }
 
@@ -256,7 +284,6 @@ void printMenu() {
             auto drawLetterCyanAnim = [jetzt](int xOff, int type) {
                 if (type == 0) { // D
                     for(int y=4; y<=12; y++) {
-                        // Jedes Pixel berechnet seine Farbe basierend auf Y und Zeit
                         uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20); 
                         setPixel(xOff, y, CHSV(hue, 255, 255)); setPixel(xOff+1, y, CHSV(hue, 255, 255));
                     }
@@ -299,7 +326,6 @@ void printMenu() {
 
         case 5: { // TASK 4: GEZENTRIERTE SECHZEHNTELNOTE (HÜPFT HOCH UND RUNTER)
             CRGB nColor = CRGB::Magenta;
-            // Vertikaler Versatz simuliert das Hüpfen im Rhythmus (0 bis -2 Pixel nach oben)
             int bounceY = (int)(abs(sin(jetzt / 150.0)) * -2.5);
 
             setPixel(11, 12+bounceY, nColor); setPixel(12, 12+bounceY, nColor);
