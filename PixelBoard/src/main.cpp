@@ -375,17 +375,33 @@ void loop() {
 
         if (!navigationsSperre) {
             if (xPerc <= TRIG_NEG) { 
-                fokusModus = (fokusModus + 1) % 6; 
+                // Nach rechts schieben -> Seite weiter
+                int naechsterModus = fokusModus + 1;
+                
+                // Wenn wir von den Tasks (1-5) kommen und über 5 hinausgehen, 
+                // springen wir direkt zu Task 1 (Uhr) zurück und überspringen die 0
+                if (naechsterModus > 5) {
+                    naechsterModus = 1; 
+                }
+                
+                fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
                 printMenu();
             } else if (xPerc >= TRIG_POS) { 
+                // Nach links schieben -> Seite zurück
                 int naechsterModus = fokusModus - 1;
-                if (naechsterModus < 1) {
+                
+                // Wenn wir von der Startseite (0) nach links gehen, landen wir bei Task 5
+                if (fokusModus == 0) {
+                    naechsterModus = 5;
+                }
+                // Wenn wir uns bereits in den Tasks (1-5) befinden und nach links gehen,
+                // blockieren wir den Rückweg zur 0 und springen direkt zu Task 5
+                else if (naechsterModus < 1) {
                     naechsterModus = 5; 
                 }
-                if (fokusModus == 0) naechsterModus = 5;
-
+                
                 fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
@@ -401,17 +417,23 @@ void loop() {
     } 
     // ========== IN LAUFENDER TASK ==========
     else {
+        // EVENT 1: Double-Click in Task (Joystick 2) -> Schaltet ab und kehrt zur Startseite (0) zurück
         if (clicks.doppelklick > 0) {
             zurueckZumMenue();
             return;
         }
 
+        // EVENT 2: Long-Click in Task (Joystick 2) -> Wechselt direkt zum nächsten Task weiter
         if (clicks.langKlick > 0) {
             int nextTask = (aktiverTask + 1) % 5;
+            
+            // Synchronisation: Setzt das passende Farb-Symbol für den nächsten Task
+            fokusModus = nextTask + 1; 
+            
             wechsleZuTask(nextTask);
             return;
         }
     }
 
     vTaskDelay(10 / portTICK_PERIOD_MS);
-} // Diese Klammer schließt die loop() korrekt
+}
