@@ -16,7 +16,5 @@ extern cLEDText AnzeigeOben;
 extern cLEDText AnzeigeUnten;
 
 void setPixel(int x, int y, CRGB color);
-void drawChar3x5(int startX, int startY, char c, CRGB color);
 
-void drawDigitW(int x, int y, int n, CRGB c);
 #endif
