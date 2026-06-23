@@ -20,6 +20,10 @@
 		},
 		{
 			"path": "Wetter_FreeRTOS"
+		},
+		{
+			"name": "Lautsprecher",
+			"path": "Lautsprecher"
 		}
 	]
 }
