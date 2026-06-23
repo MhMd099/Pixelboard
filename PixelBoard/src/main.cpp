@@ -54,6 +54,14 @@
 // ==========================================
 // 3. INSTANZEN & GLOBALE VARIABLEN
 // ==========================================
+// Vorwärtsdeklarationen für den Compiler-Scope
+TaskHandle_t getTaskHandle(int nummer);
+void setEventSperre(unsigned long dauerMs);
+void wechsleZuTask(int zielTask);
+void starteTask(int nummer);
+
+volatile bool taskWechselAnforderung = false;
+
 Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN); // Snake
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);   // Menü
 
@@ -72,13 +80,21 @@ unsigned long eventSperreBis = 0;
 
 SemaphoreHandle_t clickCounterMutex = NULL;
 
+// ==========================================
+// NEUE SYMBOLE (3x5 Pixel im 15-Bit-Format)
+// ==========================================
+// Task 0: Uhrzeit/Uhr     -> 
+// Task 1: Wetter/Wolke    -> 
+// Task 2: Snake/Schlange  -> 
+// Task 3: DHT (Text 'D')  -> 
+// Task 4: Leer/Strich     -> Vertikaler Strich
 const uint32_t menuIcons[5] = {
-  0x24924, 0x24924, 0x24924, 0x24924, 0x24924 
+  0x3A5A7, // Task 0: Uhr (Kreis-Ansatz mit angedeuteten Zeigern)
+  0x3EEDC, // Task 1: Wetter (Wolke mit kompakter Basis)
+  0x74B5E, // Task 2: Snake (S-Form für Schlange + separater Pixel für Apfel)
+  0x72497, // Task 3: DHT (Kompakter Buchstabe 'D', da 3x5 für "DHT" zu schmal ist)
+  0x24924  // Task 4: Leer (Dein originaler vertikaler Strich)
 };
-
-struct Point { int x, y; };
-
-
 
 void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
   for (int i = 0; i < 15; i++) {
@@ -89,12 +105,86 @@ void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
 }
 
 void printMenu() {
-  FastLED.clear();
-  for (int i = 0; i < 5; i++) {
-    CRGB farbe = (fokusModus == i) ? CRGB::Cyan : CRGB::DarkSlateGray;
-    drawIcon(2 + (i * 6), 5, menuIcons[i], farbe); 
-  }
-  FastLED.show();
+    FastLED.clear();
+
+    // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
+    if (fokusModus == 0) {
+        AnzeigeOben.SetText((unsigned char*)"PIXEL", 5);
+        AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x9B, 0x30, 0xFF); // Purple
+        AnzeigeOben.UpdateText(); // Korrigiert von Update() zu UpdateText()
+
+        AnzeigeUnten.SetText((unsigned char*)"MENU", 4);
+        AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xFF, 0xFF); // Cyan
+        AnzeigeUnten.UpdateText(); // Korrigiert von Update() zu UpdateText()
+        
+        FastLED.show();
+        return;
+    }
+
+    // ZUSTÄNDE 1-5: DIE EINZELNEN TASK-SEITEN
+    int xOff = 14; 
+    int yOff = 5;
+
+    switch (fokusModus) {
+        case 1: // TASK 0: Uhr (Gehäuse Purple, Zeiger Cyan)
+            for(int x=0; x<3; x++) { setPixel(xOff+x, yOff, CRGB::Purple); setPixel(xOff+x, yOff+4, CRGB::Purple); }
+            setPixel(xOff, yOff+1, CRGB::Purple); setPixel(xOff+2, yOff+1, CRGB::Purple);
+            setPixel(xOff, yOff+2, CRGB::Purple); setPixel(xOff+2, yOff+2, CRGB::Purple);
+            setPixel(xOff, yOff+3, CRGB::Purple); setPixel(xOff+2, yOff+3, CRGB::Purple);
+            setPixel(xOff+1, yOff+2, CRGB::Cyan); setPixel(xOff+1, yOff+1, CRGB::Cyan);
+            break;
+
+        case 2: // TASK 1: Wetter (Wolke Weiß, Sonne Gelb)
+            setPixel(xOff+1, yOff, CRGB::Yellow); 
+            setPixel(xOff, yOff+2, CRGB::White); setPixel(xOff+1, yOff+1, CRGB::White); setPixel(xOff+2, yOff+2, CRGB::White);
+            setPixel(xOff, yOff+3, CRGB::White); setPixel(xOff+1, yOff+3, CRGB::White); setPixel(xOff+2, yOff+3, CRGB::White);
+            setPixel(xOff+1, yOff+4, CRGB::White);
+            break;
+
+        case 3: // TASK 2: Snake (Grüne Schlange, Roter Apfel)
+            setPixel(xOff, yOff, CRGB::Red);
+            setPixel(xOff+1, yOff, CRGB::Green); setPixel(xOff+2, yOff+1, CRGB::Green);
+            setPixel(xOff+1, yOff+2, CRGB::Green); setPixel(xOff, yOff+3, CRGB::Green);
+            setPixel(xOff+1, yOff+4, CRGB::Green); setPixel(xOff+2, yOff+4, CRGB::Green);
+            break;
+
+        case 4: // TASK 3: DHT (Buchstabe D in Orange)
+            for(int y=0; y<5; y++) { setPixel(xOff, yOff+y, CRGB::Orange); }
+            setPixel(xOff+1, yOff, CRGB::Orange); setPixel(xOff+2, yOff+1, CRGB::Orange);
+            setPixel(xOff+2, yOff+2, CRGB::Orange); setPixel(xOff+2, yOff+3, CRGB::Orange);
+            setPixel(xOff+1, yOff+4, CRGB::Orange);
+            break;
+
+        case 5: // TASK 4: Leerer Strich (Dunkelgrau)
+            for(int y=0; y<5; y++) { setPixel(xOff+1, yOff+y, CRGB::DarkSlateGray); }
+            break;
+    }
+    FastLED.show();
+}
+
+void zurueckZumMenue() {
+    if (aktiverTask >= 0 && aktiverTask != 3) {
+        TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
+        if (aktuellerHandle != NULL) {
+            vTaskSuspend(aktuellerHandle);
+        }
+    }
+
+    aktiverTask = -1; 
+    fokusModus = 0; 
+    navigationsSperre = false;
+    lastXPerc = 0;  
+    lastYPerc = 0;
+    FastLED.clear(true);
+    
+    joystick2.einfacherKlickZaehler = 0;
+    joystick2.doppelklickZaehler = 0;
+    joystick2.langKlickZaehler = 0;
+
+    vTaskDelay(30 / portTICK_PERIOD_MS);
+    printMenu();
+    setEventSperre(750);
+    Serial.println("Zurück zur PIXELBOARD MENÜ Startseite");
 }
 
 void tokenStatusCallback(TokenInfo info) {
@@ -147,14 +237,21 @@ void wechsleZuTask(int zielTask) {
     TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
     TaskHandle_t zielHandle = getTaskHandle(zielTask);
 
+    // Wenn wir aus Snake (Index 2) wechseln, setzen wir das Abbruch-Signal
+    if (aktiverTask == 2) {
+        taskWechselAnforderung = true;
+        // Dem Snake-Task kurz Zeit geben, die Schleife sauber zu verlassen
+        vTaskDelay(50 / portTICK_PERIOD_MS); 
+    }
+
     FastLED.clear(true);
     
-    // DHT-Task (Index 3) wird NIEMALS schlafen gelegt
     if (aktiverTask >= 0 && aktiverTask != 3 && aktuellerHandle != NULL && aktuellerHandle != zielHandle) {
         vTaskSuspend(aktuellerHandle);
     }
 
     aktiverTask = zielTask;
+    taskWechselAnforderung = false; // Zurücksetzen für den nächsten Aufruf
     navigationsSperre = false;
     lastXPerc = 0;  
     lastYPerc = 0;
@@ -163,7 +260,6 @@ void wechsleZuTask(int zielTask) {
     joystick2.doppelklickZaehler = 0;
     joystick2.langKlickZaehler = 0;
 
-    // DHT-Task (Index 3) braucht kein vTaskResume, da er schon läuft
     if (zielTask != 3 && zielHandle != NULL) {
         vTaskResume(zielHandle);
     }
@@ -172,30 +268,7 @@ void wechsleZuTask(int zielTask) {
     Serial.printf("Task %d aktiv\n", zielTask);
 }
 
-void zurueckZumMenue() {
-    // DHT-Task (Index 3) wird hier ignoriert und läuft im Hintergrund weiter
-    if (aktiverTask >= 0 && aktiverTask != 3) {
-        TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
-        if (aktuellerHandle != NULL) {
-            vTaskSuspend(aktuellerHandle);
-        }
-    }
 
-    aktiverTask = -1; // Schaltet die Display-Ausgabe im DHT-Task automatisch stumm!
-    navigationsSperre = false;
-    lastXPerc = 0;  
-    lastYPerc = 0;
-    FastLED.clear(true);
-    
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.doppelklickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
-
-    vTaskDelay(30 / portTICK_PERIOD_MS);
-    printMenu();
-    setEventSperre(750);
-    Serial.println("Zurück zum Menü");
-}
 
 
 void starteTask(int nummer) { wechsleZuTask(nummer); }
@@ -271,8 +344,8 @@ joystick2.setInverted(true, true);
 
 void loop() {
     // 1. Hardware abfragen (Master Controller = Joystick 2)
-    joystick1.klickenErkennen(); // Läuft im Hintergrund mit
-    joystick2.klickenErkennen(); // Ist für das Menü zuständig
+    joystick1.klickenErkennen(); 
+    joystick2.klickenErkennen(); 
     struct ClickEvent clicks = readAndClearClicks();
 
     // 2. Sperrzeit abwarten (Verhindert doppeltes Feuern im Umschaltmoment)
@@ -288,28 +361,32 @@ void loop() {
     // ========== IM MENÜ (aktiverTask == -1) ==========
     if (aktiverTask == -1) {
         if (clicks.langKlick > 0 || clicks.einfacherKlick > 0) {
-            starteTask(fokusModus);
-            return;
+            if (fokusModus > 0) {
+                starteTask(fokusModus - 1); 
+                return;
+            }
         }
 
-        // Navigation im Menü über Joystick 2
         int xPerc = joystick2.readXPercent();
-        int yPerc = joystick2.readYPercent();
-
         const int TRIG_POS = 80;    
         const int TRIG_NEG = -80;   
         const int RELEASE_ABS = 60; 
         const int NAV_TIMEOUT_MS = 200; 
 
-      if (!navigationsSperre) {
-            // Wir tauschen einfach die Logik von xPerc >= TRIG_POS zu <= TRIG_NEG
-            if (xPerc <= TRIG_NEG) { // War >= TRIG_POS
-                fokusModus = (fokusModus + 1) % 5;
+        if (!navigationsSperre) {
+            if (xPerc <= TRIG_NEG) { 
+                fokusModus = (fokusModus + 1) % 6; 
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
                 printMenu();
-            } else if (xPerc >= TRIG_POS) { // War <= TRIG_NEG
-                fokusModus = (fokusModus - 1 + 5) % 5;
+            } else if (xPerc >= TRIG_POS) { 
+                int naechsterModus = fokusModus - 1;
+                if (naechsterModus < 1) {
+                    naechsterModus = 5; 
+                }
+                if (fokusModus == 0) naechsterModus = 5;
+
+                fokusModus = naechsterModus;
                 navigationsSperre = true;
                 navigationSperreZeit = millis();
                 printMenu();
@@ -324,13 +401,11 @@ void loop() {
     } 
     // ========== IN LAUFENDER TASK ==========
     else {
-        // EVENT 1: Double-Click in Task (Joystick 2) -> Schaltet ab und kehrt ins Menü zurück
         if (clicks.doppelklick > 0) {
             zurueckZumMenue();
             return;
         }
 
-        // EVENT 2: Long-Click in Task (Joystick 2) -> Wechselt direkt zum nächsten Task weiter
         if (clicks.langKlick > 0) {
             int nextTask = (aktiverTask + 1) % 5;
             wechsleZuTask(nextTask);
@@ -339,4 +414,4 @@ void loop() {
     }
 
     vTaskDelay(10 / portTICK_PERIOD_MS);
-}
+} // Diese Klammer schließt die loop() korrekt

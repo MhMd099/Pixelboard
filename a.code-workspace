@@ -32,6 +32,9 @@
 		{
 			"name": "IP-Standortermittlung",
 			"path": "IP-Standortermittlung"
+		},
+		{
+			"path": "Lautsprecher"
 		}
 	]
 }

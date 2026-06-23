@@ -4,6 +4,8 @@
 #include "HardwareUtils.h"
 #include "Config.h"
 
+extern volatile bool taskWechselAnforderung;
+
 // Global verfügbar machen
 extern void drawDigitW(int x, int y, int n, CRGB c);
 extern void drawChar3x5(int x, int y, char c, CRGB color);
@@ -36,6 +38,13 @@ void taskSnakeHandler(void *pvParameters) {
     resetGame();
 
     for(;;) {
+        if (taskWechselAnforderung) {
+            FastLED.clear();
+            FastLED.show();              // LEDs löschen
+            taskWechselAnforderung = false; // Flag zurücksetzen
+            vTaskSuspend(NULL);          // Task selbst schlafen legen
+        }
+        
         bool clicked = (digitalRead(PIN_SW) == HIGH);
         static bool lastClicked = false;
         bool btnPress = (clicked && !lastClicked);
