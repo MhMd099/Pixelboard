@@ -55,21 +55,32 @@ void initLittleFS() {
 }
 
 void loadConfigForUser(String user) {
-    if (LittleFS.exists("/config.json")) {
-        File file = LittleFS.open("/config.json", "r");
-        JsonDocument doc;
-        if (!deserializeJson(doc, file)) {
-            // Wenn der User in der Datei existiert, lade seine Stadt
-            if (doc.containsKey(user)) {
-                currentCity = doc[user].as<String>();
-            } else {
-                currentCity = "Innsbruck"; // Default, wenn User neu ist
+    user.trim();
+    currentUser = user;
+
+    String alteStadt = currentCity;
+
+    if (user == "") {
+        // Nicht eingeloggt -> immer Default-Stadt
+        currentCity = "Innsbruck";
+    } else {
+        currentCity = "Innsbruck"; // Fallback, falls der User noch keine Stadt hat
+        if (LittleFS.exists("/config.json")) {
+            File file = LittleFS.open("/config.json", "r");
+            JsonDocument doc;
+            if (!deserializeJson(doc, file)) {
+                if (doc[user].is<JsonObject>()) {
+                    currentCity = doc[user]["city"] | "Innsbruck";
+                } else if (doc[user].is<const char*>()) {
+                    currentCity = doc[user].as<String>(); // Altes Format (nur Stadt als String)
+                }
             }
-            currentUser = user;
-            Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity);
+            file.close();
         }
-        file.close();
     }
+
+    if (currentCity != alteStadt) forceWeatherUpdate = true;
+    Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity);
 }
 
 void saveConfig(String user, String city) {
@@ -83,6 +94,9 @@ void saveConfig(String user, String city) {
     currentCity = city;
     currentUser = user;
 
+    // Für "nicht eingeloggt" nichts dauerhaft speichern
+    if (user == "") return;
+
     // JSON einlesen, aktualisieren und speichern
     JsonDocument doc;
     if (LittleFS.exists("/config.json")) {
@@ -90,14 +104,18 @@ void saveConfig(String user, String city) {
         deserializeJson(doc, file);
         file.close();
     }
-    
-    // User-spezifische Stadt setzen
-    doc[user] = city;
+
+    // Eintrag in ein Objekt umwandeln, falls noch altes Format (nur String)
+    if (!doc[user].is<JsonObject>()) {
+        doc[user].to<JsonObject>();
+    }
+    // Stadt in eigenem Feld -> Highscore bleibt erhalten
+    doc[user]["city"] = city;
 
     File file = LittleFS.open("/config.json", "w");
     serializeJson(doc, file);
     file.close();
-    
+
     Serial.println("Speichere für " + user + ": " + city);
 }
 // --- HTML SEITEN ---
@@ -150,7 +168,7 @@ void handleUpdateCity() {
 }
 
 void handleLogout() {
-    saveConfig("", currentCity); // User löschen, Stadt bleibt für alle erhalten
+    loadConfigForUser(""); // User abmelden -> Default-Stadt Innsbruck
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -178,9 +196,11 @@ void saveHighScore(String user, int score) {
         file.close();
     }
 
-    // 2. Sicherstellen, dass das User-Objekt existiert
+    // 2. Eintrag in ein Objekt umwandeln, falls nötig (alte Stadt als String erhalten)
     if (!doc[user].is<JsonObject>()) {
-        doc[user] = JsonObject();
+        String alteStadt = doc[user].is<const char*>() ? doc[user].as<String>() : "";
+        doc[user].to<JsonObject>();
+        if (alteStadt != "") doc[user]["city"] = alteStadt;
     }
 
     // 3. Nur speichern, wenn der neue Score höher ist!
@@ -243,9 +263,7 @@ int getHighScore(String user) {
         JsonDocument doc;
         deserializeJson(doc, file);
         file.close();
-        if (doc[user].containsKey("highscore")) {
-            return doc[user]["highscore"].as<int>();
-        }
+        return doc[user]["highscore"] | 0;
     }
     return 0; // Standard, wenn noch keiner existiert
 }

@@ -3,6 +3,8 @@
 #include <FastLED.h>
 #include "HardwareUtils.h"
 #include "Config.h"
+#include "SoundUtils.h" // NEU
+
 
 extern volatile bool taskWechselAnforderung;
 
@@ -102,11 +104,17 @@ void taskSnakeHandler(void *pvParameters) {
                     for (int i = 0; i < snakeLength; i++) if (nextX == snake[i].x && nextY == snake[i].y) dead = true;
                     
                     if (dead) { 
+                        playSound(SND_DIE);
                         currentScore = snakeLength;
                         saveHighScore(currentUser, currentScore);
                         currentState = STATE_GAMEOVER;
                     } else {
-                        if (nextX == food.x && nextY == food.y) { if (snakeLength < 100) snakeLength++; spawnFood(); if (moveInterval > 70) moveInterval -= 2; }
+                        if (nextX == food.x && nextY == food.y) {
+                            playSound(SND_EAT);
+                            if (snakeLength < 100) snakeLength++;
+                            spawnFood();
+                            if (moveInterval > 70) moveInterval -= 2;
+                        }
                         for (int i = snakeLength - 1; i > 0; i--) snake[i] = snake[i - 1];
                         snake[0] = {nextX, nextY};
                     }

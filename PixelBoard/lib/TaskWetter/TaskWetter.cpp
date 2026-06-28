@@ -5,6 +5,7 @@
 #include <FastLED.h>
 #include "HardwareUtils.h"
 #include "Config.h"
+#include "SoundUtils.h" // für Donner-Geräusch
 
 int weatherID = 800; 
 float aktuelleTemp = 0.0;
@@ -44,6 +45,32 @@ void taskWetter(void * pvParameters) {
     fetchWetter();
     unsigned long lastAPIUpdate = millis();
 
+    // --- Wetter-Symbol-Helfer (zeichnen im linken Bereich x:1..11) ---
+    auto drawWolke = [](int ox, int oy, CRGB col) {
+        for (int x = ox; x <= ox + 9; x++) setPixel(x, oy + 3, col);
+        for (int x = ox + 1; x <= ox + 3; x++) for (int y = oy + 1; y <= oy + 3; y++) setPixel(x, y, col);
+        for (int x = ox + 4; x <= ox + 6; x++) for (int y = oy;     y <= oy + 3; y++) setPixel(x, y, col);
+        for (int x = ox + 7; x <= ox + 9; x++) for (int y = oy + 1; y <= oy + 3; y++) setPixel(x, y, col);
+    };
+    auto drawSonne = [](unsigned long jt) {
+        int cx = 6, cy = 7;
+        for (int x = cx - 2; x <= cx + 2; x++)
+            for (int y = cy - 2; y <= cy + 2; y++)
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= 5) setPixel(x, y, CRGB::Yellow);
+        int r = 4 + (int)(fabs(sin(jt / 350.0)) * 1.5);
+        setPixel(cx, cy - r, CRGB::Orange); setPixel(cx, cy + r, CRGB::Orange);
+        setPixel(cx - r, cy, CRGB::Orange); setPixel(cx + r, cy, CRGB::Orange);
+        setPixel(cx - r + 1, cy - r + 1, CRGB::Gold); setPixel(cx + r - 1, cy - r + 1, CRGB::Gold);
+        setPixel(cx - r + 1, cy + r - 1, CRGB::Gold); setPixel(cx + r - 1, cy + r - 1, CRGB::Gold);
+    };
+    auto drawNebel = [](unsigned long jt) {
+        for (int row = 0; row < 4; row++) {
+            int yy = 3 + row * 3;
+            int off = (int)(sin(jt / 300.0 + row) * 2.0);
+            for (int x = 1; x <= 11; x++) setPixel(x + off, yy, CRGB(70, 70, 70));
+        }
+    };
+
     for(;;) {
         // HIER IST DER MAGISCHE TRIGGER: Entweder 15 Min sind um, ODER jemand hat im Web was geändert!
         if (forceWeatherUpdate || (millis() - lastAPIUpdate > 900000)) { 
@@ -73,11 +100,45 @@ void taskWetter(void * pvParameters) {
         for(int x=27; x<30; x++) { setPixel(x, 10, CRGB::White); setPixel(x, 14, CRGB::White); } 
         setPixel(30, 11, CRGB::White); setPixel(30, 13, CRGB::White); 
 
-        // --- SYMBOL ---
-        if (weatherID == 800) { 
-             for(int x=4; x<10; x++) for(int y=3; y<9; y++) setPixel(x, y, CRGB::Yellow);
-        } else { 
-             for(int x=2; x<12; x++) for(int y=4; y<8; y++) setPixel(x, y, CRGB::Gray);
+        // --- WETTER-SYMBOL je nach Bedingung (animiert) ---
+        unsigned long jetzt = millis();
+        int cat = weatherID / 100;
+
+        if (weatherID == 800) {
+            // Klar: Sonne mit pulsierenden Strahlen
+            drawSonne(jetzt);
+        } else if (cat == 2) {
+            // Gewitter: dunkle Wolke + Blitz + Donner
+            drawWolke(1, 1, CRGB(80, 80, 90));
+            bool flash = ((jetzt / 350) % 4 == 0);
+            int bolt[6][2] = {{6, 6}, {5, 8}, {6, 9}, {4, 11}, {5, 12}, {4, 14}};
+            CRGB boltCol = flash ? CRGB::White : CRGB::Yellow;
+            for (int i = 0; i < 6; i++) setPixel(bolt[i][0], bolt[i][1], boltCol);
+            if (flash) drawWolke(1, 1, CRGB(150, 150, 160)); // Wolke hellt beim Blitz auf
+            static unsigned long lastThunder = 0;
+            if (flash && (jetzt - lastThunder > 2500)) { playSound(SND_DIE); lastThunder = jetzt; }
+        } else if (cat == 3 || cat == 5) {
+            // Niesel/Regen: Wolke + fallende blaue Tropfen
+            drawWolke(1, 1, CRGB::Gray);
+            for (int d = 0; d < 6; d++) {
+                int dx = 2 + d * 2;
+                int dy = 6 + ((jetzt / 90 + d * 3) % 9);
+                setPixel(dx, dy, CRGB::DeepSkyBlue);
+            }
+        } else if (cat == 6) {
+            // Schnee: Wolke + langsam taumelnde Flocken
+            drawWolke(1, 1, CRGB::Gray);
+            for (int d = 0; d < 6; d++) {
+                int dx = 2 + d * 2 + (int)(sin(jetzt / 200.0 + d) * 1.0);
+                int dy = 6 + ((jetzt / 160 + d * 2) % 9);
+                setPixel(dx, dy, CRGB::White);
+            }
+        } else if (cat == 7) {
+            // Nebel/Dunst: treibende graue Schwaden
+            drawNebel(jetzt);
+        } else {
+            // Wolken (80x) und Rest: ruhige weiße Wolke
+            drawWolke(1, 5, CRGB::White);
         }
 
         FastLED.show();
