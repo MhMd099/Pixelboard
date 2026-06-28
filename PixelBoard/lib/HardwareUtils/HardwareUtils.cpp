@@ -43,6 +43,45 @@ void drawDigitW(int x, int y, int n, CRGB c) {
     else if(n == 8) { for(int i=0; i<5; i++) { setPixel(x,y+i,c); setPixel(x+2,y+i,c); } for(int i=0; i<3; i++) { setPixel(x+i,y,c); setPixel(x+i,y+2,c); setPixel(x+i,y+4,c); } }
     else if(n == 9) { for(int i=0; i<5; i++) setPixel(x+2,y+i,c); for(int i=0; i<3; i++) { setPixel(x+i,y,c); setPixel(x+i,y+2,c); setPixel(x+i,y+4,c); } setPixel(x,y+1,c); }
 }
+// ==========================================
+// THEME / DESIGN
+// ==========================================
+uint8_t g_themeA = 0;
+uint8_t g_themeB = 0;
+bool    g_themeRainbow = true;
+int     g_themeIndex = 0;
+
+struct ThemeDef { const char* name; uint8_t a; uint8_t b; bool rainbow; };
+static const ThemeDef THEMES[] = {
+    {"Regenbogen",      0,   0,  true},
+    {"Ozean",           140, 120, false},
+    {"Feuer",           0,   32,  false},
+    {"Violett-Gruen",   192, 96,  false},
+    {"Sonnenuntergang", 224, 24,  false},
+    {"Matrix",          96,  80,  false},
+};
+static const int THEME_N = sizeof(THEMES) / sizeof(THEMES[0]);
+
+int themeAnzahl() { return THEME_N; }
+const char* themeName(int idx) { return (idx >= 0 && idx < THEME_N) ? THEMES[idx].name : "?"; }
+
+void applyTheme(int idx) {
+    if (idx < 0 || idx >= THEME_N) idx = 0;
+    g_themeIndex   = idx;
+    g_themeA       = THEMES[idx].a;
+    g_themeB       = THEMES[idx].b;
+    g_themeRainbow = THEMES[idx].rainbow;
+}
+
+CRGB themeCol(uint16_t phase, uint8_t val) {
+    if (g_themeRainbow) return CHSV((uint8_t)phase, 255, val);
+    // Dreieckswelle: Phase pendelt zwischen Haupt- und Zweitfarbe hin und her
+    uint8_t p = (uint8_t)phase;
+    uint8_t t = (p < 128) ? (p * 2) : ((255 - p) * 2);
+    uint8_t hue = g_themeA + (int)((int)g_themeB - (int)g_themeA) * t / 255;
+    return CHSV(hue, 255, val);
+}
+
 void setPixel(int x, int y, CRGB color) {
     if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
     if (y < 8) { 

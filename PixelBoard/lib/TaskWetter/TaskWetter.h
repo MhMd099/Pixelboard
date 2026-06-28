@@ -4,8 +4,9 @@
 #include <Arduino.h>
 
 // Das "extern" sagt dem Compiler: "Suche diese Variable in einer anderen Datei"
-extern bool forceWeatherUpdate; 
+extern bool forceWeatherUpdate;
 
-void taskWetter(void * pvParameters);
+void taskWetter(void * pvParameters);       // Anzeige (blockiert nie auf dem Netzwerk)
+void taskWetterFetch(void * pvParameters);  // Hintergrund: holt die Wetterdaten
 
 #endif

@@ -110,11 +110,11 @@ void printMenu()
     // Zeitbasis für alle Animationen abrufen
     unsigned long jetzt = millis();
 
-    // Dezenter, lebendiger Hintergrund (weniger Schwarz). Niedriges V = wenig Strom;
-    // die hellen Symbole/Buchstaben darüber bleiben klar lesbar.
+    // Dezenter, lebendiger Hintergrund (weniger Schwarz) im gewaehlten Design.
+    // Niedriges V = wenig Strom; die hellen Symbole/Buchstaben darüber bleiben klar lesbar.
     for (int x = 0; x < 32; x++)
         for (int y = 0; y < 16; y++)
-            setPixel(x, y, CHSV((uint8_t)(x * 5 - y * 3 + jetzt / 35), 220, 55));
+            setPixel(x, y, themeCol(x * 5 - y * 3 + jetzt / 35, 55));
 
     // ==========================================
     // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
@@ -195,11 +195,10 @@ void printMenu()
             pathInitialized = true;
         }
 
-        uint8_t startHue = jetzt / 3;
-        uint8_t currentHue = startHue;
+        uint8_t currentHue = jetzt / 3;
         for (int i = 0; i < pathLength; i++)
         {
-            setPixel(path[i].x, path[i].y, CHSV(currentHue, 255, 255));
+            setPixel(path[i].x, path[i].y, themeCol(currentHue, 255));
             currentHue += 5;
         }
         FastLED.show();
@@ -361,6 +360,7 @@ void zurueckZumMenue()
         if (aktuellerHandle != NULL)
         {
             vTaskSuspend(aktuellerHandle);
+            vTaskDelay(20 / portTICK_PERIOD_MS); // laufendes show() auslaufen lassen
         }
     }
 
@@ -371,13 +371,11 @@ void zurueckZumMenue()
     lastYPerc = 0;
     FastLED.clear(true);
 
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.doppelklickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
+    joystick2.reset(); // Klick-Zustand sauber zuruecksetzen
 
     vTaskDelay(30 / portTICK_PERIOD_MS);
     printMenu();
-    setEventSperre(750);
+    setEventSperre(250);
     Serial.println("Zurück zur PIXELBOARD MENÜ Startseite");
 }
 
@@ -454,12 +452,15 @@ void wechsleZuTask(int zielTask)
     if (aktiverTask == 3)
         stopMusic(); // Musik beim Verlassen der Musik-App stoppen
 
-    FastLED.clear(true);
-
+    // WICHTIG: alten Task ZUERST anhalten, damit er nicht parallel zu FastLED rendert
+    // (sonst kann der RMT/LED-Treiber haengen -> "friert ein")
     if (aktiverTask >= 0 && aktuellerHandle != NULL && aktuellerHandle != zielHandle)
     {
         vTaskSuspend(aktuellerHandle);
+        vTaskDelay(20 / portTICK_PERIOD_MS); // laufendes show() sauber auslaufen lassen
     }
+
+    FastLED.clear(true);
 
     aktiverTask = zielTask;
     taskWechselAnforderung = false; // Zurücksetzen für den nächsten Aufruf
@@ -467,9 +468,7 @@ void wechsleZuTask(int zielTask)
     lastXPerc = 0;
     lastYPerc = 0;
 
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.doppelklickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
+    joystick2.reset(); // Klick-Zustand sauber zuruecksetzen (kein Nachfeuern)
 
     if (zielHandle != NULL)
     {
@@ -478,7 +477,7 @@ void wechsleZuTask(int zielTask)
     if (zielTask == 3)
         startMusic(); // Musik beim Betreten der Musik-App starten
 
-    setEventSperre(750);
+    setEventSperre(250);
     Serial.printf("Task %d aktiv\n", zielTask);
 }
 
@@ -507,9 +506,9 @@ void taskMusik(void *pv)
             if (h > 15) h = 15;
             for (int y = 15; y > 15 - h; y--)
             {
-                uint8_t hue = 96 - (uint8_t)((15 - y) * 6); // grün (unten) -> rot (oben)
-                setPixel(bx, y, CHSV(hue, 255, 220));
-                setPixel(bx + 1, y, CHSV(hue, 255, 220));
+                CRGB c = themeCol((15 - y) * 16 + jetzt / 20, 220); // Balkenverlauf im Design
+                setPixel(bx, y, c);
+                setPixel(bx + 1, y, c);
             }
         }
         FastLED.show();
@@ -585,20 +584,29 @@ void setup() {
     xTaskCreate(taskMusik, "Musik", 2560, NULL, 1, &handleData); // Musik-Visualizer (Task 3)
 
     vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC); vTaskSuspend(handleData);
-    
+
+    // Wetterdaten laufen im Hintergrund (blockiert nie die Anzeige) -> immer aktiv
+    xTaskCreate(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL);
+
     joystick2.setInverted(true, true);
+    // Joysticks im Ruhezustand neu kalibrieren (ADC jetzt bereit) -> verhindert haengende Navigation
+    delay(50);
+    joystick1.kalibrieren();
+    joystick2.kalibrieren();
     printMenu();
 }
 
 void loop() {
     joystick1.klickenErkennen();
     joystick2.klickenErkennen();
-    struct ClickEvent clicks = readAndClearClicks();
 
     if (eventSperreAktiv()) {
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        // Klicks NICHT verwerfen - sie werden direkt nach der kurzen Sperre verarbeitet
+        vTaskDelay(5 / portTICK_PERIOD_MS);
         return;
     }
+
+    struct ClickEvent clicks = readAndClearClicks();
 
     if (aktiverTask == -1) {
         // IM MENÜ

@@ -2,50 +2,59 @@
 #include <FastLED.h>
 #include "HardwareUtils.h"
 
-void taskUhr(void * pvParameters) {
+// Zwei Ziffern (mit fuehrender Null) ab x zeichnen
+static void zweiZiffern(int x, int y, int wert, CRGB c) {
+    drawDigitW(x, y, (wert / 10) % 10, c);
+    drawDigitW(x + 4, y, wert % 10, c);
+}
+
+void taskUhr(void *pvParameters) {
     struct tm timeinfo;
-    char b1[40], b2[40];
-    
-    // Debug-Ausgabe beim Start des Tasks
     Serial.println("TaskUhr: Gestartet.");
 
-    for(;;) {
-        // Versuche die lokale Zeit vom ESP32-System zu holen
-        if (getLocalTime(&timeinfo, 10)) { // 10ms internes Blockieren max.
-            FastLED.clear();
-            
-            // Wechselt alle 3 Sekunden zwischen (Zeit + Sekunden) und (Jahr + Datum)
-            if (millis() % 6000 < 3000) {
-                sprintf(b1, "\x02%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-                sprintf(b2, "\x02   %02d", timeinfo.tm_sec);
+    for (;;) {
+        FastLED.clear();
+        unsigned long jetzt = millis();
+        CRGB col = themeCol(jetzt / 40); // Theme-Farbe, sanft wandernd -> einheitliches Design
+
+        if (getLocalTime(&timeinfo, 10)) {
+            bool zeitPhase = (jetzt % 8000) < 4000; // 4s Uhrzeit, dann 4s Datum
+
+            if (zeitPhase) {
+                // ---- UHRZEIT: HH:MM oben ----
+                zweiZiffern(6, 2, timeinfo.tm_hour, col);
+                zweiZiffern(18, 2, timeinfo.tm_min, col);
+                if ((jetzt / 500) % 2) { // Doppelpunkt blinkt im Sekundentakt
+                    setPixel(15, 3, col);
+                    setPixel(15, 5, col);
+                }
+                // ---- Sekunden: Ziffern + Fortschrittsbalken unten ----
+                zweiZiffern(12, 9, timeinfo.tm_sec, col);
+                int bw = (timeinfo.tm_sec * 32) / 60;
+                for (int x = 0; x < bw; x++) setPixel(x, 15, col);
             } else {
-                sprintf(b1, "\x02 %04d", timeinfo.tm_year + 1900);
-                sprintf(b2, "\x02%02d.%02d.", timeinfo.tm_mday, timeinfo.tm_mon + 1);
+                // ---- DATUM: TT.MM oben, Jahr unten ----
+                zweiZiffern(6, 2, timeinfo.tm_mday, col);
+                setPixel(15, 6, col); // Trenn-Punkt
+                zweiZiffern(18, 2, timeinfo.tm_mon + 1, col);
+
+                int jahr = timeinfo.tm_year + 1900;
+                drawDigitW(8, 9, (jahr / 1000) % 10, col);
+                drawDigitW(12, 9, (jahr / 100) % 10, col);
+                drawDigitW(16, 9, (jahr / 10) % 10, col);
+                drawDigitW(20, 9, jahr % 10, col);
             }
-            
-            AnzeigeOben.SetText((unsigned char *)b1, strlen(b1));
-            AnzeigeUnten.SetText((unsigned char *)b2, strlen(b2));
-            AnzeigeOben.UpdateText(); 
-            AnzeigeUnten.UpdateText();
-            FastLED.show();
-            
-            vTaskDelay(500 / portTICK_PERIOD_MS); // Schnellerer Intervall für flüssige Sekunden
         } else {
-            // Wenn noch kein Sync vom NTP-Server da ist
-            FastLED.clear();
-            const char* m = "WAIT NTP";
-            AnzeigeOben.SetText((unsigned char *)m, strlen(m));
-            AnzeigeOben.UpdateText();
-            
-            // Unten leeren
-            AnzeigeUnten.SetText((unsigned char *)" ", 1);
-            AnzeigeUnten.UpdateText();
-            
-            FastLED.show();
-            
-            Serial.println("TaskUhr: Warte auf NTP Sync...");
-            // Wenn kein Sync da ist, warten wir länger (2 Sekunden), um das Netzwerk nicht zu stressen
-            vTaskDelay(2000 / portTICK_PERIOD_MS); 
+            // Noch kein NTP-Sync: "NTP" anzeigen (themed)
+            drawChar3x5(7, 6, 'N', col);
+            drawChar3x5(13, 6, 'T', col);
+            drawChar3x5(19, 6, 'P', col);
+            if ((jetzt / 400) % 2) { // kleiner Lebenszeichen-Punkt
+                setPixel(15, 13, col);
+            }
         }
+
+        FastLED.show();
+        vTaskDelay(150 / portTICK_PERIOD_MS);
     }
 }

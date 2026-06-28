@@ -21,6 +21,7 @@ Taster_v2::Taster_v2(int pin, int modus, unsigned long entprellen, unsigned long
   ersterKlickErkannt = false;
   letzterKlickMillis = 0;
   langKlickErkannt = false;
+  ignoreBisLoslassen = false;
   einfacherKlickZaehler = 0;
   doppelklickZaehler = 0;
   langKlickZaehler = 0;
@@ -44,24 +45,29 @@ void Taster_v2::klickenErkennen() {
       // Logik-Umschalter: Bei PULLUP ist LOW aktiv, bei PULLDOWN ist HIGH aktiv
       bool istAktiv = (tasterModus == INPUT_PULLUP) ? (tasterZustand == LOW) : (tasterZustand == HIGH);
 
-      if (istAktiv) { 
+      if (istAktiv) {
         klickStartZeit = jetzt;
         langKlickErkannt = false;
       }
       else {
         // Taster wurde losgelassen
-        unsigned long klickDauer = jetzt - klickStartZeit;
-        if (klickDauer >= langKlickZeit) {
-          langKlickZaehler++;
-          ersterKlickErkannt = false;
-        }
-        else {
-          if (ersterKlickErkannt && (jetzt - letzterKlickMillis <= doppelklickZeit)) {
-            doppelklickZaehler++;
+        if (ignoreBisLoslassen) {
+          // Der zum Task-Wechsel benutzte Druck wird hier sauber abgeschlossen
+          ignoreBisLoslassen = false;
+        } else {
+          unsigned long klickDauer = jetzt - klickStartZeit;
+          if (klickDauer >= langKlickZeit) {
+            langKlickZaehler++;
             ersterKlickErkannt = false;
-          } else {
-            ersterKlickErkannt = true;
-            letzterKlickMillis = jetzt;
+          }
+          else {
+            if (ersterKlickErkannt && (jetzt - letzterKlickMillis <= doppelklickZeit)) {
+              doppelklickZaehler++;
+              ersterKlickErkannt = false;
+            } else {
+              ersterKlickErkannt = true;
+              letzterKlickMillis = jetzt;
+            }
           }
         }
       }
@@ -70,19 +76,34 @@ void Taster_v2::klickenErkennen() {
 
   // Auch hier das dauerhafte Halten dynamisch prüfen
   bool istAktivDauer = (tasterModus == INPUT_PULLUP) ? (tasterZustand == LOW) : (tasterZustand == HIGH);
-  if (istAktivDauer && !langKlickErkannt) { 
+  if (istAktivDauer && !langKlickErkannt && !ignoreBisLoslassen) {
     if (jetzt - klickStartZeit >= langKlickZeit) {
       langKlickZaehler++;
       langKlickErkannt = true;
     }
   }
 
-  if (ersterKlickErkannt && (jetzt - letzterKlickMillis > doppelklickZeit)) {
+  if (ersterKlickErkannt && !ignoreBisLoslassen && (jetzt - letzterKlickMillis > doppelklickZeit)) {
     einfacherKlickZaehler++;
     ersterKlickErkannt = false;
   }
 
   letzterTasterZustand = aktuellerZustand;
+}
+
+void Taster_v2::reset() {
+  int cur = digitalRead(tasterPin);
+  bool aktivJetzt = (tasterModus == INPUT_PULLUP) ? (cur == LOW) : (cur == HIGH);
+  ignoreBisLoslassen = aktivJetzt;   // wenn beim Wechsel noch gedrückt: bis Loslassen ignorieren
+  letzterTasterZustand = cur;
+  tasterZustand = cur;
+  klickStartZeit = millis();
+  ersterKlickErkannt = false;
+  langKlickErkannt = aktivJetzt;
+  letzterKlickMillis = 0;
+  einfacherKlickZaehler = 0;
+  doppelklickZaehler = 0;
+  langKlickZaehler = 0;
 }
 
 int Taster_v2::isPressed() {

@@ -2,6 +2,7 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <WebServer.h>
+#include "HardwareUtils.h" // für applyTheme / Theme-Status
 
 const char* ssid = "Nothin";
 const char* password = "nothin099";
@@ -59,9 +60,10 @@ void loadConfigForUser(String user) {
     currentUser = user;
 
     String alteStadt = currentCity;
+    int themeIdx = 0; // Default-Design (Regenbogen)
 
     if (user == "") {
-        // Nicht eingeloggt -> immer Default-Stadt
+        // Nicht eingeloggt -> immer Default-Stadt & Default-Design
         currentCity = "Innsbruck";
     } else {
         currentCity = "Innsbruck"; // Fallback, falls der User noch keine Stadt hat
@@ -71,6 +73,7 @@ void loadConfigForUser(String user) {
             if (!deserializeJson(doc, file)) {
                 if (doc[user].is<JsonObject>()) {
                     currentCity = doc[user]["city"] | "Innsbruck";
+                    themeIdx = doc[user]["theme"] | 0;
                 } else if (doc[user].is<const char*>()) {
                     currentCity = doc[user].as<String>(); // Altes Format (nur Stadt als String)
                 }
@@ -79,8 +82,9 @@ void loadConfigForUser(String user) {
         }
     }
 
+    applyTheme(themeIdx); // Design des Users (oder Default) aktivieren
     if (currentCity != alteStadt) forceWeatherUpdate = true;
-    Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity);
+    Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity + ", Design=" + String(themeName(g_themeIndex)));
 }
 
 void saveConfig(String user, String city) {
@@ -118,6 +122,30 @@ void saveConfig(String user, String city) {
 
     Serial.println("Speichere für " + user + ": " + city);
 }
+
+void saveTheme(String user, int themeIdx) {
+    user.trim();
+    applyTheme(themeIdx); // sofort live anwenden
+
+    if (user == "") return; // nicht eingeloggt -> nichts dauerhaft speichern
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+    if (!doc[user].is<JsonObject>()) {
+        doc[user].to<JsonObject>();
+    }
+    doc[user]["theme"] = g_themeIndex;
+
+    File file = LittleFS.open("/config.json", "w");
+    serializeJson(doc, file);
+    file.close();
+
+    Serial.println("Design gespeichert für " + user + ": " + String(themeName(g_themeIndex)));
+}
 // --- HTML SEITEN ---
 void handleRoot() {
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
@@ -142,7 +170,19 @@ void handleRoot() {
         html += "<form action='/updateCity' method='POST'>";
         html += "<input type='text' name='city' placeholder='Neue Stadt (z.B. Prag)' required><br>";
         html += "<input type='submit' value='Stadt speichern'></form>";
-        html += "<br><br><a href='/logout' style='color:#ff5555; text-decoration:none; font-weight:bold;'>Ausloggen</a></div>";
+
+        html += "<hr style='border-color:#555;'>";
+        html += "<h4>Design wählen:</h4>";
+        html += "<form action='/updateTheme' method='POST'>";
+        html += "<select name='theme' style='padding:10px;border-radius:5px;'>";
+        for (int i = 0; i < themeAnzahl(); i++) {
+            html += "<option value='" + String(i) + "'";
+            if (i == g_themeIndex) html += " selected";
+            html += ">" + String(themeName(i)) + "</option>";
+        }
+        html += "</select><br><input type='submit' value='Design speichern'></form>";
+
+        html += "<br><a href='/logout' style='color:#ff5555; text-decoration:none; font-weight:bold;'>Ausloggen</a></div>";
     }
     html += "</body></html>";
     server.send(200, "text/html", html);
@@ -167,6 +207,14 @@ void handleUpdateCity() {
     server.send(303);
 }
 
+void handleUpdateTheme() {
+    if (server.hasArg("theme")) {
+        saveTheme(currentUser, server.arg("theme").toInt());
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
 void handleLogout() {
     loadConfigForUser(""); // User abmelden -> Default-Stadt Innsbruck
     server.sendHeader("Location", "/");
@@ -177,6 +225,7 @@ void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/doLogin", HTTP_POST, handleDoLogin);
     server.on("/updateCity", HTTP_POST, handleUpdateCity);
+    server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
     server.on("/logout", HTTP_GET, handleLogout);
     server.begin();
 }

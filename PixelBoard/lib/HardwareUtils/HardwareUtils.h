@@ -19,4 +19,17 @@ void setPixel(int x, int y, CRGB color);
 void drawChar3x5(int startX, int startY, char c, CRGB color);
 
 void drawDigitW(int x, int y, int n, CRGB c);
+
+// ==========================================
+// THEME / DESIGN (pro User über Web wählbar)
+// ==========================================
+extern uint8_t g_themeA;       // Haupt-Farbton (Hue 0-255)
+extern uint8_t g_themeB;       // Zweit-Farbton
+extern bool    g_themeRainbow; // true = voller Regenbogen
+extern int     g_themeIndex;   // aktiver Preset-Index
+
+void  applyTheme(int idx);            // Preset aktivieren
+int   themeAnzahl();                  // Anzahl Presets
+const char* themeName(int idx);       // Name eines Presets
+CRGB  themeCol(uint16_t phase, uint8_t val = 255); // themed Farbe für eine "Phase"
 #endif

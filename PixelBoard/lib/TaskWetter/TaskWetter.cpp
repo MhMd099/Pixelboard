@@ -14,37 +14,59 @@ float aktuelleTemp = 0.0;
 extern const char* font3x5[26] ;
 extern void drawChar3x5(int startX, int startY, char c, CRGB color);
 extern void drawDigitW(int x, int y, int n, CRGB c);
-void taskWetter(void * pvParameters) {
-    auto fetchWetter = [&]() {
-        if (WiFi.status() == WL_CONNECTED) {
-            HTTPClient http;
-            
-            // WICHTIG: Leerzeichen für URLs anpassen ("New York" -> "New%20York")
-            String safeCity = currentCity;
-            safeCity.replace(" ", "%20");
+// --- Wetterdaten holen: kurzer Timeout, blockiert nur den Hintergrund-Task ---
+static bool fetchWetter() {
+    if (WiFi.status() != WL_CONNECTED) return false;
 
-            String url = "http://api.openweathermap.org/data/2.5/weather?q=" + safeCity + "&appid=" + String(weatherApiKey) + "&units=metric";
-            Serial.printf("[WETTER] Rufe Daten ab für: '%s'\n", currentCity.c_str());
-            
-            http.begin(url);
-            int httpCode = http.GET();
-            if (httpCode == 200) {
-                JsonDocument doc;
-                deserializeJson(doc, http.getString());
-                aktuelleTemp = doc["main"]["temp"];
-                weatherID = doc["weather"][0]["id"];
-                Serial.printf("[WETTER] Erfolgreich! Temp: %.1f\n", aktuelleTemp);
-            } else {
-                Serial.printf("[WETTER] Fehler! HTTP Code: %d\n", httpCode);
-            }
-            http.end();
+    HTTPClient http;
+    http.setConnectTimeout(4000);
+    http.setTimeout(5000);
+    http.useHTTP10(true); // verhindert haeufige -11 Read-Timeouts (kein keep-alive/chunked)
+
+    String safeCity = currentCity;
+    safeCity.replace(" ", "%20");
+    String url = "http://api.openweathermap.org/data/2.5/weather?q=" + safeCity +
+                 "&appid=" + String(weatherApiKey) + "&units=metric";
+    Serial.printf("[WETTER] Rufe Daten ab für: '%s'\n", currentCity.c_str());
+
+    if (!http.begin(url)) { Serial.println("[WETTER] begin() fehlgeschlagen"); return false; }
+
+    int httpCode = http.GET();
+    bool ok = false;
+    if (httpCode == 200) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, http.getStream());
+        if (!err) {
+            aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
+            weatherID    = doc["weather"][0]["id"] | weatherID;
+            Serial.printf("[WETTER] OK! Temp: %.1f  ID: %d\n", aktuelleTemp, weatherID);
+            ok = true;
+        } else {
+            Serial.printf("[WETTER] JSON-Fehler: %s\n", err.c_str());
         }
-    };
+    } else {
+        Serial.printf("[WETTER] Fehler! HTTP Code: %d\n", httpCode);
+    }
+    http.end();
+    return ok;
+}
 
-    // Erster Aufruf beim Start
-    fetchWetter();
-    unsigned long lastAPIUpdate = millis();
+// Hintergrund-Task: holt die Daten, ohne je die Anzeige zu blockieren.
+void taskWetterFetch(void * pvParameters) {
+    vTaskDelay(2500 / portTICK_PERIOD_MS); // kurz warten, bis WLAN/NTP stabil sind
+    for (;;) {
+        bool ok = fetchWetter();
+        forceWeatherUpdate = false;
+        unsigned long warte = ok ? 900000UL : 30000UL; // Erfolg: 15 min, sonst in 30 s erneut
+        unsigned long start = millis();
+        while (millis() - start < warte) {
+            if (forceWeatherUpdate) break; // Stadt geaendert -> sofort neu laden
+            vTaskDelay(200 / portTICK_PERIOD_MS);
+        }
+    }
+}
 
+void taskWetter(void * pvParameters) {
     // --- Wetter-Symbol-Helfer (zeichnen im linken Bereich x:1..11) ---
     auto drawWolke = [](int ox, int oy, CRGB col) {
         for (int x = ox; x <= ox + 9; x++) setPixel(x, oy + 3, col);
@@ -72,13 +94,7 @@ void taskWetter(void * pvParameters) {
     };
 
     for(;;) {
-        // HIER IST DER MAGISCHE TRIGGER: Entweder 15 Min sind um, ODER jemand hat im Web was geändert!
-        if (forceWeatherUpdate || (millis() - lastAPIUpdate > 900000)) { 
-            fetchWetter(); 
-            lastAPIUpdate = millis(); 
-            forceWeatherUpdate = false; // Trigger wieder ausschalten
-        }
-        
+        // Anzeige rendert nur noch aus den (im Hintergrund aktualisierten) Werten -> friert nie ein
         FastLED.clear();
         
         // --- DYNAMISCHER STADTNAME ---
