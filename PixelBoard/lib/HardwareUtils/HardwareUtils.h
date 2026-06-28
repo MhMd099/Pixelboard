@@ -32,4 +32,10 @@ void  applyTheme(int idx);            // Preset aktivieren
 int   themeAnzahl();                  // Anzahl Presets
 const char* themeName(int idx);       // Name eines Presets
 CRGB  themeCol(uint16_t phase, uint8_t val = 255); // themed Farbe für eine "Phase"
+
+// Uhr-Stil (pro User waehlbar): 0=Digital 1=Binaer 2=Wort 3=Analog
+extern int g_clockStyle;
+void  applyClockStyle(int idx);
+int   clockStyleAnzahl();
+const char* clockStyleName(int idx);
 #endif

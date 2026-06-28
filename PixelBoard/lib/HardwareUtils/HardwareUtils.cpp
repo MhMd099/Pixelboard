@@ -82,6 +82,14 @@ CRGB themeCol(uint16_t phase, uint8_t val) {
     return CHSV(hue, 255, val);
 }
 
+// ---- Uhr-Stil ----
+int g_clockStyle = 0;
+static const char* CLOCK_STYLES[] = {"Digital", "Binaer", "Wort", "Analog"};
+static const int CLOCK_N = sizeof(CLOCK_STYLES) / sizeof(CLOCK_STYLES[0]);
+int clockStyleAnzahl() { return CLOCK_N; }
+const char* clockStyleName(int idx) { return (idx >= 0 && idx < CLOCK_N) ? CLOCK_STYLES[idx] : "?"; }
+void applyClockStyle(int idx) { if (idx < 0 || idx >= CLOCK_N) idx = 0; g_clockStyle = idx; }
+
 void setPixel(int x, int y, CRGB color) {
     if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
     if (y < 8) { 

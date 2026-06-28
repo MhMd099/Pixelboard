@@ -16,6 +16,7 @@
 #include "TaskWetter.h"
 #include "Config.h"
 #include "TaskSnake.h"
+#include "TaskAnim.h"
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
 // ==========================================
@@ -346,6 +347,17 @@ void printMenu()
         drawNote(23, 7 + b3, CHSV((uint8_t)(jetzt / 12 + 170), 255, 235));
         break;
     }
+
+    case 5:
+    { // TASK 4: ANIMATIONEN (themed Plasma-Vorschau)
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 32; x++)
+            {
+                int v = (sin8(x * 14 + jetzt / 6) + sin8(y * 16 - jetzt / 8) + sin8((x * 3 + y * 5) + jetzt / 5)) / 3;
+                setPixel(x, y, themeCol(v + jetzt / 30, 200));
+            }
+        break;
+    }
     }
     FastLED.show();
 }
@@ -582,8 +594,9 @@ void setup() {
     xTaskCreate(taskWetter, "Wetter", 4096, NULL, 1, &handleB);
     xTaskCreate(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleC);
     xTaskCreate(taskMusik, "Musik", 2560, NULL, 1, &handleData); // Musik-Visualizer (Task 3)
+    xTaskCreate(taskAnim, "Anim", 4096, NULL, 1, &handleE);      // Animationen (Task 4)
 
-    vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC); vTaskSuspend(handleData);
+    vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC); vTaskSuspend(handleData); vTaskSuspend(handleE);
 
     // Wetterdaten laufen im Hintergrund (blockiert nie die Anzeige) -> immer aktiv
     xTaskCreate(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL);
@@ -620,11 +633,11 @@ void loop() {
         int xPerc = joystick2.readXPercent();
         if (!navigationsSperre) {
             if (xPerc <= -80) {
-                fokusModus = (fokusModus >= 4) ? 1 : fokusModus + 1;
+                fokusModus = (fokusModus >= 5) ? 1 : fokusModus + 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             } else if (xPerc >= 80) {
-                fokusModus = (fokusModus <= 1) ? 4 : fokusModus - 1;
+                fokusModus = (fokusModus <= 1) ? 5 : fokusModus - 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             }
@@ -639,7 +652,7 @@ void loop() {
             zurueckZumMenue();
         } else if (clicks.langKlick > 0) {
             playSound(SND_SELECT);
-            int next = (aktiverTask + 1) % 4; // Uhr, Wetter, Snake, Musik
+            int next = (aktiverTask + 1) % 5; // Uhr, Wetter, Snake, Musik, Animationen
             fokusModus = next + 1;
             wechsleZuTask(next);
         }

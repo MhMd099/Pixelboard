@@ -61,9 +61,10 @@ void loadConfigForUser(String user) {
 
     String alteStadt = currentCity;
     int themeIdx = 0; // Default-Design (Regenbogen)
+    int clockIdx = 0; // Default-Uhr (Digital)
 
     if (user == "") {
-        // Nicht eingeloggt -> immer Default-Stadt & Default-Design
+        // Nicht eingeloggt -> immer Default-Stadt & Default-Design/-Uhr
         currentCity = "Innsbruck";
     } else {
         currentCity = "Innsbruck"; // Fallback, falls der User noch keine Stadt hat
@@ -74,6 +75,7 @@ void loadConfigForUser(String user) {
                 if (doc[user].is<JsonObject>()) {
                     currentCity = doc[user]["city"] | "Innsbruck";
                     themeIdx = doc[user]["theme"] | 0;
+                    clockIdx = doc[user]["clock"] | 0;
                 } else if (doc[user].is<const char*>()) {
                     currentCity = doc[user].as<String>(); // Altes Format (nur Stadt als String)
                 }
@@ -82,9 +84,11 @@ void loadConfigForUser(String user) {
         }
     }
 
-    applyTheme(themeIdx); // Design des Users (oder Default) aktivieren
+    applyTheme(themeIdx);      // Design des Users (oder Default) aktivieren
+    applyClockStyle(clockIdx); // Uhr-Stil des Users (oder Default) aktivieren
     if (currentCity != alteStadt) forceWeatherUpdate = true;
-    Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity + ", Design=" + String(themeName(g_themeIndex)));
+    Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity +
+                   ", Design=" + String(themeName(g_themeIndex)) + ", Uhr=" + String(clockStyleName(g_clockStyle)));
 }
 
 void saveConfig(String user, String city) {
@@ -146,6 +150,30 @@ void saveTheme(String user, int themeIdx) {
 
     Serial.println("Design gespeichert für " + user + ": " + String(themeName(g_themeIndex)));
 }
+
+void saveClockStyle(String user, int clockIdx) {
+    user.trim();
+    applyClockStyle(clockIdx); // sofort live anwenden
+
+    if (user == "") return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+    if (!doc[user].is<JsonObject>()) {
+        doc[user].to<JsonObject>();
+    }
+    doc[user]["clock"] = g_clockStyle;
+
+    File file = LittleFS.open("/config.json", "w");
+    serializeJson(doc, file);
+    file.close();
+
+    Serial.println("Uhr-Stil gespeichert für " + user + ": " + String(clockStyleName(g_clockStyle)));
+}
 // --- HTML SEITEN ---
 void handleRoot() {
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
@@ -182,6 +210,16 @@ void handleRoot() {
         }
         html += "</select><br><input type='submit' value='Design speichern'></form>";
 
+        html += "<h4>Uhr-Stil:</h4>";
+        html += "<form action='/updateClock' method='POST'>";
+        html += "<select name='clock' style='padding:10px;border-radius:5px;'>";
+        for (int i = 0; i < clockStyleAnzahl(); i++) {
+            html += "<option value='" + String(i) + "'";
+            if (i == g_clockStyle) html += " selected";
+            html += ">" + String(clockStyleName(i)) + "</option>";
+        }
+        html += "</select><br><input type='submit' value='Uhr speichern'></form>";
+
         html += "<br><a href='/logout' style='color:#ff5555; text-decoration:none; font-weight:bold;'>Ausloggen</a></div>";
     }
     html += "</body></html>";
@@ -215,6 +253,14 @@ void handleUpdateTheme() {
     server.send(303);
 }
 
+void handleUpdateClock() {
+    if (server.hasArg("clock")) {
+        saveClockStyle(currentUser, server.arg("clock").toInt());
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
 void handleLogout() {
     loadConfigForUser(""); // User abmelden -> Default-Stadt Innsbruck
     server.sendHeader("Location", "/");
@@ -226,6 +272,7 @@ void setupWebServer() {
     server.on("/doLogin", HTTP_POST, handleDoLogin);
     server.on("/updateCity", HTTP_POST, handleUpdateCity);
     server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
+    server.on("/updateClock", HTTP_POST, handleUpdateClock);
     server.on("/logout", HTTP_GET, handleLogout);
     server.begin();
 }

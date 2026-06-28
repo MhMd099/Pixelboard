@@ -25,7 +25,8 @@ void initLittleFS();
 // Lade Default-Daten beim Start, z.B. für einen leeren User
 void loadConfigForUser(String user);
 void saveConfig(String user, String city);
-void saveTheme(String user, int themeIdx); // Design pro User speichern + anwenden
+void saveTheme(String user, int themeIdx);       // Design pro User speichern + anwenden
+void saveClockStyle(String user, int clockIdx);  // Uhr-Stil pro User speichern + anwenden
 void setupWebServer();
 void taskWebServerHandler(void * pvParameters);
 void saveHighScore(String user, int score);
