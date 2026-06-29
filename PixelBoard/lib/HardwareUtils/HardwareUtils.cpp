@@ -8,6 +8,7 @@ cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 cLEDText AnzeigeOben;
 cLEDText AnzeigeUnten;
 bool displayAktiv = true;
+SemaphoreHandle_t displayMutex = NULL;
 const char* font3x5[26] = {
   "111101111101101", "110101110101110", "111100100100111", "110101101101110",
   "111100111100111", "111100111100100", "111100101101111", "101101111101101",
@@ -17,6 +18,15 @@ const char* font3x5[26] = {
   "101101101101111", "101101101101010", "101101101111111", "101101010101101",
   "101101010010010", "111001010100111"
 };
+
+bool lockDisplay(uint32_t timeoutMs) {
+    if (displayMutex == NULL) return true;
+    return xSemaphoreTake(displayMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void unlockDisplay() {
+    if (displayMutex != NULL) xSemaphoreGive(displayMutex);
+}
 
 void drawChar3x5(int startX, int startY, char c, CRGB color) {
     if (c >= 'a' && c <= 'z') c -= 32; // Kleinbuchstaben zu Groß
@@ -84,11 +94,32 @@ CRGB themeCol(uint16_t phase, uint8_t val) {
 
 // ---- Uhr-Stil ----
 int g_clockStyle = 0;
-static const char* CLOCK_STYLES[] = {"Digital", "Binaer", "Wort", "Analog"};
+static const char* CLOCK_STYLES[] = {"Digital", "Binaer", "Analog"};
 static const int CLOCK_N = sizeof(CLOCK_STYLES) / sizeof(CLOCK_STYLES[0]);
 int clockStyleAnzahl() { return CLOCK_N; }
 const char* clockStyleName(int idx) { return (idx >= 0 && idx < CLOCK_N) ? CLOCK_STYLES[idx] : "?"; }
 void applyClockStyle(int idx) { if (idx < 0 || idx >= CLOCK_N) idx = 0; g_clockStyle = idx; }
+
+// ---- Kompakte Kuerzel fuer LittleFS (1 Buchstabe = Anfangsbuchstabe des Namens) ----
+static char grossbuchstabe(char c) { return (c >= 'a' && c <= 'z') ? (c - 32) : c; }
+int themeFromCode(char code) {
+    for (int i = 0; i < THEME_N; i++)
+        if (grossbuchstabe(THEMES[i].name[0]) == grossbuchstabe(code)) return i;
+    return 0;
+}
+int clockFromCode(char code) {
+    for (int i = 0; i < CLOCK_N; i++)
+        if (grossbuchstabe(CLOCK_STYLES[i][0]) == grossbuchstabe(code)) return i;
+    return 0;
+}
+char themeCode(int idx) {
+    if (idx < 0 || idx >= THEME_N) idx = 0;
+    return grossbuchstabe(THEMES[idx].name[0]);
+}
+char clockCode(int idx) {
+    if (idx < 0 || idx >= CLOCK_N) idx = 0;
+    return grossbuchstabe(CLOCK_STYLES[idx][0]);
+}
 
 void setPixel(int x, int y, CRGB color) {
     if (y < 0 || y >= 16 || x < 0 || x >= 32) return;

@@ -2,6 +2,8 @@
 #include <LittleFS.h>
 #include <ArduinoJson.h>
 #include <WebServer.h>
+#include <DNSServer.h>
+#include <WiFi.h>
 #include "HardwareUtils.h" // für applyTheme / Theme-Status
 
 const char* ssid = "Nothin";
@@ -46,6 +48,10 @@ String currentUser = "";
 bool forceWeatherUpdate = false; // NEU: Startet auf false
 
 WebServer server(80);
+DNSServer dnsServer;
+bool captivePortalActive = false;
+static const byte DNS_PORT = 53;
+static const char* captiveSsid = "PixelBoard";
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
@@ -53,6 +59,47 @@ void initLittleFS() {
         return;
     }
     Serial.println("LittleFS erfolgreich gemountet.");
+}
+
+static JsonObject userObject(JsonDocument& doc, const String& user) {
+    if (!doc[user].is<JsonObject>()) {
+        String oldCity = doc[user].is<const char*>() ? doc[user].as<String>() : "";
+        JsonObject obj = doc[user].to<JsonObject>();
+        if (oldCity != "") obj["c"] = oldCity;
+    }
+    return doc[user].as<JsonObject>();
+}
+
+static int clockIndexFromLegacy(int idx);
+
+static void removeLegacyUserKeys(JsonObject obj) {
+    if (!obj["t"].is<const char*>()) {
+        int oldTheme = obj["theme"] | g_themeIndex;
+        obj["t"] = String(themeCode(oldTheme));
+    }
+    if (!obj["u"].is<const char*>()) {
+        int oldClock = clockIndexFromLegacy(obj["clock"] | g_clockStyle);
+        obj["u"] = String(clockCode(oldClock));
+    }
+    if (!obj["h"].is<int>() && obj["highscore"].is<int>()) {
+        obj["h"] = obj["highscore"].as<int>();
+    }
+    obj.remove("city");
+    obj.remove("theme");
+    obj.remove("clock");
+    obj.remove("highscore");
+}
+
+static int readHighScore(JsonVariant data) {
+    if (!data.is<JsonObject>()) return 0;
+    JsonObject obj = data.as<JsonObject>();
+    return obj["h"] | (obj["highscore"] | 0);
+}
+
+static int clockIndexFromLegacy(int idx) {
+    if (idx == 3) return 2; // altes Analog nach Entfernen der Wortuhr
+    if (idx == 2) return 0; // alte Wortuhr faellt auf Digital zurueck
+    return idx;
 }
 
 void loadConfigForUser(String user) {
@@ -73,11 +120,25 @@ void loadConfigForUser(String user) {
             JsonDocument doc;
             if (!deserializeJson(doc, file)) {
                 if (doc[user].is<JsonObject>()) {
-                    currentCity = doc[user]["city"] | "Innsbruck";
-                    themeIdx = doc[user]["theme"] | 0;
-                    clockIdx = doc[user]["clock"] | 0;
+                    JsonObject obj = doc[user].as<JsonObject>();
+                    currentCity = obj["c"].is<const char*>() ? obj["c"].as<String>() :
+                                  (obj["city"].is<const char*>() ? obj["city"].as<String>() : "Innsbruck");
+
+                    if (obj["t"].is<const char*>()) {
+                        const char* tCode = obj["t"];
+                        themeIdx = themeFromCode(tCode[0]);
+                    } else {
+                        themeIdx = obj["theme"] | 0;
+                    }
+
+                    if (obj["u"].is<const char*>()) {
+                        const char* uCode = obj["u"];
+                        clockIdx = clockFromCode(uCode[0]);
+                    } else {
+                        clockIdx = clockIndexFromLegacy(obj["clock"] | 0);
+                    }
                 } else if (doc[user].is<const char*>()) {
-                    currentCity = doc[user].as<String>(); // Altes Format (nur Stadt als String)
+                    currentCity = doc[user].as<String>();
                 }
             }
             file.close();
@@ -113,12 +174,10 @@ void saveConfig(String user, String city) {
         file.close();
     }
 
-    // Eintrag in ein Objekt umwandeln, falls noch altes Format (nur String)
-    if (!doc[user].is<JsonObject>()) {
-        doc[user].to<JsonObject>();
-    }
-    // Stadt in eigenem Feld -> Highscore bleibt erhalten
-    doc[user]["city"] = city;
+    JsonObject obj = userObject(doc, user);
+    // Stadt in eigenem Feld -> Highscore/Design bleiben erhalten
+    obj["c"] = city;
+    removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
     serializeJson(doc, file);
@@ -139,10 +198,9 @@ void saveTheme(String user, int themeIdx) {
         deserializeJson(doc, file);
         file.close();
     }
-    if (!doc[user].is<JsonObject>()) {
-        doc[user].to<JsonObject>();
-    }
-    doc[user]["theme"] = g_themeIndex;
+    JsonObject obj = userObject(doc, user);
+    obj["t"] = String(themeCode(g_themeIndex));
+    removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
     serializeJson(doc, file);
@@ -163,10 +221,9 @@ void saveClockStyle(String user, int clockIdx) {
         deserializeJson(doc, file);
         file.close();
     }
-    if (!doc[user].is<JsonObject>()) {
-        doc[user].to<JsonObject>();
-    }
-    doc[user]["clock"] = g_clockStyle;
+    JsonObject obj = userObject(doc, user);
+    obj["u"] = String(clockCode(g_clockStyle));
+    removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
     serializeJson(doc, file);
@@ -177,12 +234,14 @@ void saveClockStyle(String user, int clockIdx) {
 // --- HTML SEITEN ---
 void handleRoot() {
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
-    html += "<style>body{font-family:Arial,sans-serif; background:#222; color:#fff; text-align:center; padding:20px;}";
-    html += "input[type='text'], input[type='password']{width:90%; max-width:300px; padding:10px; margin:10px 0; border-radius:5px; border:none;}";
-    html += "input[type='submit']{background:#00bcd4; color:#fff; padding:10px 20px; border:none; border-radius:5px; font-weight:bold; cursor:pointer;}";
-    html += ".card{background:#333; padding:20px; border-radius:10px; display:inline-block; margin-top:20px;}</style></head><body>";
+    html += "<style>body{font-family:Arial,sans-serif;background:#111827;color:#f8fafc;text-align:center;margin:0;padding:22px;}";
+    html += "h1{margin:8px 0 4px;font-size:30px;}h2{margin:0 0 18px;color:#38bdf8;font-size:16px;font-weight:600;}";
+    html += "input[type='text'],input[type='password'],select{width:90%;max-width:320px;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;}";
+    html += "input[type='submit']{background:#06b6d4;color:#fff;padding:11px 20px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;}";
+    html += ".card{background:#1f2937;padding:20px;border-radius:10px;display:inline-block;margin-top:10px;min-width:min(320px,90vw);box-shadow:0 10px 30px #0008;}";
+    html += "hr{border:0;border-top:1px solid #374151;margin:18px 0;}a{color:#f87171;text-decoration:none;font-weight:bold;}</style></head><body>";
     
-    html += "<h2>Led-Matrix System</h2>";
+    html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
     if (currentUser == "") {
         html += "<div class='card'><h3>Bitte einloggen</h3>";
@@ -267,6 +326,39 @@ void handleLogout() {
     server.send(303);
 }
 
+void startCaptivePortal() {
+    if (captivePortalActive) return;
+
+    WiFi.mode(WIFI_AP_STA);
+    bool ok = WiFi.softAP(captiveSsid);
+    IPAddress apIp = WiFi.softAPIP();
+    if (ok) {
+        dnsServer.start(DNS_PORT, "*", apIp);
+        captivePortalActive = true;
+        Serial.println("Captive Portal aktiv: http://" + apIp.toString() + " / SSID: " + String(captiveSsid));
+    } else {
+        Serial.println("Captive Portal konnte nicht gestartet werden.");
+    }
+}
+
+static void redirectToPortal() {
+    String url = captivePortalActive ? ("http://" + WiFi.softAPIP().toString() + "/") : "/";
+    server.sendHeader("Location", url, true);
+    server.send(302, "text/plain", "");
+}
+
+static void handleCaptiveProbe() {
+    redirectToPortal();
+}
+
+static void handleNotFound() {
+    if (captivePortalActive) {
+        redirectToPortal();
+    } else {
+        server.send(404, "text/plain", "Nicht gefunden");
+    }
+}
+
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/doLogin", HTTP_POST, handleDoLogin);
@@ -274,16 +366,27 @@ void setupWebServer() {
     server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
     server.on("/updateClock", HTTP_POST, handleUpdateClock);
     server.on("/logout", HTTP_GET, handleLogout);
+    server.on("/generate_204", HTTP_GET, handleCaptiveProbe);
+    server.on("/gen_204", HTTP_GET, handleCaptiveProbe);
+    server.on("/hotspot-detect.html", HTTP_GET, handleCaptiveProbe);
+    server.on("/library/test/success.html", HTTP_GET, handleCaptiveProbe);
+    server.on("/connecttest.txt", HTTP_GET, handleCaptiveProbe);
+    server.on("/ncsi.txt", HTTP_GET, handleCaptiveProbe);
+    server.onNotFound(handleNotFound);
     server.begin();
 }
 
 void taskWebServerHandler(void * pvParameters) {
     for(;;) {
+        if (captivePortalActive) dnsServer.processNextRequest();
         server.handleClient();
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
 void saveHighScore(String user, int score) {
+    user.trim();
+    if (user == "") return;
+
     JsonDocument doc;
     // 1. Bestehende Datei einlesen
     if (LittleFS.exists("/config.json")) {
@@ -293,16 +396,13 @@ void saveHighScore(String user, int score) {
     }
 
     // 2. Eintrag in ein Objekt umwandeln, falls nötig (alte Stadt als String erhalten)
-    if (!doc[user].is<JsonObject>()) {
-        String alteStadt = doc[user].is<const char*>() ? doc[user].as<String>() : "";
-        doc[user].to<JsonObject>();
-        if (alteStadt != "") doc[user]["city"] = alteStadt;
-    }
+    JsonObject obj = userObject(doc, user);
 
     // 3. Nur speichern, wenn der neue Score höher ist!
-    int currentHigh = doc[user]["highscore"] | 0; // | 0 ist der Standardwert, falls noch kein Score existiert
+    int currentHigh = readHighScore(doc[user]); // h, altes highscore als Fallback
     if (score > currentHigh) {
-        doc[user]["highscore"] = score;
+        obj["h"] = score;
+        removeLegacyUserKeys(obj);
         
         // Datei speichern
         File file = LittleFS.open("/config.json", "w");
@@ -329,7 +429,7 @@ void printTopThree() {
     for (JsonPair kv : doc.as<JsonObject>()) {
         if (count < 10) {
             scores[count].name = kv.key().c_str();
-            scores[count].score = kv.value()["highscore"] | 0;
+            scores[count].score = readHighScore(kv.value());
             count++;
         }
     }
@@ -359,7 +459,7 @@ int getHighScore(String user) {
         JsonDocument doc;
         deserializeJson(doc, file);
         file.close();
-        return doc[user]["highscore"] | 0;
+        return readHighScore(doc[user]);
     }
     return 0; // Standard, wenn noch keiner existiert
 }
@@ -375,7 +475,7 @@ void getTopScores(PlayerData* list, int& count) {
     for (JsonPair kv : doc.as<JsonObject>()) {
         if (count < 10) {
             list[count].name = kv.key().c_str();
-            list[count].score = kv.value()["highscore"] | 0;
+            list[count].score = readHighScore(kv.value());
             count++;
         }
     }

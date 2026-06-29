@@ -7,6 +7,8 @@
 #include "Config.h"
 #include "SoundUtils.h" // für Donner-Geräusch
 
+extern volatile int aktiverTask;
+
 int weatherID = 800; 
 float aktuelleTemp = 0.0;
 
@@ -94,6 +96,19 @@ void taskWetter(void * pvParameters) {
     };
 
     for(;;) {
+        if (aktiverTask != 1) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 1) {
+            unlockDisplay();
+            continue;
+        }
+
         // Anzeige rendert nur noch aus den (im Hintergrund aktualisierten) Werten -> friert nie ein
         FastLED.clear();
         
@@ -158,6 +173,7 @@ void taskWetter(void * pvParameters) {
         }
 
         FastLED.show();
+        unlockDisplay();
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }

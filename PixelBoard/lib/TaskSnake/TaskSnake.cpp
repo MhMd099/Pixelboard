@@ -7,6 +7,7 @@
 
 
 extern volatile bool taskWechselAnforderung;
+extern volatile int aktiverTask;
 
 // Global verfügbar machen
 extern void drawDigitW(int x, int y, int n, CRGB c);
@@ -40,18 +41,27 @@ void taskSnakeHandler(void *pvParameters) {
     resetGame();
 
     for(;;) {
-        if (taskWechselAnforderung) {
-            FastLED.clear();
-            FastLED.show();              // LEDs löschen
-            taskWechselAnforderung = false; // Flag zurücksetzen
-            vTaskSuspend(NULL);          // Task selbst schlafen legen
+        if (aktiverTask != 2) {
+            taskWechselAnforderung = false;
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
         }
+        taskWechselAnforderung = false;
         
         bool clicked = (digitalRead(PIN_SW) == HIGH);
         static bool lastClicked = false;
         bool btnPress = (clicked && !lastClicked);
         lastClicked = clicked;
         if(clicked) vTaskDelay(50 / portTICK_PERIOD_MS);
+
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 2) {
+            unlockDisplay();
+            continue;
+        }
 
         switch (currentState) {
             case STATE_MENU: {
@@ -136,6 +146,7 @@ void taskSnakeHandler(void *pvParameters) {
                 break;
             }
         }
+        unlockDisplay();
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }

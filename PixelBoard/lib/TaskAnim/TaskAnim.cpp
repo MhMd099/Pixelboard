@@ -2,6 +2,8 @@
 #include <FastLED.h>
 #include "HardwareUtils.h"
 
+extern volatile int aktiverTask;
+
 // Eigener Framebuffer (32x16). Statisch -> belegt keinen Stack.
 static CRGB buf[16 * 32];
 #define B(x, y) buf[(y) * 32 + (x)]
@@ -27,6 +29,11 @@ void taskAnim(void *pvParameters) {
     auto idx = [](int x, int y) { x = (x + 32) % 32; y = (y + 16) % 16; return y * 32 + x; };
 
     for (;;) {
+        if (aktiverTask != 4) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+
         unsigned long now = millis();
         if (now - modeStart > 9000) { // alle 9s naechste Animation
             mode = (mode + 1) % 6;
@@ -109,10 +116,15 @@ void taskAnim(void *pvParameters) {
 
         modeInit = false;
 
-        for (int y = 0; y < 16; y++)
-            for (int x = 0; x < 32; x++)
-                setPixel(x, y, B(x, y));
-        FastLED.show();
+        if (lockDisplay(20)) {
+            if (aktiverTask == 4) {
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 32; x++)
+                        setPixel(x, y, B(x, y));
+                FastLED.show();
+            }
+            unlockDisplay();
+        }
         vTaskDelay(40 / portTICK_PERIOD_MS);
     }
 }

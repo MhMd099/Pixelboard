@@ -11,7 +11,7 @@
 
 // I2S Konfiguration
 #define SAMPLE_RATE 44100
-#define VOLUME 1000 // Lautstärke (0 bis 1000+)
+#define VOLUME 20000 // Lautstärke (0 bis 1000+)
 
 bool playing = false;
 

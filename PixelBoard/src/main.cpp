@@ -55,7 +55,7 @@ void starteTask(int nummer);
 // Globale Variablen aus der Struktur übernehmen
 extern SemaphoreHandle_t clickCounterMutex;
 extern int fokusModus;
-extern int aktiverTask;
+extern volatile int aktiverTask;
 extern volatile bool taskWechselAnforderung;
 
 volatile bool taskWechselAnforderung = false;
@@ -68,7 +68,7 @@ TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, 
 char datumBuffer[40], zeitBuffer[40];
 char bufferOben[64], bufferUnten[64];
 int fokusModus = 0;   // Navigation im Menü
-int aktiverTask = -1; // -1 = Menü, 0-4 = Task läuft
+volatile int aktiverTask = -1; // -1 = Menue, -2 = Wechsel, 0-4 = Task laeuft
 bool navigationsSperre = false;
 unsigned long navigationSperreZeit = 0;
 int lastXPerc = 0;
@@ -106,6 +106,7 @@ void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color)
 
 void printMenu()
 {
+    if (!lockDisplay(20)) return;
     FastLED.clear();
 
     // Zeitbasis für alle Animationen abrufen
@@ -203,6 +204,7 @@ void printMenu()
             currentHue += 5;
         }
         FastLED.show();
+        unlockDisplay();
         return;
     }
 
@@ -360,32 +362,30 @@ void printMenu()
     }
     }
     FastLED.show();
+    unlockDisplay();
 }
 
 void zurueckZumMenue()
 {
-    if (aktiverTask == 3)
-        stopMusic(); // Musik stoppen, falls wir aus der Musik-App kommen
-    if (aktiverTask >= 0)
-    {
-        TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
-        if (aktuellerHandle != NULL)
-        {
-            vTaskSuspend(aktuellerHandle);
-            vTaskDelay(20 / portTICK_PERIOD_MS); // laufendes show() auslaufen lassen
-        }
-    }
+    int vorherigerTask = aktiverTask;
+    aktiverTask = -2;
 
-    aktiverTask = -1;
+    if (vorherigerTask == 3)
+        stopMusic(); // Musik stoppen, falls wir aus der Musik-App kommen
+
     fokusModus = 0;
     navigationsSperre = false;
     lastXPerc = 0;
     lastYPerc = 0;
-    FastLED.clear(true);
+    if (lockDisplay(100)) {
+        FastLED.clear(true);
+        unlockDisplay();
+    }
 
     joystick2.reset(); // Klick-Zustand sauber zuruecksetzen
 
     vTaskDelay(30 / portTICK_PERIOD_MS);
+    aktiverTask = -1;
     printMenu();
     setEventSperre(250);
     Serial.println("Zurück zur PIXELBOARD MENÜ Startseite");
@@ -451,28 +451,16 @@ void wechsleZuTask(int zielTask)
 {
     if (zielTask < 0 || zielTask > 4)
         return;
-    TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
-    TaskHandle_t zielHandle = getTaskHandle(zielTask);
+    int vorherigerTask = aktiverTask;
+    aktiverTask = -2; // Wechselzustand: kein Display-Task darf neu zeichnen
 
-    // Wenn wir aus Snake (Index 2) wechseln, setzen wir das Abbruch-Signal
-    if (aktiverTask == 2)
-    {
-        taskWechselAnforderung = true;
-        // Dem Snake-Task kurz Zeit geben, die Schleife sauber zu verlassen
-        vTaskDelay(50 / portTICK_PERIOD_MS);
-    }
-    if (aktiverTask == 3)
+    if (vorherigerTask == 3)
         stopMusic(); // Musik beim Verlassen der Musik-App stoppen
 
-    // WICHTIG: alten Task ZUERST anhalten, damit er nicht parallel zu FastLED rendert
-    // (sonst kann der RMT/LED-Treiber haengen -> "friert ein")
-    if (aktiverTask >= 0 && aktuellerHandle != NULL && aktuellerHandle != zielHandle)
-    {
-        vTaskSuspend(aktuellerHandle);
-        vTaskDelay(20 / portTICK_PERIOD_MS); // laufendes show() sauber auslaufen lassen
+    if (lockDisplay(100)) {
+        FastLED.clear(true);
+        unlockDisplay();
     }
-
-    FastLED.clear(true);
 
     aktiverTask = zielTask;
     taskWechselAnforderung = false; // Zurücksetzen für den nächsten Aufruf
@@ -482,10 +470,6 @@ void wechsleZuTask(int zielTask)
 
     joystick2.reset(); // Klick-Zustand sauber zuruecksetzen (kein Nachfeuern)
 
-    if (zielHandle != NULL)
-    {
-        vTaskResume(zielHandle);
-    }
     if (zielTask == 3)
         startMusic(); // Musik beim Betreten der Musik-App starten
 
@@ -506,6 +490,19 @@ void taskMusik(void *pv)
 {
     for (;;)
     {
+        if (aktiverTask != 3) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 3) {
+            unlockDisplay();
+            continue;
+        }
+
         FastLED.clear();
         unsigned long jetzt = millis();
 
@@ -524,6 +521,7 @@ void taskMusik(void *pv)
             }
         }
         FastLED.show();
+        unlockDisplay();
         vTaskDelay(45 / portTICK_PERIOD_MS);
     }
 }
@@ -537,10 +535,12 @@ void setup() {
     Serial.println("\n--- PIXELBOARD START ---");
 
     clickCounterMutex = xSemaphoreCreateMutex();
+    displayMutex = xSemaphoreCreateMutex();
     initLittleFS();
     loadConfigForUser(""); // Lädt Stadt & User
 
-   WiFi.begin(ssid, password);
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.begin(ssid, password);
     Serial.print("Verbinde WiFi");
     int retry = 0;
     while (WiFi.status() != WL_CONNECTED && retry < 30) { // Erhöht auf 30 (15 Sek.)
@@ -568,6 +568,7 @@ void setup() {
     } else {
         Serial.println("\nWLAN-Verbindung fehlgeschlagen! Uhr wird nicht synchronisieren.");
     }
+    startCaptivePortal();
 
     // Matrix & Audio
     FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
@@ -589,17 +590,19 @@ void setup() {
 
     // Webserver & Apps
     setupWebServer();
-    xTaskCreate(taskWebServerHandler, "Web", 4096, NULL, 1, NULL);
-    xTaskCreate(taskUhr, "Uhr", 4096, NULL, 1, &handleA);
-    xTaskCreate(taskWetter, "Wetter", 4096, NULL, 1, &handleB);
-    xTaskCreate(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleC);
-    xTaskCreate(taskMusik, "Musik", 2560, NULL, 1, &handleData); // Musik-Visualizer (Task 3)
-    xTaskCreate(taskAnim, "Anim", 4096, NULL, 1, &handleE);      // Animationen (Task 4)
+    // Netzwerk-Tasks auf Kern 0 (stoeren das Rendern nicht)
+    xTaskCreatePinnedToCore(taskWebServerHandler, "Web", 4096, NULL, 1, NULL, 0);
 
-    vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC); vTaskSuspend(handleData); vTaskSuspend(handleE);
+    // ALLE Anzeige-Tasks auf Kern 1 pinnen -> nie zwei gleichzeitig auf FastLED
+    // (verhindert "durcheinander", NTP-im-Menue und das Einfrieren)
+    xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleA, 1);
+    xTaskCreatePinnedToCore(taskWetter, "Wetter", 4096, NULL, 1, &handleB, 1);
+    xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleC, 1);
+    xTaskCreatePinnedToCore(taskMusik, "Musik", 2560, NULL, 1, &handleData, 1); // Task 3
+    xTaskCreatePinnedToCore(taskAnim, "Anim", 4096, NULL, 1, &handleE, 1);      // Task 4
 
-    // Wetterdaten laufen im Hintergrund (blockiert nie die Anzeige) -> immer aktiv
-    xTaskCreate(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL);
+    // Wetterdaten im Hintergrund auf Kern 0 (blockiert nie die Anzeige)
+    xTaskCreatePinnedToCore(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL, 0);
 
     joystick2.setInverted(true, true);
     // Joysticks im Ruhezustand neu kalibrieren (ADC jetzt bereit) -> verhindert haengende Navigation
@@ -627,6 +630,7 @@ void loop() {
             if (fokusModus > 0) {
                 playSound(SND_SELECT);
                 wechsleZuTask(fokusModus - 1);
+                return; // WICHTIG: nicht danach noch printMenu() ueber die App zeichnen
             }
         }
 

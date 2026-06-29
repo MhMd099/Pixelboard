@@ -6,6 +6,7 @@
 #include <FastLED.h>   // Definiert CRGB
 #include <LEDMatrix.h> // Definiert cLEDMatrix und cLEDMatrixBase
 #include <LEDText.h>   // Erst JETZT darf sie geladen werden!
+#include <freertos/semphr.h>
 
 // Globale Matrix-Instanzen
 extern cLEDMatrix<32, -8, VERTICAL_ZIGZAG_MATRIX> ledsOben;
@@ -14,6 +15,10 @@ extern cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 // Globale Text-Instanzen
 extern cLEDText AnzeigeOben;
 extern cLEDText AnzeigeUnten;
+
+extern SemaphoreHandle_t displayMutex;
+bool lockDisplay(uint32_t timeoutMs = 50);
+void unlockDisplay();
 
 void setPixel(int x, int y, CRGB color);
 void drawChar3x5(int startX, int startY, char c, CRGB color);
@@ -33,9 +38,15 @@ int   themeAnzahl();                  // Anzahl Presets
 const char* themeName(int idx);       // Name eines Presets
 CRGB  themeCol(uint16_t phase, uint8_t val = 255); // themed Farbe für eine "Phase"
 
-// Uhr-Stil (pro User waehlbar): 0=Digital 1=Binaer 2=Wort 3=Analog
+// Uhr-Stil (pro User waehlbar): 0=Digital 1=Binaer 2=Analog
 extern int g_clockStyle;
 void  applyClockStyle(int idx);
 int   clockStyleAnzahl();
 const char* clockStyleName(int idx);
+
+// Kompakte 1-Buchstaben-Kuerzel <-> Index (fuer LittleFS)
+int themeFromCode(char code);
+int clockFromCode(char code);
+char themeCode(int idx);
+char clockCode(int idx);
 #endif

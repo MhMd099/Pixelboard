@@ -3,6 +3,8 @@
 #include <math.h>
 #include "HardwareUtils.h"
 
+extern volatile int aktiverTask;
+
 // Zwei Ziffern (mit fuehrender Null) ab x zeichnen
 static void zweiZiffern(int x, int y, int wert, CRGB c) {
     drawDigitW(x, y, (wert / 10) % 10, c);
@@ -49,40 +51,7 @@ static void uhrBinaer(struct tm &ti, CRGB col) {
     }
 }
 
-// ---------- Stil 2: WORT (scrollend, Deutsch) ----------
-static const char *stundeWort(int h) {
-    static const char *w[12] = {"ZWOELF", "EINS", "ZWEI", "DREI", "VIER", "FUENF",
-                                "SECHS", "SIEBEN", "ACHT", "NEUN", "ZEHN", "ELF"};
-    return w[h % 12];
-}
-static void uhrWort(struct tm &ti, CRGB col, unsigned long jetzt) {
-    int h12 = ti.tm_hour % 12;
-    int hN  = (h12 + 1) % 12;
-    int b   = ti.tm_min / 5;
-    char phrase[48];
-    switch (b) {
-        case 0:  snprintf(phrase, sizeof(phrase), "ES IST %s UHR", stundeWort(h12)); break;
-        case 1:  snprintf(phrase, sizeof(phrase), "FUENF NACH %s", stundeWort(h12)); break;
-        case 2:  snprintf(phrase, sizeof(phrase), "ZEHN NACH %s", stundeWort(h12)); break;
-        case 3:  snprintf(phrase, sizeof(phrase), "VIERTEL NACH %s", stundeWort(h12)); break;
-        case 4:  snprintf(phrase, sizeof(phrase), "ZWANZIG NACH %s", stundeWort(h12)); break;
-        case 5:  snprintf(phrase, sizeof(phrase), "FUENF VOR HALB %s", stundeWort(hN)); break;
-        case 6:  snprintf(phrase, sizeof(phrase), "HALB %s", stundeWort(hN)); break;
-        case 7:  snprintf(phrase, sizeof(phrase), "FUENF NACH HALB %s", stundeWort(hN)); break;
-        case 8:  snprintf(phrase, sizeof(phrase), "ZWANZIG VOR %s", stundeWort(hN)); break;
-        case 9:  snprintf(phrase, sizeof(phrase), "VIERTEL VOR %s", stundeWort(hN)); break;
-        case 10: snprintf(phrase, sizeof(phrase), "ZEHN VOR %s", stundeWort(hN)); break;
-        default: snprintf(phrase, sizeof(phrase), "FUENF VOR %s", stundeWort(hN)); break;
-    }
-    int len = strlen(phrase);
-    int total = len * 4 + 32;
-    int scrollX = 32 - (int)((jetzt / 80) % total);
-    for (int i = 0; i < len; i++) {
-        if (phrase[i] != ' ') drawChar3x5(scrollX + i * 4, 6, phrase[i], col);
-    }
-}
-
-// ---------- Stil 3: ANALOG ----------
+// ---------- Stil 2: ANALOG ----------
 static void zeichneLinie(int x0, int y0, int x1, int y1, CRGB c) {
     int dx = abs(x1 - x0), dy = -abs(y1 - y0);
     int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
@@ -116,6 +85,19 @@ void taskUhr(void *pvParameters) {
     Serial.println("TaskUhr: Gestartet.");
 
     for (;;) {
+        if (aktiverTask != 0) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 0) {
+            unlockDisplay();
+            continue;
+        }
+
         FastLED.clear();
         unsigned long jetzt = millis();
         CRGB col = themeCol(jetzt / 40); // Theme-Farbe, sanft wandernd
@@ -123,8 +105,7 @@ void taskUhr(void *pvParameters) {
         if (getLocalTime(&timeinfo, 10)) {
             switch (g_clockStyle) {
                 case 1: uhrBinaer(timeinfo, col); break;
-                case 2: uhrWort(timeinfo, col, jetzt); break;
-                case 3: uhrAnalog(timeinfo, col); break;
+                case 2: uhrAnalog(timeinfo, col); break;
                 default: uhrDigital(timeinfo, col, jetzt); break;
             }
         } else {
@@ -136,6 +117,7 @@ void taskUhr(void *pvParameters) {
         }
 
         FastLED.show();
+        unlockDisplay();
         vTaskDelay(60 / portTICK_PERIOD_MS);
     }
 }
