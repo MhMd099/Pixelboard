@@ -3,36 +3,43 @@
 
 #include <Arduino.h>
 
-// --- Netzwerkeinstellungen ---
-extern const char* ssid;
-extern const char* password;
-
 // --- API Keys ---
 extern const char* weatherApiKey;
 
-// --- Google Sheets (für später) ---
-extern const char* spreadsheetId;
-extern const char* PROJECT_ID;
-extern const char* CLIENT_EMAIL;
-extern const char* PRIVATE_KEY;
-
-// Hier muss es auch deklariert sein
-extern bool forceWeatherUpdate; 
+extern bool forceWeatherUpdate;
 extern String currentCity;
 extern String currentUser;
+
+// --- WLAN / Captive Portal ---
+extern String wifiSsid;
+extern String wifiPassword;
+void loadWifiCredentials();
+bool hasWifiCredentials();
+String configuredWifiSsid();
+void saveWifiCredentials(String newSsid, String newPassword);
+void beginWifiConnection();
+void maintainWifiConnection();
+
+// --- Geraete-Einstellungen ---
+extern int currentDhtPin;
+extern int currentDhtType;
+void loadDeviceSettings();
+void saveDhtSettings(int pin, int type);
+
 // --- Funktionen ---
 void initLittleFS();
-// Lade Default-Daten beim Start, z.B. für einen leeren User
 void loadConfigForUser(String user);
 void saveConfig(String user, String city);
-void saveTheme(String user, int themeIdx);       // Design pro User speichern + anwenden
-void saveClockStyle(String user, int clockIdx);  // Uhr-Stil pro User speichern + anwenden
+void saveTheme(String user, int themeIdx);
+void saveClockStyle(String user, int clockIdx);
 void startCaptivePortal();
 void setupWebServer();
 void taskWebServerHandler(void * pvParameters);
 void saveHighScore(String user, int score);
 int getHighScore(String user);
 void printTopThree();
+
 struct PlayerData { String name; int score; };
 void getTopScores(PlayerData* list, int& count);
+
 #endif

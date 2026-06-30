@@ -8,7 +8,7 @@ cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 cLEDText AnzeigeOben;
 cLEDText AnzeigeUnten;
 bool displayAktiv = true;
-SemaphoreHandle_t displayMutex = NULL;
+extern SemaphoreHandle_t displayMutex;
 const char* font3x5[26] = {
   "111101111101101", "110101110101110", "111100100100111", "110101101101110",
   "111100111100111", "111100111100100", "111100101101111", "101101111101101",

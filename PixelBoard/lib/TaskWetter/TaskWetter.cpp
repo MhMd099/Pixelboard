@@ -111,28 +111,30 @@ void taskWetter(void * pvParameters) {
 
         // Anzeige rendert nur noch aus den (im Hintergrund aktualisierten) Werten -> friert nie ein
         FastLED.clear();
+        unsigned long jetzt = millis();
+        CRGB textCol = themeCol(jetzt / 40, 255);
+        CRGB valueCol = themeCol(jetzt / 40 + 96, 235);
         
         // --- DYNAMISCHER STADTNAME ---
         String abbr = currentCity.substring(0, 3);
         abbr.toUpperCase();
         
-        CRGB txtCol = CRGB::Cyan;
+        CRGB txtCol = textCol;
         if (abbr.length() > 0) drawChar3x5(16, 1, abbr.charAt(0), txtCol);
         if (abbr.length() > 1) drawChar3x5(20, 1, abbr.charAt(1), txtCol);
         if (abbr.length() > 2) drawChar3x5(24, 1, abbr.charAt(2), txtCol);
 
         // --- TEMPERATUR ---
         int t = abs((int)aktuelleTemp);
-        drawDigitW(16, 10, t / 10, CRGB::White);
-        drawDigitW(20, 10, t % 10, CRGB::White);
+        drawDigitW(16, 10, t / 10, valueCol);
+        drawDigitW(20, 10, t % 10, valueCol);
         
-        setPixel(24, 10, CRGB::White); // Grad-Symbol
-        for(int y=10; y<15; y++) setPixel(26, y, CRGB::White); 
-        for(int x=27; x<30; x++) { setPixel(x, 10, CRGB::White); setPixel(x, 14, CRGB::White); } 
-        setPixel(30, 11, CRGB::White); setPixel(30, 13, CRGB::White); 
+        setPixel(24, 10, valueCol); // Grad-Symbol
+        for(int y=10; y<15; y++) setPixel(26, y, valueCol); 
+        for(int x=27; x<30; x++) { setPixel(x, 10, valueCol); setPixel(x, 14, valueCol); } 
+        setPixel(30, 11, valueCol); setPixel(30, 13, valueCol); 
 
         // --- WETTER-SYMBOL je nach Bedingung (animiert) ---
-        unsigned long jetzt = millis();
         int cat = weatherID / 100;
 
         if (weatherID == 800) {

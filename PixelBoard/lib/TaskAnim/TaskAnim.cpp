@@ -12,6 +12,12 @@ static void animFade(uint8_t keep) {
     for (int i = 0; i < 16 * 32; i++) buf[i].nscale8(keep);
 }
 
+static CRGB themedHeatColor(uint8_t heat, uint32_t frame) {
+    if (heat < 12) return CRGB::Black;
+    uint8_t val = qadd8(scale8(heat, 220), 35);
+    return themeCol(heat + frame, val);
+}
+
 void taskAnim(void *pvParameters) {
     static uint8_t heat[16 * 32];
     static int     dropY[32];
@@ -61,7 +67,7 @@ void taskAnim(void *pvParameters) {
                         heat[y * 32 + x] = (heat[(y + 1) * 32 + x] * 2 + heat[b2 * 32 + x]) / 3;
                     }
                     if (random8() < 110) heat[15 * 32 + x] = qadd8(heat[15 * 32 + x], random8(160, 255));
-                    for (int y = 0; y < 16; y++) B(x, y) = HeatColor(heat[y * 32 + x]);
+                    for (int y = 0; y < 16; y++) B(x, y) = themedHeatColor(heat[y * 32 + x], frame);
                 }
                 break;
             }
@@ -72,8 +78,8 @@ void taskAnim(void *pvParameters) {
                     if (frame % (1 + (x % 3)) == 0) dropY[x]++;
                     if (dropY[x] >= 16) { if (random8() < 30) dropY[x] = 0; else continue; }
                     if (dropY[x] >= 0 && dropY[x] < 16) {
-                        B(x, dropY[x]) = CRGB::White;
-                        if (dropY[x] > 0) B(x, dropY[x] - 1) = themeCol(96, 200);
+                        B(x, dropY[x]) = themeCol(frame + x * 4, 255);
+                        if (dropY[x] > 0) B(x, dropY[x] - 1) = themeCol(frame + x * 4 + 64, 170);
                     }
                 }
                 break;

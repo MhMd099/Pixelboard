@@ -67,10 +67,11 @@ void taskSnakeHandler(void *pvParameters) {
             case STATE_MENU: {
                 FastLED.clear();
                 // Einfacher Text "PLAY" oder Cursor
-                drawChar3x5(2, 6, 'P', CRGB::Green);
-                drawChar3x5(8, 6, 'L', CRGB::Green);
-                drawChar3x5(14, 6, 'A', CRGB::Green);
-                drawChar3x5(20, 6, 'Y', CRGB::Green);
+                CRGB menuCol = themeCol(millis() / 35, 255);
+                drawChar3x5(2, 6, 'P', menuCol);
+                drawChar3x5(8, 6, 'L', menuCol);
+                drawChar3x5(14, 6, 'A', menuCol);
+                drawChar3x5(20, 6, 'Y', menuCol);
                 FastLED.show();
                 if (btnPress) { currentState = STATE_SHOW_HIGHSCORES; stateTimer = millis(); }
                 break;
@@ -87,14 +88,16 @@ void taskSnakeHandler(void *pvParameters) {
 
                 FastLED.clear();
                 if(count > 0) {
+                    CRGB nameCol = themeCol(millis() / 35, 255);
+                    CRGB scoreCol = themeCol(millis() / 35 + 96, 235);
                     // Zeige Name (max 3 Buchstaben)
                     String name = top[highScoreIdx].name;
                     for(int i=0; i<min((int)name.length(), 3); i++) {
-                        drawChar3x5(4 + (i*7), 2, name.charAt(i), CRGB::Cyan);
+                        drawChar3x5(4 + (i*7), 2, name.charAt(i), nameCol);
                     }
                     // Zeige Score
-                    drawDigitW(10, 9, top[highScoreIdx].score / 10, CRGB::Gold);
-                    drawDigitW(16, 9, top[highScoreIdx].score % 10, CRGB::Gold);
+                    drawDigitW(10, 9, top[highScoreIdx].score / 10, scoreCol);
+                    drawDigitW(16, 9, top[highScoreIdx].score % 10, scoreCol);
                 }
                 FastLED.show();
                 break;
@@ -129,8 +132,11 @@ void taskSnakeHandler(void *pvParameters) {
                         snake[0] = {nextX, nextY};
                     }
                     FastLED.clear();
-                    setPixel(food.x, food.y, CRGB::Red);
-                    for (int i = 0; i < snakeLength; i++) setPixel(snake[i].x, snake[i].y, (i == 0) ? CRGB::White : CRGB::Green);
+                    CRGB headCol = themeCol(millis() / 20, 255);
+                    CRGB bodyCol = themeCol(millis() / 20 + 80, 170);
+                    CRGB foodCol = themeCol(millis() / 20 + 160, 255);
+                    setPixel(food.x, food.y, foodCol);
+                    for (int i = 0; i < snakeLength; i++) setPixel(snake[i].x, snake[i].y, (i == 0) ? headCol : bodyCol);
                     FastLED.show();
                 }
                 break;
@@ -139,8 +145,9 @@ void taskSnakeHandler(void *pvParameters) {
             case STATE_GAMEOVER: {
                 FastLED.clear();
                 // Zeige "END" und Score
-                drawDigitW(12, 8, currentScore / 10, CRGB::White);
-                drawDigitW(18, 8, currentScore % 10, CRGB::White);
+                CRGB scoreCol = themeCol(millis() / 35, 255);
+                drawDigitW(12, 8, currentScore / 10, scoreCol);
+                drawDigitW(18, 8, currentScore % 10, scoreCol);
                 FastLED.show();
                 if (btnPress) { resetGame(); currentState = STATE_MENU; }
                 break;

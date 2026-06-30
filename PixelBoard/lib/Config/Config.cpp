@@ -4,54 +4,25 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <WiFi.h>
-#include "HardwareUtils.h" // für applyTheme / Theme-Status
+#include "HardwareUtils.h"
 
-const char* ssid = "Nothin";
-const char* password = "nothin099";
-const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df"; 
+const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
 
-const char* spreadsheetId = "1UVF6XSF4KJbVI_b5s-QQKZMaB36BXMaAlNBZLHzkiVc";
-const char* PROJECT_ID = "dataloggingpb";
-const char* CLIENT_EMAIL = "datalogging-pb@dataloggingpb.iam.gserviceaccount.com";
-
-// TIPP: Nutze R"EOF(...)EOF" für den Key, das verhindert den RSA Parsing Error!
-const char* PRIVATE_KEY = R"EOF(-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCj1HTpxeHGlSXK
-KU0rH93KLh8mDshrQAtDdMSMS7YEd7T5vU0ihlOI5T39H/QXai1VN+rdfJQ8VrMI
-O5VJUusU1vaiqdPkn2HSXIMjBwKZuUVnUCjVEiWdX+Z/zjyIV6685Z4h2D3GBzQ7
-9GFUB5E1wS+ZKd1K+4k758kHARGT1u+cVZ2+IEu7NLqb1UV4QR4y6zH3skgLP1GE
-nfxWMmx5elGvFBcZmMm4Ncx3m8JZNqzpbUeXI+i+fvebZoM4Wu3JjuXLiiyX5u68
-wi8I2Y/HDQF6w475ieRngKbJdHXRo1HGwcocysCvm47/4Vol62onr9PqlHwYm7E9
-WYgxVGRjAgMBAAECggEAM079kp1buWLKpAbNWT0wq/pH3RZyJEy5elXenIW1qq6G
-6lQkDTT+gngxMs5IFvE042SQ1O8ISeFpTqHCfmVOpIcyVP1VFFvqOgSpOVYftV81
-4kZTk2+Mgj4fpVVE1fqICjbrkHP13MgyzrgZp0R7cNdg/doDqVEfyLgt2Fi4VZFR
-ogNYEEcg+Tu9LxQSfEWZF8dtdKAU7uzYLuc6BkVDuHnPvGDzQK76Dn65jUrVIhxA
-LwpjccSPiTow0LHAdRguI5FfgpskBlyGZrSGkpxs+y1phd4UhsziVDtOsxQd/L7s
-PrCyucJR5KzEDPIvO/XxmA6xg1A4Yf1Y7ag+aJIZYQKBgQDYATzGttJ8RJblBFIw
-MkoXti5jXXks3pbuJlJU92t5jpFbGi8fpLfhN4EYt+gFOiAqtOBPZsRkoe1QTcEL
-UmIdJO3sFeDnq2BQLAfXslB9+7Xd3lbmZhm6z66+3ksCGjxxSZYmZM43JfSY1X4N
-58thzbNOC0fevYJIn41xhR4p8QKBgQDCKhh6L+/wQwIvApk6NnxD+PITFrrzjIZf
-wSK+nOl5ID+oVrKOl2/vSC7LuJAfyvfMI6F0tqDIBwtvdwX6uax+BxskvYX2w68I
-l40jE37I4mwYyAVny3W8caVXmxpFpPS9hUdC2c/D1a1J4p4dx8ufqBLhEmC8nAwj
-iwlKb7A/kwKBgCcR4jpXKy9LALgf1fXdwsUTMMTMTXSuNkKRL+cqcYglH2mJDOj+
-VDwqW/Fqok7/un2/BauW/QLuvwv9ZGN13UVEPryrIGkG+H7H2AtNt31yH+0noDRA
-V3sQwZzIfGy+7hvXoY8EQMB83wcd5pUBTio8mKgPJkrFoGEeaukTmOchAoGBAJyZ
-yygxpboIsags1l0HOO6xyLzwplRs0KxGX7mRYRValz00v8sWBSfe9i9FaqjZ0UaK
-rlwuODtcwzJhsybnvmHfZVsaqQPADFpHsYPK44UuabULDqEKjqkwmASyilwFkYeS
-CUm310TCAIQJDTJDxM2+h4uUgQVebsP0DchFkMeVAoGAKTpShbfT8GzqIQei501D
-F8fS+US/3WjqutNL136N/YMYnJzOF8w2vz9Ab7h+lADCrUjeKCpfGH51AKAFlUXD
-AiyqMiqgWvjxKo9LVyFcJqGp0P5RJSbr0OWq1+LkV3wofGAQWXsH7OFym2BULpJt
-nL39C2joy478eDdRLAyFd7A=
------END PRIVATE KEY-----)EOF";
-String currentCity = "Innsbruck"; 
+String currentCity = "Innsbruck";
 String currentUser = "";
-bool forceWeatherUpdate = false; // NEU: Startet auf false
+bool forceWeatherUpdate = false;
+
+String wifiSsid = "";
+String wifiPassword = "";
+int currentDhtPin = 21;
+int currentDhtType = 22;
 
 WebServer server(80);
 DNSServer dnsServer;
 bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
 static const char* captiveSsid = "PixelBoard";
+static unsigned long lastWifiBeginMs = 0;
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
@@ -59,6 +30,147 @@ void initLittleFS() {
         return;
     }
     Serial.println("LittleFS erfolgreich gemountet.");
+}
+
+static String htmlEscape(const String& value) {
+    String out;
+    out.reserve(value.length());
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value[i];
+        if (c == '&') out += F("&amp;");
+        else if (c == '<') out += F("&lt;");
+        else if (c == '>') out += F("&gt;");
+        else if (c == '"') out += F("&quot;");
+        else if (c == '\'') out += F("&#39;");
+        else out += c;
+    }
+    return out;
+}
+
+static bool validDhtPin(int pin) {
+    if (pin < 0 || pin > 33) return false;
+    if (pin >= 6 && pin <= 11) return false; // ESP32 flash pins
+    return true;
+}
+
+static int normalizeDhtPin(int pin) {
+    return validDhtPin(pin) ? pin : 21;
+}
+
+static int normalizeDhtType(int type) {
+    return (type == 11) ? 11 : 22;
+}
+
+void loadWifiCredentials() {
+    wifiSsid = "";
+    wifiPassword = "";
+
+    if (!LittleFS.exists("/wifi.json")) return;
+
+    File file = LittleFS.open("/wifi.json", "r");
+    if (!file) return;
+
+    JsonDocument doc;
+    if (!deserializeJson(doc, file)) {
+        wifiSsid = doc["s"].is<const char*>() ? doc["s"].as<String>() : "";
+        wifiPassword = doc["p"].is<const char*>() ? doc["p"].as<String>() : "";
+        wifiSsid.trim();
+    }
+    file.close();
+
+    if (wifiSsid != "") {
+        Serial.println("WLAN-Daten geladen fuer SSID: " + wifiSsid);
+    }
+}
+
+bool hasWifiCredentials() {
+    return wifiSsid.length() > 0;
+}
+
+String configuredWifiSsid() {
+    return wifiSsid;
+}
+
+void beginWifiConnection() {
+    if (!hasWifiCredentials()) return;
+
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setAutoReconnect(true);
+    WiFi.disconnect(false, false);
+    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    lastWifiBeginMs = millis();
+    Serial.println("Verbinde mit WLAN: " + wifiSsid);
+}
+
+void maintainWifiConnection() {
+    if (!hasWifiCredentials()) return;
+    if (WiFi.status() == WL_CONNECTED) return;
+
+    unsigned long now = millis();
+    if (lastWifiBeginMs == 0 || now - lastWifiBeginMs > 30000UL) {
+        beginWifiConnection();
+    }
+}
+
+void saveWifiCredentials(String newSsid, String newPassword) {
+    newSsid.trim();
+
+    if (newSsid == "") return;
+    if (newPassword == "" && newSsid == wifiSsid) {
+        newPassword = wifiPassword;
+    }
+
+    wifiSsid = newSsid;
+    wifiPassword = newPassword;
+
+    JsonDocument doc;
+    doc["s"] = wifiSsid;
+    doc["p"] = wifiPassword;
+
+    File file = LittleFS.open("/wifi.json", "w");
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+        Serial.println("WLAN-Daten gespeichert fuer SSID: " + wifiSsid);
+    }
+
+    beginWifiConnection();
+}
+
+void loadDeviceSettings() {
+    currentDhtPin = 21;
+    currentDhtType = 22;
+
+    if (!LittleFS.exists("/device.json")) return;
+
+    File file = LittleFS.open("/device.json", "r");
+    if (!file) return;
+
+    JsonDocument doc;
+    if (!deserializeJson(doc, file)) {
+        currentDhtPin = normalizeDhtPin(doc["dhtPin"] | currentDhtPin);
+        currentDhtType = normalizeDhtType(doc["dhtType"] | currentDhtType);
+    }
+    file.close();
+
+    Serial.printf("DHT geladen: GPIO %d, DHT%d\n", currentDhtPin, currentDhtType);
+}
+
+void saveDhtSettings(int pin, int type) {
+    currentDhtPin = normalizeDhtPin(pin);
+    currentDhtType = normalizeDhtType(type);
+
+    JsonDocument doc;
+    doc["dhtPin"] = currentDhtPin;
+    doc["dhtType"] = currentDhtType;
+
+    File file = LittleFS.open("/device.json", "w");
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    }
+
+    Serial.printf("DHT gespeichert: GPIO %d, DHT%d\n", currentDhtPin, currentDhtType);
 }
 
 static JsonObject userObject(JsonDocument& doc, const String& user) {
@@ -97,8 +209,8 @@ static int readHighScore(JsonVariant data) {
 }
 
 static int clockIndexFromLegacy(int idx) {
-    if (idx == 3) return 2; // altes Analog nach Entfernen der Wortuhr
-    if (idx == 2) return 0; // alte Wortuhr faellt auf Digital zurueck
+    if (idx == 3) return 2;
+    if (idx == 2) return 0;
     return idx;
 }
 
@@ -107,14 +219,13 @@ void loadConfigForUser(String user) {
     currentUser = user;
 
     String alteStadt = currentCity;
-    int themeIdx = 0; // Default-Design (Regenbogen)
-    int clockIdx = 0; // Default-Uhr (Digital)
+    int themeIdx = 0;
+    int clockIdx = 0;
 
     if (user == "") {
-        // Nicht eingeloggt -> immer Default-Stadt & Default-Design/-Uhr
         currentCity = "Innsbruck";
     } else {
-        currentCity = "Innsbruck"; // Fallback, falls der User noch keine Stadt hat
+        currentCity = "Innsbruck";
         if (LittleFS.exists("/config.json")) {
             File file = LittleFS.open("/config.json", "r");
             JsonDocument doc;
@@ -145,8 +256,8 @@ void loadConfigForUser(String user) {
         }
     }
 
-    applyTheme(themeIdx);      // Design des Users (oder Default) aktivieren
-    applyClockStyle(clockIdx); // Uhr-Stil des Users (oder Default) aktivieren
+    applyTheme(themeIdx);
+    applyClockStyle(clockIdx);
     if (currentCity != alteStadt) forceWeatherUpdate = true;
     Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity +
                    ", Design=" + String(themeName(g_themeIndex)) + ", Uhr=" + String(clockStyleName(g_clockStyle)));
@@ -156,17 +267,14 @@ void saveConfig(String user, String city) {
     user.trim();
     city.trim();
 
-    // Stadt im Speicher aktualisieren
     if (currentCity != city) {
         forceWeatherUpdate = true;
     }
     currentCity = city;
     currentUser = user;
 
-    // Für "nicht eingeloggt" nichts dauerhaft speichern
     if (user == "") return;
 
-    // JSON einlesen, aktualisieren und speichern
     JsonDocument doc;
     if (LittleFS.exists("/config.json")) {
         File file = LittleFS.open("/config.json", "r");
@@ -175,7 +283,6 @@ void saveConfig(String user, String city) {
     }
 
     JsonObject obj = userObject(doc, user);
-    // Stadt in eigenem Feld -> Highscore/Design bleiben erhalten
     obj["c"] = city;
     removeLegacyUserKeys(obj);
 
@@ -183,14 +290,14 @@ void saveConfig(String user, String city) {
     serializeJson(doc, file);
     file.close();
 
-    Serial.println("Speichere für " + user + ": " + city);
+    Serial.println("Speichere fuer " + user + ": " + city);
 }
 
 void saveTheme(String user, int themeIdx) {
     user.trim();
-    applyTheme(themeIdx); // sofort live anwenden
+    applyTheme(themeIdx);
 
-    if (user == "") return; // nicht eingeloggt -> nichts dauerhaft speichern
+    if (user == "") return;
 
     JsonDocument doc;
     if (LittleFS.exists("/config.json")) {
@@ -206,12 +313,12 @@ void saveTheme(String user, int themeIdx) {
     serializeJson(doc, file);
     file.close();
 
-    Serial.println("Design gespeichert für " + user + ": " + String(themeName(g_themeIndex)));
+    Serial.println("Design gespeichert fuer " + user + ": " + String(themeName(g_themeIndex)));
 }
 
 void saveClockStyle(String user, int clockIdx) {
     user.trim();
-    applyClockStyle(clockIdx); // sofort live anwenden
+    applyClockStyle(clockIdx);
 
     if (user == "") return;
 
@@ -229,67 +336,88 @@ void saveClockStyle(String user, int clockIdx) {
     serializeJson(doc, file);
     file.close();
 
-    Serial.println("Uhr-Stil gespeichert für " + user + ": " + String(clockStyleName(g_clockStyle)));
+    Serial.println("Uhr-Stil gespeichert fuer " + user + ": " + String(clockStyleName(g_clockStyle)));
 }
-// --- HTML SEITEN ---
+
+static void appendOption(String& html, int value, int current, const String& label) {
+    html += "<option value='" + String(value) + "'";
+    if (value == current) html += " selected";
+    html += ">" + label + "</option>";
+}
+
 void handleRoot() {
+    bool wifiConnected = WiFi.status() == WL_CONNECTED;
+    String savedSsid = configuredWifiSsid();
+
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
     html += "<style>body{font-family:Arial,sans-serif;background:#111827;color:#f8fafc;text-align:center;margin:0;padding:22px;}";
     html += "h1{margin:8px 0 4px;font-size:30px;}h2{margin:0 0 18px;color:#38bdf8;font-size:16px;font-weight:600;}";
-    html += "input[type='text'],input[type='password'],select{width:90%;max-width:320px;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;}";
+    html += "input[type='text'],input[type='password'],input[type='number'],select{width:90%;max-width:320px;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;}";
     html += "input[type='submit']{background:#06b6d4;color:#fff;padding:11px 20px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;}";
-    html += ".card{background:#1f2937;padding:20px;border-radius:10px;display:inline-block;margin-top:10px;min-width:min(320px,90vw);box-shadow:0 10px 30px #0008;}";
-    html += "hr{border:0;border-top:1px solid #374151;margin:18px 0;}a{color:#f87171;text-decoration:none;font-weight:bold;}</style></head><body>";
-    
+    html += ".card{background:#1f2937;padding:20px;border-radius:10px;display:inline-block;margin:10px;min-width:min(320px,90vw);box-shadow:0 10px 30px #0008;vertical-align:top;}";
+    html += ".ok{color:#22c55e}.bad{color:#f87171}hr{border:0;border-top:1px solid #374151;margin:18px 0;}a{color:#f87171;text-decoration:none;font-weight:bold;}</style></head><body>";
+
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
-    if (currentUser == "") {
-        html += "<div class='card'><h3>Bitte einloggen</h3>";
-        html += "<form action='/doLogin' method='POST'>";
-        html += "<input type='text' name='username' placeholder='Benutzername' required><br>";
-        html += "<input type='password' name='password' placeholder='Passwort' required><br>";
-        html += "<input type='submit' value='Einloggen'></form></div>";
+    html += "<div class='card'><h3>WLAN</h3>";
+    if (wifiConnected) {
+        html += "<p class='ok'>Verbunden mit <b>" + htmlEscape(WiFi.SSID()) + "</b></p>";
+        html += "<p>IP: <b>" + WiFi.localIP().toString() + "</b></p>";
+    } else if (hasWifiCredentials()) {
+        html += "<p class='bad'>Nicht verbunden. Gespeichert: <b>" + htmlEscape(savedSsid) + "</b></p>";
     } else {
-        html += "<div class='card'><h3 style='color:#00ff00;'>Hallo, " + currentUser + "!</h3>";
-        html += "<hr style='border-color:#555;'>";
-        html += "<p>Aktuelle Wetter-Stadt: <b>" + currentCity + "</b></p>";
-        html += "<h4>Stadt ändern:</h4>";
-        html += "<form action='/updateCity' method='POST'>";
-        html += "<input type='text' name='city' placeholder='Neue Stadt (z.B. Prag)' required><br>";
-        html += "<input type='submit' value='Stadt speichern'></form>";
-
-        html += "<hr style='border-color:#555;'>";
-        html += "<h4>Design wählen:</h4>";
-        html += "<form action='/updateTheme' method='POST'>";
-        html += "<select name='theme' style='padding:10px;border-radius:5px;'>";
-        for (int i = 0; i < themeAnzahl(); i++) {
-            html += "<option value='" + String(i) + "'";
-            if (i == g_themeIndex) html += " selected";
-            html += ">" + String(themeName(i)) + "</option>";
-        }
-        html += "</select><br><input type='submit' value='Design speichern'></form>";
-
-        html += "<h4>Uhr-Stil:</h4>";
-        html += "<form action='/updateClock' method='POST'>";
-        html += "<select name='clock' style='padding:10px;border-radius:5px;'>";
-        for (int i = 0; i < clockStyleAnzahl(); i++) {
-            html += "<option value='" + String(i) + "'";
-            if (i == g_clockStyle) html += " selected";
-            html += ">" + String(clockStyleName(i)) + "</option>";
-        }
-        html += "</select><br><input type='submit' value='Uhr speichern'></form>";
-
-        html += "<br><a href='/logout' style='color:#ff5555; text-decoration:none; font-weight:bold;'>Ausloggen</a></div>";
+        html += "<p class='bad'>Noch kein WLAN gespeichert.</p>";
     }
-    html += "</body></html>";
+    html += "<form action='/saveWifi' method='POST'>";
+    html += "<input type='text' name='ssid' placeholder='WLAN SSID' value='" + htmlEscape(savedSsid) + "' required><br>";
+    html += "<input type='password' name='password' placeholder='WLAN Passwort'><br>";
+    html += "<input type='submit' value='WLAN speichern'></form></div>";
+
+    html += "<div class='card'><h3>Einstellungen</h3>";
+    html += "<p>Wetter-Stadt: <b>" + htmlEscape(currentCity) + "</b></p>";
+    html += "<form action='/updateCity' method='POST'>";
+    html += "<input type='text' name='city' placeholder='Stadt' value='" + htmlEscape(currentCity) + "' required><br>";
+    html += "<input type='submit' value='Stadt speichern'></form>";
+
+    html += "<hr><h4>Design</h4>";
+    html += "<form action='/updateTheme' method='POST'><select name='theme'>";
+    for (int i = 0; i < themeAnzahl(); i++) {
+        appendOption(html, i, g_themeIndex, String(themeName(i)));
+    }
+    html += "</select><br><input type='submit' value='Design speichern'></form>";
+
+    html += "<h4>Uhr-Stil</h4>";
+    html += "<form action='/updateClock' method='POST'><select name='clock'>";
+    for (int i = 0; i < clockStyleAnzahl(); i++) {
+        appendOption(html, i, g_clockStyle, String(clockStyleName(i)));
+    }
+    html += "</select><br><input type='submit' value='Uhr speichern'></form>";
+
+    html += "<hr><h4>DHT Sensor</h4>";
+    html += "<form action='/updateDht' method='POST'>";
+    html += "<input type='number' name='pin' min='0' max='33' value='" + String(currentDhtPin) + "' required><br>";
+    html += "<select name='type'>";
+    appendOption(html, 22, currentDhtType, "DHT22");
+    appendOption(html, 11, currentDhtType, "DHT11");
+    html += "</select><br><input type='submit' value='DHT speichern'></form>";
+
+    html += "</div></body></html>";
     server.send(200, "text/html", html);
 }
 
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
-        // Lade die Daten für genau diesen User
-        loadConfigForUser(u); 
+        loadConfigForUser(u);
+    }
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
+void handleSaveWifi() {
+    if (server.hasArg("ssid")) {
+        String pwd = server.hasArg("password") ? server.arg("password") : "";
+        saveWifiCredentials(server.arg("ssid"), pwd);
     }
     server.sendHeader("Location", "/");
     server.send(303);
@@ -297,8 +425,7 @@ void handleDoLogin() {
 
 void handleUpdateCity() {
     if (server.hasArg("city")) {
-        // Speichere die neue Stadt explizit für den aktuellen User
-        saveConfig(currentUser, server.arg("city")); 
+        saveConfig(currentUser, server.arg("city"));
     }
     server.sendHeader("Location", "/");
     server.send(303);
@@ -320,8 +447,16 @@ void handleUpdateClock() {
     server.send(303);
 }
 
+void handleUpdateDht() {
+    int pin = server.hasArg("pin") ? server.arg("pin").toInt() : currentDhtPin;
+    int type = server.hasArg("type") ? server.arg("type").toInt() : currentDhtType;
+    saveDhtSettings(pin, type);
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
 void handleLogout() {
-    loadConfigForUser(""); // User abmelden -> Default-Stadt Innsbruck
+    loadConfigForUser("default");
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -362,9 +497,11 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/doLogin", HTTP_POST, handleDoLogin);
+    server.on("/saveWifi", HTTP_POST, handleSaveWifi);
     server.on("/updateCity", HTTP_POST, handleUpdateCity);
     server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
     server.on("/updateClock", HTTP_POST, handleUpdateClock);
+    server.on("/updateDht", HTTP_POST, handleUpdateDht);
     server.on("/logout", HTTP_GET, handleLogout);
     server.on("/generate_204", HTTP_GET, handleCaptiveProbe);
     server.on("/gen_204", HTTP_GET, handleCaptiveProbe);
@@ -372,39 +509,38 @@ void setupWebServer() {
     server.on("/library/test/success.html", HTTP_GET, handleCaptiveProbe);
     server.on("/connecttest.txt", HTTP_GET, handleCaptiveProbe);
     server.on("/ncsi.txt", HTTP_GET, handleCaptiveProbe);
+    server.on("/fwlink", HTTP_GET, handleCaptiveProbe);
+    server.on("/redirect", HTTP_GET, handleCaptiveProbe);
+    server.on("/canonical.html", HTTP_GET, handleCaptiveProbe);
     server.onNotFound(handleNotFound);
     server.begin();
 }
 
 void taskWebServerHandler(void * pvParameters) {
-    for(;;) {
+    for (;;) {
         if (captivePortalActive) dnsServer.processNextRequest();
         server.handleClient();
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
+
 void saveHighScore(String user, int score) {
     user.trim();
     if (user == "") return;
 
     JsonDocument doc;
-    // 1. Bestehende Datei einlesen
     if (LittleFS.exists("/config.json")) {
         File file = LittleFS.open("/config.json", "r");
         deserializeJson(doc, file);
         file.close();
     }
 
-    // 2. Eintrag in ein Objekt umwandeln, falls nötig (alte Stadt als String erhalten)
     JsonObject obj = userObject(doc, user);
-
-    // 3. Nur speichern, wenn der neue Score höher ist!
-    int currentHigh = readHighScore(doc[user]); // h, altes highscore als Fallback
+    int currentHigh = readHighScore(doc[user]);
     if (score > currentHigh) {
         obj["h"] = score;
         removeLegacyUserKeys(obj);
-        
-        // Datei speichern
+
         File file = LittleFS.open("/config.json", "w");
         serializeJson(doc, file);
         file.close();
@@ -421,9 +557,8 @@ void printTopThree() {
     deserializeJson(doc, file);
     file.close();
 
-    // Wir sammeln alle User und ihre Scores
     struct Player { String name; int score; };
-    Player scores[10]; // Platz für 10 User
+    Player scores[10];
     int count = 0;
 
     for (JsonPair kv : doc.as<JsonObject>()) {
@@ -434,7 +569,6 @@ void printTopThree() {
         }
     }
 
-    // Ganz einfacher Sortier-Algorithmus (Bubble Sort)
     for (int i = 0; i < count - 1; i++) {
         for (int j = 0; j < count - i - 1; j++) {
             if (scores[j].score < scores[j + 1].score) {
@@ -445,7 +579,6 @@ void printTopThree() {
         }
     }
 
-    // Ausgabe
     Serial.println("--- TOP 3 HIGHSCORES ---");
     for (int i = 0; i < min(count, 3); i++) {
         Serial.printf("%d. %s: %d Punkte\n", i + 1, scores[i].name.c_str(), scores[i].score);
@@ -461,17 +594,20 @@ int getHighScore(String user) {
         file.close();
         return readHighScore(doc[user]);
     }
-    return 0; // Standard, wenn noch keiner existiert
+    return 0;
 }
+
 void getTopScores(PlayerData* list, int& count) {
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
-    if (!file) return;
+    if (!file) {
+        count = 0;
+        return;
+    }
     deserializeJson(doc, file);
     file.close();
 
     count = 0;
-    // Extrahiere alle User
     for (JsonPair kv : doc.as<JsonObject>()) {
         if (count < 10) {
             list[count].name = kv.key().c_str();
@@ -479,7 +615,7 @@ void getTopScores(PlayerData* list, int& count) {
             count++;
         }
     }
-    // Einfacher Bubble-Sort nach Score
+
     for (int i = 0; i < count - 1; i++) {
         for (int j = 0; j < count - i - 1; j++) {
             if (list[j].score < list[j + 1].score) {

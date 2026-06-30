@@ -76,8 +76,8 @@ static void uhrAnalog(struct tm &ti, CRGB col) {
     float hourA = ((ti.tm_hour % 12) * 30 + ti.tm_min * 0.5) * DEG_TO_RAD;
     zeichneLinie(cx, cy, cx + (int)round(sin(hourA) * 4), cy - (int)round(cos(hourA) * 4), col);
     zeichneLinie(cx, cy, cx + (int)round(sin(minA) * 6),  cy - (int)round(cos(minA) * 6),  col);
-    zeichneLinie(cx, cy, cx + (int)round(sin(secA) * 7),  cy - (int)round(cos(secA) * 7),  CRGB::Red);
-    setPixel(cx, cy, CRGB::White);
+    zeichneLinie(cx, cy, cx + (int)round(sin(secA) * 7),  cy - (int)round(cos(secA) * 7),  dim);
+    setPixel(cx, cy, col);
 }
 
 void taskUhr(void *pvParameters) {

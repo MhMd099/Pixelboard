@@ -78,8 +78,8 @@ void audioTask(void *pvParameters) {
             int freq = 1000;
             int duration = 25;
             // Kurze, knackige Klicks statt langer Töne
-            if (currentSnd == SND_SWIPE)       { freq = 1200; duration = 15; }
-            else if (currentSnd == SND_SELECT) { freq = 1500; duration = 25; }
+            if (currentSnd == SND_SWIPE)       { freq = 1200; duration = 7; }
+            else if (currentSnd == SND_SELECT) { freq = 1500; duration = 14; }
             else if (currentSnd == SND_EAT)    { freq = 1800; duration = 18; }
             else if (currentSnd == SND_DIE)    { freq = 400;  duration = 120; }
             writeTon(freq, duration);
