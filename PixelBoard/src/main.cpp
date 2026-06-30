@@ -17,6 +17,7 @@
 #include "Config.h"
 #include "TaskSnake.h"
 #include "TaskAnim.h"
+#include "TaskDHT.h"
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
 // ==========================================
@@ -63,8 +64,7 @@ volatile bool taskWechselAnforderung = false;
 Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN); // Snake
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);   // Menü
 
-TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, handleE = NULL;
-
+TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, handleE = NULL, handleDHT = NULL; // <--- handleDHT hinzugefügt
 char datumBuffer[40], zeitBuffer[40];
 char bufferOben[64], bufferUnten[64];
 int fokusModus = 0;   // Navigation im Menü
@@ -85,12 +85,14 @@ SemaphoreHandle_t clickCounterMutex = NULL;
 // Task 2: Snake/Schlange  ->
 // Task 3: DHT (Text 'D')  ->
 // Task 4: Leer/Strich     -> Vertikaler Strich
-const uint32_t menuIcons[5] = {
-    0x3A5A7, // Task 0: Uhr (Kreis-Ansatz mit angedeuteten Zeigern)
-    0x3EEDC, // Task 1: Wetter (Wolke mit kompakter Basis)
-    0x74B5E, // Task 2: Snake (S-Form für Schlange + separater Pixel für Apfel)
-    0x72497, // Task 3: DHT (Kompakter Buchstabe 'D', da 3x5 für "DHT" zu schmal ist)
-    0x24924  // Task 4: Leer (Dein originaler vertikaler Strich)
+// Von 5 auf 6 ändern:
+const uint32_t menuIcons[6] = {
+    0x3A5A7, // Task 0: Uhr
+    0x3EEDC, // Task 1: Wetter
+    0x74B5E, // Task 2: Snake
+    0x49249, // Task 3: Musik-Icon
+    0x24924, // Task 4: Animationen
+    0x72497  // Task 5: DHT (Text 'D') <--- HIER ALS 6. EINTRAG
 };
 
 void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color)
@@ -360,6 +362,21 @@ void printMenu()
             }
         break;
     }
+    case 6:
+    { // TASK 5: DHT VORSCHAU (Stilisierter Buchstabe 'D' im aktuellen Design-Farbverlauf)
+        int cx = 12;
+        for (int y = 4; y <= 11; y++) {
+            setPixel(cx, y, themeCol(jetzt / 20 + y * 10, 255));
+            if (y == 4 || y == 11) {
+                setPixel(cx + 1, y, themeCol(jetzt / 20 + y * 10, 255));
+                setPixel(cx + 2, y, themeCol(jetzt / 20 + y * 10, 255));
+            } else {
+                setPixel(cx + 3, y, themeCol(jetzt / 20 + y * 10, 255));
+            }
+        }
+        setPixel(cx + 5, 4, CRGB::Orange); // Kleiner Punkt als Grad-Symbol-Vorschau
+        break;
+    }
     }
     FastLED.show();
     unlockDisplay();
@@ -442,6 +459,7 @@ TaskHandle_t getTaskHandle(int nummer)
         return handleData; // DHT & Sheets
     case 4:
         return handleE;
+        case 5: return handleDHT; // <--- NEU HIERZUFÜGEN
     default:
         return NULL;
     }
@@ -449,7 +467,7 @@ TaskHandle_t getTaskHandle(int nummer)
 
 void wechsleZuTask(int zielTask)
 {
-    if (zielTask < 0 || zielTask > 4)
+    if (zielTask < 0 || zielTask > 5)
         return;
     int vorherigerTask = aktiverTask;
     aktiverTask = -2; // Wechselzustand: kein Display-Task darf neu zeichnen
@@ -600,6 +618,7 @@ void setup() {
     xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleC, 1);
     xTaskCreatePinnedToCore(taskMusik, "Musik", 2560, NULL, 1, &handleData, 1); // Task 3
     xTaskCreatePinnedToCore(taskAnim, "Anim", 4096, NULL, 1, &handleE, 1);      // Task 4
+    
 
     // Wetterdaten im Hintergrund auf Kern 0 (blockiert nie die Anzeige)
     xTaskCreatePinnedToCore(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL, 0);
@@ -637,11 +656,11 @@ void loop() {
         int xPerc = joystick2.readXPercent();
         if (!navigationsSperre) {
             if (xPerc <= -80) {
-                fokusModus = (fokusModus >= 5) ? 1 : fokusModus + 1;
+                fokusModus = (fokusModus >= 6) ? 1 : fokusModus + 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             } else if (xPerc >= 80) {
-                fokusModus = (fokusModus <= 1) ? 5 : fokusModus - 1;
+                fokusModus = (fokusModus <= 1) ? 6 : fokusModus - 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             }
@@ -656,7 +675,7 @@ void loop() {
             zurueckZumMenue();
         } else if (clicks.langKlick > 0) {
             playSound(SND_SELECT);
-            int next = (aktiverTask + 1) % 5; // Uhr, Wetter, Snake, Musik, Animationen
+            int next = (aktiverTask + 1) % 6; // Uhr, Wetter, Snake, Musik, Animationen
             fokusModus = next + 1;
             wechsleZuTask(next);
         }
