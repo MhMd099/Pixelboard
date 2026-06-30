@@ -35,6 +35,14 @@
 		},
 		{
 			"path": "Lautsprecher"
+		},
+		{
+			"name": "IQuadratC_Test",
+			"path": "IQuadratC_Test"
+		},
+		{
+			"name": "ESP32_ArduinoNano",
+			"path": "ESP32_ArduinoNano"
 		}
 	]
 }

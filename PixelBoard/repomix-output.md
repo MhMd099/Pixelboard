@@ -73,8 +73,10 @@ lib/LEDText-master/LEDText.cpp
 lib/LEDText-master/LEDText.h
 lib/LEDText-master/README.md
 lib/README
-lib/TaskDHT/TaskDHT.cpp
-lib/TaskDHT/TaskDHT.h
+lib/SoundUtils/SoundUtils.cpp
+lib/SoundUtils/SoundUtils.h
+lib/TaskAnim/TaskAnim.cpp
+lib/TaskAnim/TaskAnim.h
 lib/TaskSnake/TaskSnake.cpp
 lib/TaskSnake/TaskSnake.h
 lib/TaskUhr/TaskUhr.cpp
@@ -168,6 +170,9 @@ void initLittleFS();
 // Lade Default-Daten beim Start, z.B. für einen leeren User
 void loadConfigForUser(String user);
 void saveConfig(String user, String city);
+void saveTheme(String user, int themeIdx);       // Design pro User speichern + anwenden
+void saveClockStyle(String user, int clockIdx);  // Uhr-Stil pro User speichern + anwenden
+void startCaptivePortal();
 void setupWebServer();
 void taskWebServerHandler(void * pvParameters);
 void saveHighScore(String user, int score);
@@ -189,6 +194,7 @@ cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 cLEDText AnzeigeOben;
 cLEDText AnzeigeUnten;
 bool displayAktiv = true;
+SemaphoreHandle_t displayMutex = NULL;
 const char* font3x5[26] = {
   "111101111101101", "110101110101110", "111100100100111", "110101101101110",
   "111100111100111", "111100111100100", "111100101101111", "101101111101101",
@@ -198,6 +204,15 @@ const char* font3x5[26] = {
   "101101101101111", "101101101101010", "101101101111111", "101101010101101",
   "101101010010010", "111001010100111"
 };
+
+bool lockDisplay(uint32_t timeoutMs) {
+    if (displayMutex == NULL) return true;
+    return xSemaphoreTake(displayMutex, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+}
+
+void unlockDisplay() {
+    if (displayMutex != NULL) xSemaphoreGive(displayMutex);
+}
 
 void drawChar3x5(int startX, int startY, char c, CRGB color) {
     if (c >= 'a' && c <= 'z') c -= 32; // Kleinbuchstaben zu Groß
@@ -224,6 +239,74 @@ void drawDigitW(int x, int y, int n, CRGB c) {
     else if(n == 8) { for(int i=0; i<5; i++) { setPixel(x,y+i,c); setPixel(x+2,y+i,c); } for(int i=0; i<3; i++) { setPixel(x+i,y,c); setPixel(x+i,y+2,c); setPixel(x+i,y+4,c); } }
     else if(n == 9) { for(int i=0; i<5; i++) setPixel(x+2,y+i,c); for(int i=0; i<3; i++) { setPixel(x+i,y,c); setPixel(x+i,y+2,c); setPixel(x+i,y+4,c); } setPixel(x,y+1,c); }
 }
+// ==========================================
+// THEME / DESIGN
+// ==========================================
+uint8_t g_themeA = 0;
+uint8_t g_themeB = 0;
+bool    g_themeRainbow = true;
+int     g_themeIndex = 0;
+
+struct ThemeDef { const char* name; uint8_t a; uint8_t b; bool rainbow; };
+static const ThemeDef THEMES[] = {
+    {"Regenbogen",      0,   0,  true},
+    {"Ozean",           140, 120, false},
+    {"Feuer",           0,   32,  false},
+    {"Violett-Gruen",   192, 96,  false},
+    {"Sonnenuntergang", 224, 24,  false},
+    {"Matrix",          96,  80,  false},
+};
+static const int THEME_N = sizeof(THEMES) / sizeof(THEMES[0]);
+
+int themeAnzahl() { return THEME_N; }
+const char* themeName(int idx) { return (idx >= 0 && idx < THEME_N) ? THEMES[idx].name : "?"; }
+
+void applyTheme(int idx) {
+    if (idx < 0 || idx >= THEME_N) idx = 0;
+    g_themeIndex   = idx;
+    g_themeA       = THEMES[idx].a;
+    g_themeB       = THEMES[idx].b;
+    g_themeRainbow = THEMES[idx].rainbow;
+}
+
+CRGB themeCol(uint16_t phase, uint8_t val) {
+    if (g_themeRainbow) return CHSV((uint8_t)phase, 255, val);
+    // Dreieckswelle: Phase pendelt zwischen Haupt- und Zweitfarbe hin und her
+    uint8_t p = (uint8_t)phase;
+    uint8_t t = (p < 128) ? (p * 2) : ((255 - p) * 2);
+    uint8_t hue = g_themeA + (int)((int)g_themeB - (int)g_themeA) * t / 255;
+    return CHSV(hue, 255, val);
+}
+
+// ---- Uhr-Stil ----
+int g_clockStyle = 0;
+static const char* CLOCK_STYLES[] = {"Digital", "Binaer", "Analog"};
+static const int CLOCK_N = sizeof(CLOCK_STYLES) / sizeof(CLOCK_STYLES[0]);
+int clockStyleAnzahl() { return CLOCK_N; }
+const char* clockStyleName(int idx) { return (idx >= 0 && idx < CLOCK_N) ? CLOCK_STYLES[idx] : "?"; }
+void applyClockStyle(int idx) { if (idx < 0 || idx >= CLOCK_N) idx = 0; g_clockStyle = idx; }
+
+// ---- Kompakte Kuerzel fuer LittleFS (1 Buchstabe = Anfangsbuchstabe des Namens) ----
+static char grossbuchstabe(char c) { return (c >= 'a' && c <= 'z') ? (c - 32) : c; }
+int themeFromCode(char code) {
+    for (int i = 0; i < THEME_N; i++)
+        if (grossbuchstabe(THEMES[i].name[0]) == grossbuchstabe(code)) return i;
+    return 0;
+}
+int clockFromCode(char code) {
+    for (int i = 0; i < CLOCK_N; i++)
+        if (grossbuchstabe(CLOCK_STYLES[i][0]) == grossbuchstabe(code)) return i;
+    return 0;
+}
+char themeCode(int idx) {
+    if (idx < 0 || idx >= THEME_N) idx = 0;
+    return grossbuchstabe(THEMES[idx].name[0]);
+}
+char clockCode(int idx) {
+    if (idx < 0 || idx >= CLOCK_N) idx = 0;
+    return grossbuchstabe(CLOCK_STYLES[idx][0]);
+}
+
 void setPixel(int x, int y, CRGB color) {
     if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
     if (y < 8) { 
@@ -248,6 +331,7 @@ void setPixel(int x, int y, CRGB color) {
 #include <FastLED.h>   // Definiert CRGB
 #include <LEDMatrix.h> // Definiert cLEDMatrix und cLEDMatrixBase
 #include <LEDText.h>   // Erst JETZT darf sie geladen werden!
+#include <freertos/semphr.h>
 
 // Globale Matrix-Instanzen
 extern cLEDMatrix<32, -8, VERTICAL_ZIGZAG_MATRIX> ledsOben;
@@ -257,10 +341,39 @@ extern cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 extern cLEDText AnzeigeOben;
 extern cLEDText AnzeigeUnten;
 
+extern SemaphoreHandle_t displayMutex;
+bool lockDisplay(uint32_t timeoutMs = 50);
+void unlockDisplay();
+
 void setPixel(int x, int y, CRGB color);
 void drawChar3x5(int startX, int startY, char c, CRGB color);
 
 void drawDigitW(int x, int y, int n, CRGB c);
+
+// ==========================================
+// THEME / DESIGN (pro User über Web wählbar)
+// ==========================================
+extern uint8_t g_themeA;       // Haupt-Farbton (Hue 0-255)
+extern uint8_t g_themeB;       // Zweit-Farbton
+extern bool    g_themeRainbow; // true = voller Regenbogen
+extern int     g_themeIndex;   // aktiver Preset-Index
+
+void  applyTheme(int idx);            // Preset aktivieren
+int   themeAnzahl();                  // Anzahl Presets
+const char* themeName(int idx);       // Name eines Presets
+CRGB  themeCol(uint16_t phase, uint8_t val = 255); // themed Farbe für eine "Phase"
+
+// Uhr-Stil (pro User waehlbar): 0=Digital 1=Binaer 2=Analog
+extern int g_clockStyle;
+void  applyClockStyle(int idx);
+int   clockStyleAnzahl();
+const char* clockStyleName(int idx);
+
+// Kompakte 1-Buchstaben-Kuerzel <-> Index (fuer LittleFS)
+int themeFromCode(char code);
+int clockFromCode(char code);
+char themeCode(int idx);
+char clockCode(int idx);
 #endif
 ````
 
@@ -525,6 +638,7 @@ Taster_v2::Taster_v2(int pin, int modus, unsigned long entprellen, unsigned long
   ersterKlickErkannt = false;
   letzterKlickMillis = 0;
   langKlickErkannt = false;
+  ignoreBisLoslassen = false;
   einfacherKlickZaehler = 0;
   doppelklickZaehler = 0;
   langKlickZaehler = 0;
@@ -548,24 +662,29 @@ void Taster_v2::klickenErkennen() {
       // Logik-Umschalter: Bei PULLUP ist LOW aktiv, bei PULLDOWN ist HIGH aktiv
       bool istAktiv = (tasterModus == INPUT_PULLUP) ? (tasterZustand == LOW) : (tasterZustand == HIGH);
 
-      if (istAktiv) { 
+      if (istAktiv) {
         klickStartZeit = jetzt;
         langKlickErkannt = false;
       }
       else {
         // Taster wurde losgelassen
-        unsigned long klickDauer = jetzt - klickStartZeit;
-        if (klickDauer >= langKlickZeit) {
-          langKlickZaehler++;
-          ersterKlickErkannt = false;
-        }
-        else {
-          if (ersterKlickErkannt && (jetzt - letzterKlickMillis <= doppelklickZeit)) {
-            doppelklickZaehler++;
+        if (ignoreBisLoslassen) {
+          // Der zum Task-Wechsel benutzte Druck wird hier sauber abgeschlossen
+          ignoreBisLoslassen = false;
+        } else {
+          unsigned long klickDauer = jetzt - klickStartZeit;
+          if (klickDauer >= langKlickZeit) {
+            langKlickZaehler++;
             ersterKlickErkannt = false;
-          } else {
-            ersterKlickErkannt = true;
-            letzterKlickMillis = jetzt;
+          }
+          else {
+            if (ersterKlickErkannt && (jetzt - letzterKlickMillis <= doppelklickZeit)) {
+              doppelklickZaehler++;
+              ersterKlickErkannt = false;
+            } else {
+              ersterKlickErkannt = true;
+              letzterKlickMillis = jetzt;
+            }
           }
         }
       }
@@ -574,19 +693,34 @@ void Taster_v2::klickenErkennen() {
 
   // Auch hier das dauerhafte Halten dynamisch prüfen
   bool istAktivDauer = (tasterModus == INPUT_PULLUP) ? (tasterZustand == LOW) : (tasterZustand == HIGH);
-  if (istAktivDauer && !langKlickErkannt) { 
+  if (istAktivDauer && !langKlickErkannt && !ignoreBisLoslassen) {
     if (jetzt - klickStartZeit >= langKlickZeit) {
       langKlickZaehler++;
       langKlickErkannt = true;
     }
   }
 
-  if (ersterKlickErkannt && (jetzt - letzterKlickMillis > doppelklickZeit)) {
+  if (ersterKlickErkannt && !ignoreBisLoslassen && (jetzt - letzterKlickMillis > doppelklickZeit)) {
     einfacherKlickZaehler++;
     ersterKlickErkannt = false;
   }
 
   letzterTasterZustand = aktuellerZustand;
+}
+
+void Taster_v2::reset() {
+  int cur = digitalRead(tasterPin);
+  bool aktivJetzt = (tasterModus == INPUT_PULLUP) ? (cur == LOW) : (cur == HIGH);
+  ignoreBisLoslassen = aktivJetzt;   // wenn beim Wechsel noch gedrückt: bis Loslassen ignorieren
+  letzterTasterZustand = cur;
+  tasterZustand = cur;
+  klickStartZeit = millis();
+  ersterKlickErkannt = false;
+  langKlickErkannt = aktivJetzt;
+  letzterKlickMillis = 0;
+  einfacherKlickZaehler = 0;
+  doppelklickZaehler = 0;
+  langKlickZaehler = 0;
 }
 
 int Taster_v2::isPressed() {
@@ -617,18 +751,20 @@ class Taster_v2 {
     bool ersterKlickErkannt;
     unsigned long letzterKlickMillis;
     bool langKlickErkannt;
+    bool ignoreBisLoslassen; // nach reset(): laufenden Druck ignorieren, bis losgelassen
 
   public:
     int einfacherKlickZaehler;
     int doppelklickZaehler;
     int langKlickZaehler;
-    
+
     int isPressed();
 
     // Der Konstruktor akzeptiert jetzt den Modus (Standardwert ist INPUT_PULLDOWN, falls nichts übergeben wird)
-    Taster_v2(int pin, int modus = INPUT_PULLDOWN, unsigned long entprellen = 20, unsigned long doppelklickZ = 400, unsigned long langKlickZ = 1000);
-    
+    Taster_v2(int pin, int modus = INPUT_PULLDOWN, unsigned long entprellen = 20, unsigned long doppelklickZ = 350, unsigned long langKlickZ = 700);
+
     void klickenErkennen();
+    void reset(); // Zähler + Zustand zurücksetzen, laufenden Druck verbrauchen
 };
 
 #endif
@@ -4143,84 +4279,286 @@ More information about PlatformIO Library Dependency Finder
 - https://docs.platformio.org/page/librarymanager/ldf.html
 ````
 
-## File: lib/TaskDHT/TaskDHT.cpp
+## File: lib/SoundUtils/SoundUtils.cpp
 ````cpp
-#include "TaskDHT.h"
-#include "Config.h"
-#include "HardwareUtils.h"
-#include <DHT.h>
-#include <ESP_Google_Sheet_Client.h>
-#include <FontMatrise.h>
+#include "SoundUtils.h"
+#include <driver/i2s.h>
 
-#define DHTPIN         21
-#define DHTTYPE        DHT22
+#define I2S_BCLK 18
+#define I2S_LRC  19
+#define I2S_DIN  22
 
-DHT dht(DHTPIN, DHTTYPE);
+QueueHandle_t soundQueue = NULL;
+volatile bool musicPlaying = false;
+volatile int  musicBeat = 0;
 
-// Verweist auf die Variablen und Funktionen aus der main.cpp
-extern int aktiverTask; 
-extern void tokenStatusCallback(TokenInfo info); // <--- Hier ist der Fix!
+// --- Kleine prozedurale Melodie (loopt). Frei änderbar, kostet fast keinen Flash. ---
+struct Note { uint16_t freq; uint16_t dur; };
+static const Note melodie[] = {
+    {262, 150}, {330, 150}, {392, 150}, {523, 160}, // C  E  G  C5
+    {392, 150}, {330, 150}, {262, 220}, {0, 90},    // G  E  C
+    {294, 150}, {349, 150}, {440, 150}, {587, 160}, // D  F  A  D5
+    {440, 150}, {349, 150}, {294, 220}, {0, 90},    // A  F  D
+    {330, 150}, {392, 150}, {494, 150}, {659, 160}, // E  G  B  E5
+    {494, 150}, {392, 150}, {330, 220}, {0, 90},    // B  G  E
+    {392, 150}, {494, 150}, {587, 150}, {784, 220}, // G  B  D5 G5
+    {587, 150}, {494, 150}, {392, 220}, {0, 260},   // D5 B  G
+};
+static const int MELODIE_LEN = sizeof(melodie) / sizeof(melodie[0]);
 
-void taskDataHandler(void *pvParameters) {
-    dht.begin();
-    GSheet.setTokenCallback(tokenStatusCallback);
-    GSheet.setPrerefreshSeconds(10 * 60);
-    GSheet.begin(CLIENT_EMAIL, PROJECT_ID, PRIVATE_KEY);
+// Schreibt einen Rechteck-Ton (freq<=0 = Stille) der angegebenen Dauer aufs I2S.
+static void writeTon(int freq, int durationMs) {
+    size_t bytes_written;
+    int total = (44100 * durationMs) / 1000;
+    if (freq <= 0) {
+        int16_t s = 0;
+        for (int i = 0; i < total; i++) i2s_write(I2S_NUM_0, &s, 2, &bytes_written, portMAX_DELAY);
+        return;
+    }
+    int halfPeriod = 44100 / freq / 2;
+    if (halfPeriod < 1) halfPeriod = 1;
+    for (int i = 0; i < total; i++) {
+        int16_t sample = ((i / halfPeriod) % 2) ? 4000 : -4000;
+        i2s_write(I2S_NUM_0, &sample, 2, &bytes_written, portMAX_DELAY);
+    }
+}
 
-    unsigned long lastLogTime = 0;
-    char bufferOben[64], bufferUnten[64];
+void audioTask(void *pvParameters) {
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = 44100,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = 64,
+        .use_apll = false
+    };
+
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_BCLK, .ws_io_num = I2S_LRC, .data_out_num = I2S_DIN, .data_in_num = I2S_PIN_NO_CHANGE
+    };
+
+    i2s_driver_install(I2S_NUM_0, &i2s_config, 0, NULL);
+    i2s_set_pin(I2S_NUM_0, &pin_config);
+
+    SoundType currentSnd;
+    size_t bytes_written;
+    int melIdx = 0;
 
     for (;;) {
-        float h = dht.readHumidity();
-        float t = dht.readTemperature();
+        if (musicPlaying) {
+            // Melodie Note für Note abspielen und loopen
+            const Note n = melodie[melIdx];
+            writeTon(n.freq, n.dur);
+            writeTon(0, 12); // kurze Lücke, damit Noten nicht verschmelzen
+            melIdx = (melIdx + 1) % MELODIE_LEN;
+            musicBeat++;
+        }
+        else if (soundQueue != NULL && xQueueReceive(soundQueue, &currentSnd, pdMS_TO_TICKS(10))) {
+            melIdx = 0; // Melodie startet beim nächsten Mal von vorne
+            int freq = 1000;
+            int duration = 25;
+            // Kurze, knackige Klicks statt langer Töne
+            if (currentSnd == SND_SWIPE)       { freq = 1200; duration = 15; }
+            else if (currentSnd == SND_SELECT) { freq = 1500; duration = 25; }
+            else if (currentSnd == SND_EAT)    { freq = 1800; duration = 18; }
+            else if (currentSnd == SND_DIE)    { freq = 400;  duration = 120; }
+            writeTon(freq, duration);
+        }
+        else {
+            int16_t zero = 0;
+            i2s_write(I2S_NUM_0, &zero, 2, &bytes_written, portMAX_DELAY);
+        }
+        vTaskDelay(1);
+    }
+}
 
-        // 1. DISPLAY AKTUALISIEREN (Nur wenn im Menü-Modus 3)
-        if (aktiverTask == 3) {
-            if (!isnan(h) && !isnan(t)) {
-                snprintf(bufferOben, 64, "\x02 %.1f C", t); 
-                snprintf(bufferUnten, 64, "\x02 %.0f %%", h);
-            } else {
-                snprintf(bufferOben, 64, "\x02 FEHLER");
-                snprintf(bufferUnten, 64, "\x02 SENSOR");
+void initAudio() {
+    if (soundQueue == NULL) soundQueue = xQueueCreate(10, sizeof(SoundType));
+    xTaskCreatePinnedToCore(audioTask, "AudioTask", 2560, NULL, 2, NULL, 1);
+}
+
+void playSound(SoundType type) {
+    if (soundQueue != NULL) {
+        xQueueSend(soundQueue, &type, 0);
+    }
+}
+
+void startMusic() { musicBeat = 0; musicPlaying = true; }
+void stopMusic()  { musicPlaying = false; }
+````
+
+## File: lib/SoundUtils/SoundUtils.h
+````c
+#ifndef SOUND_UTILS_H
+#define SOUND_UTILS_H
+
+#include <Arduino.h>
+
+enum SoundType {
+    SND_NONE,
+    SND_SWIPE,
+    SND_SELECT,
+    SND_EAT,
+    SND_DIE
+};
+
+void initAudio();
+void playSound(SoundType type); // WICHTIG: Muss exakt so im .cpp stehen
+
+// --- Musik (prozedural, kein Flash-Bloat, keine SD) ---
+void startMusic();
+void stopMusic();
+extern volatile int musicBeat; // zählt gespielte Noten hoch (für den Visualizer)
+
+#endif
+````
+
+## File: lib/TaskAnim/TaskAnim.cpp
+````cpp
+#include "TaskAnim.h"
+#include <FastLED.h>
+#include "HardwareUtils.h"
+
+extern volatile int aktiverTask;
+
+// Eigener Framebuffer (32x16). Statisch -> belegt keinen Stack.
+static CRGB buf[16 * 32];
+#define B(x, y) buf[(y) * 32 + (x)]
+
+static void animFade(uint8_t keep) {
+    for (int i = 0; i < 16 * 32; i++) buf[i].nscale8(keep);
+}
+
+void taskAnim(void *pvParameters) {
+    static uint8_t heat[16 * 32];
+    static int     dropY[32];
+    static bool    life[16 * 32];
+    static bool    life2[16 * 32];
+
+    uint8_t mode = 0;          // 0=Plasma 1=Feuer 2=Matrix 3=Sterne 4=Game of Life 5=Konfetti
+    bool modeInit = true;
+    unsigned long modeStart = millis();
+    uint32_t frame = 0;
+    int lifeGen = 0;
+
+    for (int i = 0; i < 16 * 32; i++) buf[i] = CRGB::Black;
+
+    auto idx = [](int x, int y) { x = (x + 32) % 32; y = (y + 16) % 16; return y * 32 + x; };
+
+    for (;;) {
+        if (aktiverTask != 4) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+
+        unsigned long now = millis();
+        if (now - modeStart > 9000) { // alle 9s naechste Animation
+            mode = (mode + 1) % 6;
+            modeStart = now;
+            modeInit = true;
+            for (int i = 0; i < 16 * 32; i++) buf[i] = CRGB::Black;
+        }
+        frame++;
+
+        switch (mode) {
+            case 0: { // Plasma
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 32; x++) {
+                        int v = (sin8(x * 12 + frame * 2) + sin8(y * 14 - frame * 3) + sin8((x * 3 + y * 5) + frame)) / 3;
+                        B(x, y) = themeCol(v + frame / 2, 255);
+                    }
+                break;
             }
-
-            FastLED.clear();
-            AnzeigeOben.SetText((unsigned char *)bufferOben, strlen(bufferOben));
-            AnzeigeUnten.SetText((unsigned char *)bufferUnten, strlen(bufferUnten));
-            AnzeigeOben.UpdateText();
-            AnzeigeUnten.UpdateText();
-            FastLED.show();
+            case 1: { // Feuer (klassische Heat-Palette)
+                if (modeInit) for (int i = 0; i < 16 * 32; i++) heat[i] = 0;
+                for (int x = 0; x < 32; x++) {
+                    for (int y = 0; y < 16; y++) heat[y * 32 + x] = qsub8(heat[y * 32 + x], random8(0, 12));
+                    for (int y = 0; y < 15; y++) {
+                        int b2 = (y + 2 < 16) ? (y + 2) : 15;
+                        heat[y * 32 + x] = (heat[(y + 1) * 32 + x] * 2 + heat[b2 * 32 + x]) / 3;
+                    }
+                    if (random8() < 110) heat[15 * 32 + x] = qadd8(heat[15 * 32 + x], random8(160, 255));
+                    for (int y = 0; y < 16; y++) B(x, y) = HeatColor(heat[y * 32 + x]);
+                }
+                break;
+            }
+            case 2: { // Matrix-Regen
+                if (modeInit) for (int x = 0; x < 32; x++) dropY[x] = random8(0, 16);
+                animFade(150);
+                for (int x = 0; x < 32; x++) {
+                    if (frame % (1 + (x % 3)) == 0) dropY[x]++;
+                    if (dropY[x] >= 16) { if (random8() < 30) dropY[x] = 0; else continue; }
+                    if (dropY[x] >= 0 && dropY[x] < 16) {
+                        B(x, dropY[x]) = CRGB::White;
+                        if (dropY[x] > 0) B(x, dropY[x] - 1) = themeCol(96, 200);
+                    }
+                }
+                break;
+            }
+            case 3: { // Sternenhimmel (Funkeln)
+                animFade(235);
+                for (int k = 0; k < 3; k++)
+                    if (random8() < 180) B(random8(32), random8(16)) = themeCol(random8(), 255);
+                break;
+            }
+            case 4: { // Game of Life (Conway)
+                if (modeInit) { for (int i = 0; i < 16 * 32; i++) life[i] = (random8() < 80); lifeGen = 0; }
+                if (frame % 4 == 0) {
+                    int pop = 0;
+                    for (int y = 0; y < 16; y++)
+                        for (int x = 0; x < 32; x++) {
+                            int n = 0;
+                            for (int dy = -1; dy <= 1; dy++)
+                                for (int dx = -1; dx <= 1; dx++)
+                                    if (!(dx == 0 && dy == 0) && life[idx(x + dx, y + dy)]) n++;
+                            bool alive = life[y * 32 + x];
+                            life2[y * 32 + x] = alive ? (n == 2 || n == 3) : (n == 3);
+                            if (life2[y * 32 + x]) pop++;
+                        }
+                    for (int i = 0; i < 16 * 32; i++) life[i] = life2[i];
+                    lifeGen++;
+                    if (pop < 6 || lifeGen > 220) { for (int i = 0; i < 16 * 32; i++) life[i] = (random8() < 80); lifeGen = 0; }
+                }
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 32; x++)
+                        B(x, y) = life[y * 32 + x] ? themeCol(x * 4 + y * 4, 255) : CRGB::Black;
+                break;
+            }
+            case 5: { // Konfetti
+                animFade(235);
+                buf[random16(16 * 32)] = themeCol(random8(), 255);
+                break;
+            }
         }
 
-        // 2. GOOGLE SHEETS LOGGING (Läuft IMMER im Hintergrund)
-        if (GSheet.ready() && (millis() - lastLogTime > 60000)) {
-            lastLogTime = millis();
-            FirebaseJson valueRange;
-            valueRange.add("majorDimension", "COLUMNS");
-            time_t now;
-            time(&now);
-            valueRange.set("values/[0]/[0]", (uint32_t)now);
-            valueRange.set("values/[1]/[0]", t);
-            valueRange.set("values/[2]/[0]", h);
+        modeInit = false;
 
-            FirebaseJson response;
-            GSheet.values.append(&response, spreadsheetId, "Sheet1!A1", &valueRange);
-            Serial.println("Cloud-Log gesendet.");
+        if (lockDisplay(20)) {
+            if (aktiverTask == 4) {
+                for (int y = 0; y < 16; y++)
+                    for (int x = 0; x < 32; x++)
+                        setPixel(x, y, B(x, y));
+                FastLED.show();
+            }
+            unlockDisplay();
         }
-
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        vTaskDelay(40 / portTICK_PERIOD_MS);
     }
 }
 ````
 
-## File: lib/TaskDHT/TaskDHT.h
+## File: lib/TaskAnim/TaskAnim.h
 ````c
-#ifndef TASKDHT_H
-#define TASKDHT_H
+#ifndef TASK_ANIM_H
+#define TASK_ANIM_H
 
 #include <Arduino.h>
 
-void taskDataHandler(void * pvParameters);
+// Eye-Candy-App: wechselt automatisch durch mehrere Animationen (im aktuellen Theme).
+void taskAnim(void *pvParameters);
 
 #endif
 ````
@@ -4232,8 +4570,11 @@ void taskDataHandler(void * pvParameters);
 #include <FastLED.h>
 #include "HardwareUtils.h"
 #include "Config.h"
+#include "SoundUtils.h" // NEU
+
 
 extern volatile bool taskWechselAnforderung;
+extern volatile int aktiverTask;
 
 // Global verfügbar machen
 extern void drawDigitW(int x, int y, int n, CRGB c);
@@ -4267,18 +4608,27 @@ void taskSnakeHandler(void *pvParameters) {
     resetGame();
 
     for(;;) {
-        if (taskWechselAnforderung) {
-            FastLED.clear();
-            FastLED.show();              // LEDs löschen
-            taskWechselAnforderung = false; // Flag zurücksetzen
-            vTaskSuspend(NULL);          // Task selbst schlafen legen
+        if (aktiverTask != 2) {
+            taskWechselAnforderung = false;
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
         }
+        taskWechselAnforderung = false;
         
         bool clicked = (digitalRead(PIN_SW) == HIGH);
         static bool lastClicked = false;
         bool btnPress = (clicked && !lastClicked);
         lastClicked = clicked;
         if(clicked) vTaskDelay(50 / portTICK_PERIOD_MS);
+
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 2) {
+            unlockDisplay();
+            continue;
+        }
 
         switch (currentState) {
             case STATE_MENU: {
@@ -4331,11 +4681,17 @@ void taskSnakeHandler(void *pvParameters) {
                     for (int i = 0; i < snakeLength; i++) if (nextX == snake[i].x && nextY == snake[i].y) dead = true;
                     
                     if (dead) { 
+                        playSound(SND_DIE);
                         currentScore = snakeLength;
                         saveHighScore(currentUser, currentScore);
                         currentState = STATE_GAMEOVER;
                     } else {
-                        if (nextX == food.x && nextY == food.y) { if (snakeLength < 100) snakeLength++; spawnFood(); if (moveInterval > 70) moveInterval -= 2; }
+                        if (nextX == food.x && nextY == food.y) {
+                            playSound(SND_EAT);
+                            if (snakeLength < 100) snakeLength++;
+                            spawnFood();
+                            if (moveInterval > 70) moveInterval -= 2;
+                        }
                         for (int i = snakeLength - 1; i > 0; i--) snake[i] = snake[i - 1];
                         snake[0] = {nextX, nextY};
                     }
@@ -4357,6 +4713,7 @@ void taskSnakeHandler(void *pvParameters) {
                 break;
             }
         }
+        unlockDisplay();
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 }
@@ -4376,45 +4733,125 @@ void taskSnakeHandler(void *pvParameters);
 ````cpp
 #include "TaskUhr.h"
 #include <FastLED.h>
-#include <LEDMatrix.h>
-#include <LEDText.h>
-#include "time.h"
+#include <math.h>
+#include "HardwareUtils.h"
 
-// Externe Variablen, die in der main.cpp definiert sind
-extern cLEDMatrix<32, -8, VERTICAL_ZIGZAG_MATRIX> ledsOben;
-extern cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
-extern cLEDText AnzeigeOben;
-extern cLEDText AnzeigeUnten;
+extern volatile int aktiverTask;
 
+// Zwei Ziffern (mit fuehrender Null) ab x zeichnen
+static void zweiZiffern(int x, int y, int wert, CRGB c) {
+    drawDigitW(x, y, (wert / 10) % 10, c);
+    drawDigitW(x + 4, y, wert % 10, c);
+}
 
-void taskUhr(void * pvParameters) {
-    struct tm timeinfo;
-    
-    // HIER: Die Puffer müssen innerhalb der Funktion definiert werden, 
-    // damit der Code darauf zugreifen kann!
-    char datumBuffer[40];
-    char zeitBuffer[40];
-    
-    for(;;) {
-        if (getLocalTime(&timeinfo)) {
-            FastLED.clear();
-            
-            if (millis() % 6000 < 3000) { 
-                sprintf(datumBuffer, "\x02%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-                sprintf(zeitBuffer, "\x02   %02d", timeinfo.tm_sec);
-            } else {
-                sprintf(datumBuffer, "\x02 %04d", timeinfo.tm_year + 1900);
-                sprintf(zeitBuffer, "\x02%02d.%02d.", timeinfo.tm_mday, timeinfo.tm_mon + 1);
-            }
-            
-            AnzeigeOben.SetText((unsigned char *)datumBuffer, strlen(datumBuffer));
-            AnzeigeUnten.SetText((unsigned char *)zeitBuffer, strlen(zeitBuffer));
-            
-            AnzeigeOben.UpdateText();
-            AnzeigeUnten.UpdateText();
-            FastLED.show();
+// ---------- Stil 0: DIGITAL (Zeit/Datum abwechselnd) ----------
+static void uhrDigital(struct tm &ti, CRGB col, unsigned long jetzt) {
+    bool zeitPhase = (jetzt % 8000) < 4000;
+    if (zeitPhase) {
+        zweiZiffern(6, 2, ti.tm_hour, col);
+        zweiZiffern(18, 2, ti.tm_min, col);
+        if ((jetzt / 500) % 2) { setPixel(15, 3, col); setPixel(15, 5, col); }
+        zweiZiffern(12, 9, ti.tm_sec, col);
+        int bw = (ti.tm_sec * 32) / 60;
+        for (int x = 0; x < bw; x++) setPixel(x, 15, col);
+    } else {
+        zweiZiffern(6, 2, ti.tm_mday, col);
+        setPixel(15, 6, col);
+        zweiZiffern(18, 2, ti.tm_mon + 1, col);
+        int jahr = ti.tm_year + 1900;
+        drawDigitW(8, 9, (jahr / 1000) % 10, col);
+        drawDigitW(12, 9, (jahr / 100) % 10, col);
+        drawDigitW(16, 9, (jahr / 10) % 10, col);
+        drawDigitW(20, 9, jahr % 10, col);
+    }
+}
+
+// ---------- Stil 1: BINAER (BCD, 6 Spalten HH MM SS) ----------
+static void uhrBinaer(struct tm &ti, CRGB col) {
+    int vals[6] = { ti.tm_hour / 10, ti.tm_hour % 10,
+                    ti.tm_min / 10,  ti.tm_min % 10,
+                    ti.tm_sec / 10,  ti.tm_sec % 10 };
+    int colX[6] = {3, 8, 14, 19, 25, 30};
+    CRGB dim = col; dim.nscale8(35);
+    for (int c = 0; c < 6; c++) {
+        for (int b = 0; b < 4; b++) {
+            bool on = vals[c] & (1 << (3 - b));
+            int y = 3 + b * 3;
+            CRGB cc = on ? col : dim;
+            setPixel(colX[c], y, cc);
+            setPixel(colX[c] + 1, y, cc);
         }
-        vTaskDelay(500 / portTICK_PERIOD_MS); 
+    }
+}
+
+// ---------- Stil 2: ANALOG ----------
+static void zeichneLinie(int x0, int y0, int x1, int y1, CRGB c) {
+    int dx = abs(x1 - x0), dy = -abs(y1 - y0);
+    int sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        setPixel(x0, y0, c);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+static void uhrAnalog(struct tm &ti, CRGB col) {
+    int cx = 16, cy = 8, r = 7;
+    CRGB dim = col; dim.nscale8(55);
+    for (int h = 0; h < 12; h++) {
+        float a = h * 30 * DEG_TO_RAD;
+        setPixel(cx + (int)round(sin(a) * r), cy - (int)round(cos(a) * r), dim);
+    }
+    float secA  = ti.tm_sec * 6 * DEG_TO_RAD;
+    float minA  = (ti.tm_min * 6 + ti.tm_sec * 0.1) * DEG_TO_RAD;
+    float hourA = ((ti.tm_hour % 12) * 30 + ti.tm_min * 0.5) * DEG_TO_RAD;
+    zeichneLinie(cx, cy, cx + (int)round(sin(hourA) * 4), cy - (int)round(cos(hourA) * 4), col);
+    zeichneLinie(cx, cy, cx + (int)round(sin(minA) * 6),  cy - (int)round(cos(minA) * 6),  col);
+    zeichneLinie(cx, cy, cx + (int)round(sin(secA) * 7),  cy - (int)round(cos(secA) * 7),  CRGB::Red);
+    setPixel(cx, cy, CRGB::White);
+}
+
+void taskUhr(void *pvParameters) {
+    struct tm timeinfo;
+    Serial.println("TaskUhr: Gestartet.");
+
+    for (;;) {
+        if (aktiverTask != 0) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 0) {
+            unlockDisplay();
+            continue;
+        }
+
+        FastLED.clear();
+        unsigned long jetzt = millis();
+        CRGB col = themeCol(jetzt / 40); // Theme-Farbe, sanft wandernd
+
+        if (getLocalTime(&timeinfo, 10)) {
+            switch (g_clockStyle) {
+                case 1: uhrBinaer(timeinfo, col); break;
+                case 2: uhrAnalog(timeinfo, col); break;
+                default: uhrDigital(timeinfo, col, jetzt); break;
+            }
+        } else {
+            // Noch kein NTP-Sync
+            drawChar3x5(7, 6, 'N', col);
+            drawChar3x5(13, 6, 'T', col);
+            drawChar3x5(19, 6, 'P', col);
+            if ((jetzt / 400) % 2) setPixel(15, 13, col);
+        }
+
+        FastLED.show();
+        unlockDisplay();
+        vTaskDelay(60 / portTICK_PERIOD_MS);
     }
 }
 ````
@@ -4441,6 +4878,9 @@ void taskUhr(void * pvParameters);
 #include <FastLED.h>
 #include "HardwareUtils.h"
 #include "Config.h"
+#include "SoundUtils.h" // für Donner-Geräusch
+
+extern volatile int aktiverTask;
 
 int weatherID = 800; 
 float aktuelleTemp = 0.0;
@@ -4449,45 +4889,100 @@ float aktuelleTemp = 0.0;
 extern const char* font3x5[26] ;
 extern void drawChar3x5(int startX, int startY, char c, CRGB color);
 extern void drawDigitW(int x, int y, int n, CRGB c);
-void taskWetter(void * pvParameters) {
-    auto fetchWetter = [&]() {
-        if (WiFi.status() == WL_CONNECTED) {
-            HTTPClient http;
-            
-            // WICHTIG: Leerzeichen für URLs anpassen ("New York" -> "New%20York")
-            String safeCity = currentCity;
-            safeCity.replace(" ", "%20");
+// --- Wetterdaten holen: kurzer Timeout, blockiert nur den Hintergrund-Task ---
+static bool fetchWetter() {
+    if (WiFi.status() != WL_CONNECTED) return false;
 
-            String url = "http://api.openweathermap.org/data/2.5/weather?q=" + safeCity + "&appid=" + String(weatherApiKey) + "&units=metric";
-            Serial.printf("[WETTER] Rufe Daten ab für: '%s'\n", currentCity.c_str());
-            
-            http.begin(url);
-            int httpCode = http.GET();
-            if (httpCode == 200) {
-                JsonDocument doc;
-                deserializeJson(doc, http.getString());
-                aktuelleTemp = doc["main"]["temp"];
-                weatherID = doc["weather"][0]["id"];
-                Serial.printf("[WETTER] Erfolgreich! Temp: %.1f\n", aktuelleTemp);
-            } else {
-                Serial.printf("[WETTER] Fehler! HTTP Code: %d\n", httpCode);
-            }
-            http.end();
+    HTTPClient http;
+    http.setConnectTimeout(4000);
+    http.setTimeout(5000);
+    http.useHTTP10(true); // verhindert haeufige -11 Read-Timeouts (kein keep-alive/chunked)
+
+    String safeCity = currentCity;
+    safeCity.replace(" ", "%20");
+    String url = "http://api.openweathermap.org/data/2.5/weather?q=" + safeCity +
+                 "&appid=" + String(weatherApiKey) + "&units=metric";
+    Serial.printf("[WETTER] Rufe Daten ab für: '%s'\n", currentCity.c_str());
+
+    if (!http.begin(url)) { Serial.println("[WETTER] begin() fehlgeschlagen"); return false; }
+
+    int httpCode = http.GET();
+    bool ok = false;
+    if (httpCode == 200) {
+        JsonDocument doc;
+        DeserializationError err = deserializeJson(doc, http.getStream());
+        if (!err) {
+            aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
+            weatherID    = doc["weather"][0]["id"] | weatherID;
+            Serial.printf("[WETTER] OK! Temp: %.1f  ID: %d\n", aktuelleTemp, weatherID);
+            ok = true;
+        } else {
+            Serial.printf("[WETTER] JSON-Fehler: %s\n", err.c_str());
+        }
+    } else {
+        Serial.printf("[WETTER] Fehler! HTTP Code: %d\n", httpCode);
+    }
+    http.end();
+    return ok;
+}
+
+// Hintergrund-Task: holt die Daten, ohne je die Anzeige zu blockieren.
+void taskWetterFetch(void * pvParameters) {
+    vTaskDelay(2500 / portTICK_PERIOD_MS); // kurz warten, bis WLAN/NTP stabil sind
+    for (;;) {
+        bool ok = fetchWetter();
+        forceWeatherUpdate = false;
+        unsigned long warte = ok ? 900000UL : 30000UL; // Erfolg: 15 min, sonst in 30 s erneut
+        unsigned long start = millis();
+        while (millis() - start < warte) {
+            if (forceWeatherUpdate) break; // Stadt geaendert -> sofort neu laden
+            vTaskDelay(200 / portTICK_PERIOD_MS);
+        }
+    }
+}
+
+void taskWetter(void * pvParameters) {
+    // --- Wetter-Symbol-Helfer (zeichnen im linken Bereich x:1..11) ---
+    auto drawWolke = [](int ox, int oy, CRGB col) {
+        for (int x = ox; x <= ox + 9; x++) setPixel(x, oy + 3, col);
+        for (int x = ox + 1; x <= ox + 3; x++) for (int y = oy + 1; y <= oy + 3; y++) setPixel(x, y, col);
+        for (int x = ox + 4; x <= ox + 6; x++) for (int y = oy;     y <= oy + 3; y++) setPixel(x, y, col);
+        for (int x = ox + 7; x <= ox + 9; x++) for (int y = oy + 1; y <= oy + 3; y++) setPixel(x, y, col);
+    };
+    auto drawSonne = [](unsigned long jt) {
+        int cx = 6, cy = 7;
+        for (int x = cx - 2; x <= cx + 2; x++)
+            for (int y = cy - 2; y <= cy + 2; y++)
+                if ((x - cx) * (x - cx) + (y - cy) * (y - cy) <= 5) setPixel(x, y, CRGB::Yellow);
+        int r = 4 + (int)(fabs(sin(jt / 350.0)) * 1.5);
+        setPixel(cx, cy - r, CRGB::Orange); setPixel(cx, cy + r, CRGB::Orange);
+        setPixel(cx - r, cy, CRGB::Orange); setPixel(cx + r, cy, CRGB::Orange);
+        setPixel(cx - r + 1, cy - r + 1, CRGB::Gold); setPixel(cx + r - 1, cy - r + 1, CRGB::Gold);
+        setPixel(cx - r + 1, cy + r - 1, CRGB::Gold); setPixel(cx + r - 1, cy + r - 1, CRGB::Gold);
+    };
+    auto drawNebel = [](unsigned long jt) {
+        for (int row = 0; row < 4; row++) {
+            int yy = 3 + row * 3;
+            int off = (int)(sin(jt / 300.0 + row) * 2.0);
+            for (int x = 1; x <= 11; x++) setPixel(x + off, yy, CRGB(70, 70, 70));
         }
     };
 
-    // Erster Aufruf beim Start
-    fetchWetter();
-    unsigned long lastAPIUpdate = millis();
-
     for(;;) {
-        // HIER IST DER MAGISCHE TRIGGER: Entweder 15 Min sind um, ODER jemand hat im Web was geändert!
-        if (forceWeatherUpdate || (millis() - lastAPIUpdate > 900000)) { 
-            fetchWetter(); 
-            lastAPIUpdate = millis(); 
-            forceWeatherUpdate = false; // Trigger wieder ausschalten
+        if (aktiverTask != 1) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
         }
-        
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 1) {
+            unlockDisplay();
+            continue;
+        }
+
+        // Anzeige rendert nur noch aus den (im Hintergrund aktualisierten) Werten -> friert nie ein
         FastLED.clear();
         
         // --- DYNAMISCHER STADTNAME ---
@@ -4509,14 +5004,49 @@ void taskWetter(void * pvParameters) {
         for(int x=27; x<30; x++) { setPixel(x, 10, CRGB::White); setPixel(x, 14, CRGB::White); } 
         setPixel(30, 11, CRGB::White); setPixel(30, 13, CRGB::White); 
 
-        // --- SYMBOL ---
-        if (weatherID == 800) { 
-             for(int x=4; x<10; x++) for(int y=3; y<9; y++) setPixel(x, y, CRGB::Yellow);
-        } else { 
-             for(int x=2; x<12; x++) for(int y=4; y<8; y++) setPixel(x, y, CRGB::Gray);
+        // --- WETTER-SYMBOL je nach Bedingung (animiert) ---
+        unsigned long jetzt = millis();
+        int cat = weatherID / 100;
+
+        if (weatherID == 800) {
+            // Klar: Sonne mit pulsierenden Strahlen
+            drawSonne(jetzt);
+        } else if (cat == 2) {
+            // Gewitter: dunkle Wolke + Blitz + Donner
+            drawWolke(1, 1, CRGB(80, 80, 90));
+            bool flash = ((jetzt / 350) % 4 == 0);
+            int bolt[6][2] = {{6, 6}, {5, 8}, {6, 9}, {4, 11}, {5, 12}, {4, 14}};
+            CRGB boltCol = flash ? CRGB::White : CRGB::Yellow;
+            for (int i = 0; i < 6; i++) setPixel(bolt[i][0], bolt[i][1], boltCol);
+            if (flash) drawWolke(1, 1, CRGB(150, 150, 160)); // Wolke hellt beim Blitz auf
+            static unsigned long lastThunder = 0;
+            if (flash && (jetzt - lastThunder > 2500)) { playSound(SND_DIE); lastThunder = jetzt; }
+        } else if (cat == 3 || cat == 5) {
+            // Niesel/Regen: Wolke + fallende blaue Tropfen
+            drawWolke(1, 1, CRGB::Gray);
+            for (int d = 0; d < 6; d++) {
+                int dx = 2 + d * 2;
+                int dy = 6 + ((jetzt / 90 + d * 3) % 9);
+                setPixel(dx, dy, CRGB::DeepSkyBlue);
+            }
+        } else if (cat == 6) {
+            // Schnee: Wolke + langsam taumelnde Flocken
+            drawWolke(1, 1, CRGB::Gray);
+            for (int d = 0; d < 6; d++) {
+                int dx = 2 + d * 2 + (int)(sin(jetzt / 200.0 + d) * 1.0);
+                int dy = 6 + ((jetzt / 160 + d * 2) % 9);
+                setPixel(dx, dy, CRGB::White);
+            }
+        } else if (cat == 7) {
+            // Nebel/Dunst: treibende graue Schwaden
+            drawNebel(jetzt);
+        } else {
+            // Wolken (80x) und Rest: ruhige weiße Wolke
+            drawWolke(1, 5, CRGB::White);
         }
 
         FastLED.show();
+        unlockDisplay();
         vTaskDelay(50 / portTICK_PERIOD_MS);
     }
 }
@@ -4530,9 +5060,10 @@ void taskWetter(void * pvParameters) {
 #include <Arduino.h>
 
 // Das "extern" sagt dem Compiler: "Suche diese Variable in einer anderen Datei"
-extern bool forceWeatherUpdate; 
+extern bool forceWeatherUpdate;
 
-void taskWetter(void * pvParameters);
+void taskWetter(void * pvParameters);       // Anzeige (blockiert nie auf dem Netzwerk)
+void taskWetterFetch(void * pvParameters);  // Hintergrund: holt die Wetterdaten
 
 #endif
 ````
@@ -4545,7 +5076,6 @@ void taskWetter(void * pvParameters);
 ;   Upload options: custom upload port, speed and extra flags
 ;   Library options: dependencies, extra library storages
 ;   Advanced options: extra scripting
-;
 ; Please visit documentation for the other options and examples
 ; https://docs.platformio.org/page/projectconf.html
 
@@ -4553,10 +5083,8 @@ void taskWetter(void * pvParameters);
 platform = espressif32
 board = esp32dev
 framework = arduino
-lib_deps = 
+lib_deps =
 	fastled/FastLED@^3.10.3
-	mobizt/ESP-Google-Sheet-Client@^1.4.13
-	adafruit/DHT sensor library@^1.4.7
 	bblanchon/ArduinoJson@^7.2.2
 ````
 
@@ -4564,6 +5092,8 @@ lib_deps =
 ````cpp
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h> // NEU für pixelboard.local
+
 #include "time.h"
 #include "HardwareUtils.h" // <--- Hier sind AnzeigeOben/AnzeigeUnten definiert
 
@@ -4571,49 +5101,40 @@ lib_deps =
 #include <LEDMatrix.h>
 #include <LEDText.h>
 #include <FontMatrise.h>
-#include <DHT.h>
-#include <ESP_Google_Sheet_Client.h>
+#include "SoundUtils.h"
+
 #include "Joystick.h"
 #include "TaskUhr.h"
 #include "TaskWetter.h"
-#include "TaskDHT.h"
 #include "Config.h"
 #include "TaskSnake.h"
+#include "TaskAnim.h"
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
 // ==========================================
-#define LED_PIN_OBEN   26
-#define LED_PIN_UNTEN  25
-#define COLOR_ORDER    GRB
-#define CHIPSET        WS2812B
-#define MATRIX_WIDTH   32
-#define MATRIX_HEIGHT  8
-#define MATRIX_TYPE    VERTICAL_ZIGZAG_MATRIX
-#define WIDTH          32
-#define HEIGHT_TOTAL   16
-
-// --- DHT22 Setup ---
-#define DHTPIN         21
-#define DHTTYPE        DHT22
+#define LED_PIN_OBEN 26
+#define LED_PIN_UNTEN 25
+#define COLOR_ORDER GRB
+#define CHIPSET WS2812B
+#define MATRIX_WIDTH 32
+#define MATRIX_HEIGHT 8
+#define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
+#define WIDTH 32
+#define HEIGHT_TOTAL 16
 
 // --- Joystick 1 (Für Snake - INPUT_PULLDOWN) ---
-#define J1_PIN_X       34
-#define J1_PIN_Y       35
-#define J1_PIN_TASTER  13
+#define J1_PIN_X 34
+#define J1_PIN_Y 35
+#define J1_PIN_TASTER 13
 // Mappings, damit der unveränderte Task C funktioniert:
-#define PIN_X          J1_PIN_X
-#define PIN_Y          J1_PIN_Y
-#define PIN_BTN        J1_PIN_TASTER
+#define PIN_X J1_PIN_X
+#define PIN_Y J1_PIN_Y
+#define PIN_BTN J1_PIN_TASTER
 
 // --- Joystick 2 (Für Menü & Navigation - INPUT_PULLUP) ---
-#define J2_PIN_X       36
-#define J2_PIN_Y       39
-#define J2_PIN_TASTER  14
-
-
-
-
-
+#define J2_PIN_X 36
+#define J2_PIN_Y 39
+#define J2_PIN_TASTER 14
 
 // ==========================================
 // 3. INSTANZEN & GLOBALE VARIABLEN
@@ -4623,23 +5144,27 @@ TaskHandle_t getTaskHandle(int nummer);
 void setEventSperre(unsigned long dauerMs);
 void wechsleZuTask(int zielTask);
 void starteTask(int nummer);
+// Globale Variablen aus der Struktur übernehmen
+extern SemaphoreHandle_t clickCounterMutex;
+extern int fokusModus;
+extern volatile int aktiverTask;
+extern volatile bool taskWechselAnforderung;
 
 volatile bool taskWechselAnforderung = false;
 
 Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN); // Snake
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);   // Menü
 
-
-TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, handleE = NULL; 
+TaskHandle_t handleA = NULL, handleB = NULL, handleC = NULL, handleData = NULL, handleE = NULL;
 
 char datumBuffer[40], zeitBuffer[40];
 char bufferOben[64], bufferUnten[64];
-int fokusModus = 0;    // Navigation im Menü
-int aktiverTask = -1;  // -1 = Menü, 0-4 = Task läuft
+int fokusModus = 0;   // Navigation im Menü
+volatile int aktiverTask = -1; // -1 = Menue, -2 = Wechsel, 0-4 = Task laeuft
 bool navigationsSperre = false;
-unsigned long navigationSperreZeit = 0; 
-int lastXPerc = 0;     
-int lastYPerc = 0;     
+unsigned long navigationSperreZeit = 0;
+int lastXPerc = 0;
+int lastYPerc = 0;
 unsigned long eventSperreBis = 0;
 
 SemaphoreHandle_t clickCounterMutex = NULL;
@@ -4647,37 +5172,49 @@ SemaphoreHandle_t clickCounterMutex = NULL;
 // ==========================================
 // NEUE SYMBOLE (3x5 Pixel im 15-Bit-Format)
 // ==========================================
-// Task 0: Uhrzeit/Uhr     -> 
-// Task 1: Wetter/Wolke    -> 
-// Task 2: Snake/Schlange  -> 
-// Task 3: DHT (Text 'D')  -> 
+// Task 0: Uhrzeit/Uhr     ->
+// Task 1: Wetter/Wolke    ->
+// Task 2: Snake/Schlange  ->
+// Task 3: DHT (Text 'D')  ->
 // Task 4: Leer/Strich     -> Vertikaler Strich
 const uint32_t menuIcons[5] = {
-  0x3A5A7, // Task 0: Uhr (Kreis-Ansatz mit angedeuteten Zeigern)
-  0x3EEDC, // Task 1: Wetter (Wolke mit kompakter Basis)
-  0x74B5E, // Task 2: Snake (S-Form für Schlange + separater Pixel für Apfel)
-  0x72497, // Task 3: DHT (Kompakter Buchstabe 'D', da 3x5 für "DHT" zu schmal ist)
-  0x24924  // Task 4: Leer (Dein originaler vertikaler Strich)
+    0x3A5A7, // Task 0: Uhr (Kreis-Ansatz mit angedeuteten Zeigern)
+    0x3EEDC, // Task 1: Wetter (Wolke mit kompakter Basis)
+    0x74B5E, // Task 2: Snake (S-Form für Schlange + separater Pixel für Apfel)
+    0x72497, // Task 3: DHT (Kompakter Buchstabe 'D', da 3x5 für "DHT" zu schmal ist)
+    0x24924  // Task 4: Leer (Dein originaler vertikaler Strich)
 };
 
-void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color) {
-  for (int i = 0; i < 15; i++) {
-    if (icon & (1 << (14 - i))) {
-      setPixel(xOffset + (i % 3), yOffset + (i / 3), color);
+void drawIcon(int xOffset, int yOffset, uint16_t icon, CRGB color)
+{
+    for (int i = 0; i < 15; i++)
+    {
+        if (icon & (1 << (14 - i)))
+        {
+            setPixel(xOffset + (i % 3), yOffset + (i / 3), color);
+        }
     }
-  }
 }
 
-void printMenu() {
+void printMenu()
+{
+    if (!lockDisplay(20)) return;
     FastLED.clear();
 
     // Zeitbasis für alle Animationen abrufen
     unsigned long jetzt = millis();
 
+    // Dezenter, lebendiger Hintergrund (weniger Schwarz) im gewaehlten Design.
+    // Niedriges V = wenig Strom; die hellen Symbole/Buchstaben darüber bleiben klar lesbar.
+    for (int x = 0; x < 32; x++)
+        for (int y = 0; y < 16; y++)
+            setPixel(x, y, themeCol(x * 5 - y * 3 + jetzt / 35, 55));
+
     // ==========================================
     // ZUSTAND 0: DIE STARTSEITE (PIXELBOARD MENÜ)
     // ==========================================
-    if (fokusModus == 0) {
+    if (fokusModus == 0)
+    {
         static const uint8_t glyphs[6][7] = {
             {0x1F, 0x11, 0x11, 0x1F, 0x10, 0x10, 0x10}, // P
             {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}, // I
@@ -4687,262 +5224,267 @@ void printMenu() {
             {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M
         };
 
-        struct Coord { int8_t x; int8_t y; };
+        struct Coord
+        {
+            int8_t x;
+            int8_t y;
+        };
         static Coord path[150];
         static int pathLength = 0;
         static bool pathInitialized = false;
 
-        if (!pathInitialized) {
+        if (!pathInitialized)
+        {
             int pIdx = 0;
-            int xOffsets[5] = {2, 8, 14, 20, 26}; 
-            for (char b = 0; b < 5; b++) {
+            int xOffsets[5] = {2, 8, 14, 20, 26};
+            for (char b = 0; b < 5; b++)
+            {
                 int xOff = xOffsets[b];
                 bool upward = (b % 2 == 0);
-                if (upward) {
-                    for (int y = 6; y >= 0; y--) {
-                        for (int x = 0; x < 5; x++) if ((glyphs[b][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
+                if (upward)
+                {
+                    for (int y = 6; y >= 0; y--)
+                    {
+                        for (int x = 0; x < 5; x++)
+                            if ((glyphs[b][y] >> (4 - x)) & 1)
+                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
                     }
-                } else {
-                    for (int y = 0; y <= 6; y++) {
-                        for (int x = 0; x < 5; x++) if ((glyphs[b][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOff + x), (int8_t)y };
+                }
+                else
+                {
+                    for (int y = 0; y <= 6; y++)
+                    {
+                        for (int x = 0; x < 5; x++)
+                            if ((glyphs[b][y] >> (4 - x)) & 1)
+                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
                     }
                 }
             }
             int xOffsetsUnten[4] = {4, 10, 16, 22};
-            for (int y = 6; y >= 0; y--) {
-                for (int x = 0; x < 5; x++) if ((glyphs[5][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9) };
+            for (int y = 6; y >= 0; y--)
+            {
+                for (int x = 0; x < 5; x++)
+                    if ((glyphs[5][y] >> (4 - x)) & 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9)};
             }
-            for (int y = 0; y <= 6; y++) {
-                for (int x = 0; x < 5; x++) if ((glyphs[3][y] >> (4 - x)) & 1) path[pIdx++] = { (int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9) };
+            for (int y = 0; y <= 6; y++)
+            {
+                for (int x = 0; x < 5; x++)
+                    if ((glyphs[3][y] >> (4 - x)) & 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9)};
             }
-            for (int y = 6; y >= 0; y--) {
-                for (int x = 0; x < 5; x++) if (x==0 || x==4 || x==y-1) path[pIdx++] = { (int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9) };
+            for (int y = 6; y >= 0; y--)
+            {
+                for (int x = 0; x < 5; x++)
+                    if (x == 0 || x == 4 || x == y - 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9)};
             }
-            for (int y = 0; y <= 6; y++) {
-                for (int x = 0; x < 5; x++) if (x==0 || x==4 || y==6) path[pIdx++] = { (int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9) };
+            for (int y = 0; y <= 6; y++)
+            {
+                for (int x = 0; x < 5; x++)
+                    if (x == 0 || x == 4 || y == 6)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9)};
             }
             pathLength = pIdx;
             pathInitialized = true;
         }
 
-        uint8_t startHue = jetzt / 3; 
-        uint8_t currentHue = startHue;
-        for (int i = 0; i < pathLength; i++) {
-            setPixel(path[i].x, path[i].y, CHSV(currentHue, 255, 255));
+        uint8_t currentHue = jetzt / 3;
+        for (int i = 0; i < pathLength; i++)
+        {
+            setPixel(path[i].x, path[i].y, themeCol(currentHue, 255));
             currentHue += 5;
         }
         FastLED.show();
+        unlockDisplay();
         return;
     }
 
     // ==========================================
     // ZUSTÄNDE 1-5: ANIMIERTE SYMBOLE
     // ==========================================
-    switch (fokusModus) {
-        
-        case 1: { // TASK 0: UHR (TICKT)
-            int cx = 16, cy = 8;
-            for (int x = 0; x < 32; x++) {
-                for (int y = 0; y < 16; y++) {
-                    int dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
-                    if (dist >= 40 && dist <= 56) setPixel(x, y, CRGB::White); 
-                    else if (dist < 40) setPixel(x, y, CRGB::Navy);            
+    switch (fokusModus)
+    {
+
+    case 1:
+    { // TASK 0: UHR (TICKT)
+        int cx = 16, cy = 8;
+        for (int x = 0; x < 32; x++)
+        {
+            for (int y = 0; y < 16; y++)
+            {
+                int dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                if (dist >= 40 && dist <= 56)
+                    setPixel(x, y, CRGB::White);
+                else if (dist < 40)
+                    setPixel(x, y, CRGB::Navy);
+            }
+        }
+        setPixel(16, 8, CRGB::Red);
+
+        bool tick = (jetzt / 1000) % 2 == 0;
+        if (tick)
+        {
+            setPixel(16, 7, CRGB::Orange);
+            setPixel(16, 6, CRGB::Orange);
+            setPixel(17, 8, CRGB::Yellow);
+            setPixel(18, 8, CRGB::Yellow);
+        }
+        else
+        {
+            setPixel(17, 7, CRGB::Orange);
+            setPixel(18, 6, CRGB::Orange);
+            setPixel(16, 9, CRGB::Yellow);
+            setPixel(16, 10, CRGB::Yellow);
+        }
+        break;
+    }
+
+    case 2:
+    { // TASK 1: WETTER (WOLKE ANCH SINUS-WELLE)
+        int sx = 10, sy = 6;
+        for (int x = 5; x <= 15; x++)
+        {
+            for (int y = 1; y <= 11; y++)
+            {
+                if ((x - sx) * (x - sx) + (y - sy) * (y - sy) < 16)
+                    setPixel(x, y, CRGB::Yellow);
+            }
+        }
+        setPixel(10, 1, CRGB::Orange);
+        setPixel(10, 11, CRGB::Orange);
+        setPixel(5, 6, CRGB::Orange);
+        setPixel(15, 6, CRGB::Orange);
+
+        int wX = (sin(jetzt / 400.0) * 2.0);
+
+        for (int x = 12 + wX; x <= 28 + wX; x++)
+            if (x >= 0 && x < 32)
+                setPixel(x, 12, CRGB::White);
+        auto drawCloudBlobAnim = [wX](int cx, int cy, int r)
+        {
+            int dynCx = cx + wX;
+            for (int x = dynCx - r; x <= dynCx + r; x++)
+            {
+                for (int y = cy - r; y <= cy + r; y++)
+                {
+                    if ((x - dynCx) * (x - dynCx) + (y - cy) * (y - cy) <= r * r && x >= 0 && x < 32 && y >= 0 && y < 16)
+                    {
+                        setPixel(x, y, CRGB::White);
+                    }
                 }
             }
-            setPixel(16, 8, CRGB::Red);
-            
-            bool tick = (jetzt / 1000) % 2 == 0;
-            if (tick) {
-                setPixel(16, 7, CRGB::Orange); setPixel(16, 6, CRGB::Orange); 
-                setPixel(17, 8, CRGB::Yellow); setPixel(18, 8, CRGB::Yellow); 
-            } else {
-                setPixel(17, 7, CRGB::Orange); setPixel(18, 6, CRGB::Orange); 
-                setPixel(16, 9, CRGB::Yellow); setPixel(16, 10, CRGB::Yellow); 
+        };
+        drawCloudBlobAnim(16, 9, 3);
+        drawCloudBlobAnim(21, 7, 4);
+        drawCloudBlobAnim(25, 10, 3);
+        break;
+    }
+
+    case 3:
+    { // TASK 2: SNAKE-VORSCHAU (glatt schlängelnd, Farbverlauf Kopf -> Schwanz)
+        const int len = 16;
+        int head = (int)((jetzt / 80) % 44) - 6; // läuft sauber von links durch nach rechts
+
+        for (int i = 0; i < len; i++)
+        {
+            int x = head - i;
+            if (x < 0 || x >= 32)
+                continue;
+            int y = 8 + (int)(sin(x / 3.2 + jetzt / 280.0) * 4.0);
+            if (y < 0 || y >= 16)
+                continue;
+
+            if (i == 0)
+            {                                       // Kopf
+                setPixel(x, y, CRGB::White);        // heller Kopf
+                setPixel(x, y - 1, CHSV(96, 255, 200));
+                if ((jetzt / 180) % 2)
+                    setPixel(x + 1, y, CRGB::Red);  // Zunge flackert
             }
-            break;
+            else
+            {
+                uint8_t v = (uint8_t)map(i, 1, len, 235, 60); // hell -> dunkel
+                setPixel(x, y, CHSV(96, 255, v));             // Grün-Verlauf
+            }
         }
 
-        case 2: { // TASK 1: WETTER (WOLKE ANCH SINUS-WELLE)
-            int sx = 10, sy = 6;
-            for (int x = 5; x <= 15; x++) {
-                for (int y = 1; y <= 11; y++) {
-                    if ((x-sx)*(x-sx) + (y-sy)*(y-sy) < 16) setPixel(x, y, CRGB::Yellow);
-                }
+        // Pulsierender Apfel mit Blatt
+        uint8_t puls = 150 + (uint8_t)(sin(jetzt / 200.0) * 90);
+        setPixel(27, 5, CHSV(0, 255, puls));
+        setPixel(27, 4, CRGB::Lime);
+        break;
+    }
+
+    case 4:
+    { // TASK 3: MUSIK (mehrere bunte Achtelnoten, die im Takt wippen)
+        auto drawNote = [&](int nx, int ny, CRGB col)
+        {
+            // Notenkopf (2x2)
+            setPixel(nx, ny + 2, col);
+            setPixel(nx + 1, ny + 2, col);
+            setPixel(nx, ny + 3, col);
+            setPixel(nx + 1, ny + 3, col);
+            // Notenhals
+            for (int y = ny - 3; y <= ny + 2; y++)
+                setPixel(nx + 1, y, col);
+            // Fähnchen
+            setPixel(nx + 2, ny - 3, col);
+            setPixel(nx + 2, ny - 2, col);
+        };
+
+        int b1 = (int)(sin(jetzt / 180.0) * 2.0);
+        int b2 = (int)(sin(jetzt / 180.0 + 1.2) * 2.0);
+        int b3 = (int)(sin(jetzt / 180.0 + 2.4) * 2.0);
+        drawNote(5, 7 + b1, CHSV((uint8_t)(jetzt / 12), 255, 235));
+        drawNote(14, 8 + b2, CHSV((uint8_t)(jetzt / 12 + 85), 255, 235));
+        drawNote(23, 7 + b3, CHSV((uint8_t)(jetzt / 12 + 170), 255, 235));
+        break;
+    }
+
+    case 5:
+    { // TASK 4: ANIMATIONEN (themed Plasma-Vorschau)
+        for (int y = 0; y < 16; y++)
+            for (int x = 0; x < 32; x++)
+            {
+                int v = (sin8(x * 14 + jetzt / 6) + sin8(y * 16 - jetzt / 8) + sin8((x * 3 + y * 5) + jetzt / 5)) / 3;
+                setPixel(x, y, themeCol(v + jetzt / 30, 200));
             }
-            setPixel(10, 1, CRGB::Orange); setPixel(10, 11, CRGB::Orange);
-            setPixel(5, 6, CRGB::Orange);  setPixel(15, 6, CRGB::Orange);
-
-            int wX = (sin(jetzt / 400.0) * 2.0);
-
-            for(int x = 12 + wX; x <= 28 + wX; x++) if(x>=0 && x<32) setPixel(x, 12, CRGB::White);
-            auto drawCloudBlobAnim = [wX](int cx, int cy, int r) {
-                int dynCx = cx + wX;
-                for (int x = dynCx-r; x <= dynCx+r; x++) {
-                    for (int y = cy-r; y <= cy+r; y++) {
-                        if ((x-dynCx)*(x-dynCx) + (y-cy)*(y-cy) <= r*r && x >= 0 && x < 32 && y >= 0 && y < 16) {
-                            setPixel(x, y, CRGB::White);
-                        }
-                    }
-                }
-            };
-            drawCloudBlobAnim(16, 9, 3);
-            drawCloudBlobAnim(21, 7, 4);
-            drawCloudBlobAnim(25, 10, 3);
-            break;
-        }
-
-        case 3: { // TASK 2: CLASSIC S-SNAKE (KLASSISCHER PFAD, FLÜSSIGE REIHENFOLGE)
-            CRGB sColor = CRGB::Green;
-            
-            // Definition des exakten S-Kurven-Pfads für die Schlange (Koordinatenpaar-Tabelle)
-            struct SCoord { int8_t x; int8_t y; };
-            static const SCoord snakePath[] = {
-                {2,3}, {2,4}, {3,3}, {3,4}, {4,3}, {4,4}, {5,3}, {5,4}, {6,3}, {6,4},
-                {7,3}, {7,4}, {8,3}, {8,4}, {9,3}, {9,4}, {10,3}, {10,4}, {11,3}, {11,4},
-                {12,3}, {12,4}, {13,3}, {13,4}, {14,3}, {14,4},
-                {13,5}, {14,5}, {13,6}, {14,6}, {13,7}, {14,7}, {13,8}, {14,8},
-                {13,9}, {14,9}, {13,10}, {14,10},
-                {11,9}, {11,10}, {12,9}, {12,10}, {9,9}, {9,10}, {10,9}, {10,10},
-                {7,9}, {7,10}, {8,9}, {8,10}, {6,9}, {6,10},
-                {6,11}, {7,11}, {6,12}, {7,12}, {6,13}, {7,13},
-                {6,14}, {7,14}, {8,13}, {8,14}, {9,13}, {9,14}, {10,13}, {10,14},
-                {11,13}, {11,14}, {12,13}, {12,14}, {13,13}, {14,14}, {15,13}, {15,14},
-                {16,13}, {16,14}, {17,13}, {17,14}, {18,13}, {18,14}, {19,13}, {19,14},
-                {20,13}, {20,14}, {21,13}, {21,14}, {22,13}, {22,14}
-            };
-            const int totalPathPoints = sizeof(snakePath) / sizeof(snakePath[0]);
-
-            // Schrittzähler basierend auf der Zeit steuert das Vorwärtskriechen auf dem Pfad
-            int currentStep = (jetzt / 80) % (totalPathPoints - 30); 
-            int lengthInBlocks = 26; // Länge der Schlange (Doppelpixel-Segmente)
-
-            // Zeichne die Schlange auf ihrem vordefinierten S-Pfad
-            for (int i = 0; i < lengthInBlocks; i++) {
-                int ptIdx = currentStep + i;
-                if (ptIdx < totalPathPoints) {
-                    setPixel(snakePath[ptIdx].x, snakePath[ptIdx].y, sColor);
-                }
-            }
-
-            // Kopf-Detail (Das Auge reist präzise an der vordersten Spitze des Arrays mit)
-            int headIdx = currentStep + lengthInBlocks - 1;
-            if (headIdx < totalPathPoints) {
-                setPixel(snakePath[headIdx].x, snakePath[headIdx].y, CRGB::DarkGreen);
-                // Dynamische Anpassung des Auges basierend auf der aktuellen Kriechrichtung
-                if (snakePath[headIdx].y <= 4) {
-                    setPixel(snakePath[headIdx].x, snakePath[headIdx].y - 1, CRGB::White); // Kopf oben -> Auge drüber
-                } else {
-                    setPixel(snakePath[headIdx].x + 1, snakePath[headIdx].y, CRGB::White); // Kopf läuft rechts -> Auge rechts
-                }
-            }
-
-            // Statischer, sauberer 2x2 Apfel auf der rechten Seite (Absolut fehlerfrei platziert)
-            int ax = 26, ay = 11;
-            setPixel(ax, ay, CRGB::Red);     setPixel(ax + 1, ay, CRGB::Red);
-            setPixel(ax, ay + 1, CRGB::Red); setPixel(ax + 1, ay + 1, CRGB::Red);
-            setPixel(ax + 1, ay - 1, CRGB::Lime); 
-            break;
-        }
-
-        case 4: { // TASK 3: DHT SCHRIFTZUG (BLAU-IN-BLAU VERLAUF)
-            auto drawLetterCyanAnim = [jetzt](int xOff, int type) {
-                if (type == 0) { // D
-                    for(int y=4; y<=12; y++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20); 
-                        setPixel(xOff, y, CHSV(hue, 255, 255)); setPixel(xOff+1, y, CHSV(hue, 255, 255));
-                    }
-                    for(int x=xOff+2; x<=xOff+4; x++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
-                        setPixel(x, 4, CHSV(hue, 255, 255)); setPixel(x, 12, CHSV(hue, 255, 255));
-                    }
-                    for(int y=5; y<=11; y++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
-                        setPixel(xOff+4, y, CHSV(hue, 255, 255));
-                    }
-                }
-                else if (type == 1) { // H
-                    for(int y=4; y<=12; y++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
-                        setPixel(xOff, y, CHSV(hue, 255, 255)); setPixel(xOff+1, y, CHSV(hue, 255, 255));
-                        setPixel(xOff+4, y, CHSV(hue, 255, 255)); setPixel(xOff+5, y, CHSV(hue, 255, 255));
-                    }
-                    for(int x=xOff+2; x<=xOff+3; x++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
-                        setPixel(x, 8, CHSV(hue, 255, 255));
-                    }
-                }
-                else if (type == 2) { // T
-                    for(int x=xOff; x<=xOff+6; x++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + x) * 20);
-                        setPixel(x, 4, CHSV(hue, 255, 255)); setPixel(x, 5, CHSV(hue, 255, 255));
-                    }
-                    for(int y=6; y<=12; y++) {
-                        uint8_t hue = 130 + (sin((jetzt / 200.0) + y) * 20);
-                        setPixel(xOff+2, y, CHSV(hue, 255, 255)); setPixel(xOff+3, y, CHSV(hue, 255, 255));
-                    }
-                }
-            };
-            drawLetterCyanAnim(3, 0);  
-            drawLetterCyanAnim(12, 1); 
-            drawLetterCyanAnim(21, 2); 
-            break;
-        }
-
-        case 5: { // TASK 4: GEZENTRIERTE SECHZEHNTELNOTE (HÜPFT HOCH UND RUNTER)
-            CRGB nColor = CRGB::Magenta;
-            int bounceY = (int)(abs(sin(jetzt / 150.0)) * -2.5);
-
-            setPixel(11, 12+bounceY, nColor); setPixel(12, 12+bounceY, nColor);
-            setPixel(10, 13+bounceY, nColor); setPixel(11, 13+bounceY, nColor); setPixel(12, 13+bounceY, nColor);
-            setPixel(11, 14+bounceY, nColor); setPixel(12, 14+bounceY, nColor);
-
-            setPixel(18, 12+bounceY, nColor); setPixel(19, 12+bounceY, nColor);
-            setPixel(17, 13+bounceY, nColor); setPixel(18, 13+bounceY, nColor); setPixel(19, 13+bounceY, nColor);
-            setPixel(18, 14+bounceY, nColor); setPixel(19, 14+bounceY, nColor);
-
-            for(int y = 3; y <= 12; y++) {
-                setPixel(12, y+bounceY, nColor); 
-                setPixel(19, y+bounceY, nColor); 
-            }
-
-            for(int x = 12; x <= 19; x++) setPixel(x, 3+bounceY, nColor);
-            for(int x = 12; x <= 19; x++) setPixel(x, 5+bounceY, nColor);
-            break;
-        }
+        break;
+    }
     }
     FastLED.show();
+    unlockDisplay();
 }
 
-void zurueckZumMenue() {
-    if (aktiverTask >= 0 && aktiverTask != 3) {
-        TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
-        if (aktuellerHandle != NULL) {
-            vTaskSuspend(aktuellerHandle);
-        }
+void zurueckZumMenue()
+{
+    int vorherigerTask = aktiverTask;
+    aktiverTask = -2;
+
+    if (vorherigerTask == 3)
+        stopMusic(); // Musik stoppen, falls wir aus der Musik-App kommen
+
+    fokusModus = 0;
+    navigationsSperre = false;
+    lastXPerc = 0;
+    lastYPerc = 0;
+    if (lockDisplay(100)) {
+        FastLED.clear(true);
+        unlockDisplay();
     }
 
-    aktiverTask = -1; 
-    fokusModus = 0; 
-    navigationsSperre = false;
-    lastXPerc = 0;  
-    lastYPerc = 0;
-    FastLED.clear(true);
-    
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.doppelklickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
+    joystick2.reset(); // Klick-Zustand sauber zuruecksetzen
 
     vTaskDelay(30 / portTICK_PERIOD_MS);
+    aktiverTask = -1;
     printMenu();
-    setEventSperre(750);
+    setEventSperre(250);
     Serial.println("Zurück zur PIXELBOARD MENÜ Startseite");
 }
 
-void tokenStatusCallback(TokenInfo info) {
-    if (info.status == token_status_error) Serial.printf("Token error: %s\n", GSheet.getTokenError(info).c_str());
-}
-
-struct ClickEvent {
+struct ClickEvent
+{
     int einfacherKlick;
     int doppelklick;
     int langKlick;
@@ -4951,76 +5493,81 @@ struct ClickEvent {
 // Nutzt jetzt joystick2 (Master-Menü-Controller)
 struct ClickEvent readAndClearClicks() {
     struct ClickEvent result = {0, 0, 0};
-    if (xSemaphoreTake(clickCounterMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        result.einfacherKlick = joystick2.einfacherKlickZaehler;
-        result.doppelklick = joystick2.doppelklickZaehler;
-        result.langKlick = joystick2.langKlickZaehler;
-        
-        joystick2.einfacherKlickZaehler = 0;
-        joystick2.doppelklickZaehler = 0;
-        joystick2.langKlickZaehler = 0;
-        xSemaphoreGive(clickCounterMutex);
+    
+    // SICHERHEIT: Prüfen ob Mutex existiert
+    if (clickCounterMutex != NULL) {
+        if (xSemaphoreTake(clickCounterMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+            result.einfacherKlick = joystick2.einfacherKlickZaehler;
+            result.doppelklick = joystick2.doppelklickZaehler;
+            result.langKlick = joystick2.langKlickZaehler;
+            
+            joystick2.einfacherKlickZaehler = 0;
+            joystick2.doppelklickZaehler = 0;
+            joystick2.langKlickZaehler = 0;
+            xSemaphoreGive(clickCounterMutex);
+        }
     }
     return result;
 }
 
-bool eventSperreAktiv() {
+bool eventSperreAktiv()
+{
     return (long)(millis() - eventSperreBis) < 0;
 }
 
-void setEventSperre(unsigned long dauerMs) {
+void setEventSperre(unsigned long dauerMs)
+{
     eventSperreBis = millis() + dauerMs;
 }
 
-TaskHandle_t getTaskHandle(int nummer) {
-    switch (nummer) {
-        case 0: return handleA;
-        case 1: return handleB;
-        case 2: return handleC;      // Snake
-        case 3: return handleData;   // DHT & Sheets
-        case 4: return handleE;
-        default: return NULL;
+TaskHandle_t getTaskHandle(int nummer)
+{
+    switch (nummer)
+    {
+    case 0:
+        return handleA;
+    case 1:
+        return handleB;
+    case 2:
+        return handleC; // Snake
+    case 3:
+        return handleData; // DHT & Sheets
+    case 4:
+        return handleE;
+    default:
+        return NULL;
     }
 }
 
-void wechsleZuTask(int zielTask) {
-    if (zielTask < 0 || zielTask > 4) return;
-    TaskHandle_t aktuellerHandle = getTaskHandle(aktiverTask);
-    TaskHandle_t zielHandle = getTaskHandle(zielTask);
+void wechsleZuTask(int zielTask)
+{
+    if (zielTask < 0 || zielTask > 4)
+        return;
+    int vorherigerTask = aktiverTask;
+    aktiverTask = -2; // Wechselzustand: kein Display-Task darf neu zeichnen
 
-    // Wenn wir aus Snake (Index 2) wechseln, setzen wir das Abbruch-Signal
-    if (aktiverTask == 2) {
-        taskWechselAnforderung = true;
-        // Dem Snake-Task kurz Zeit geben, die Schleife sauber zu verlassen
-        vTaskDelay(50 / portTICK_PERIOD_MS); 
-    }
+    if (vorherigerTask == 3)
+        stopMusic(); // Musik beim Verlassen der Musik-App stoppen
 
-    FastLED.clear(true);
-    
-    if (aktiverTask >= 0 && aktiverTask != 3 && aktuellerHandle != NULL && aktuellerHandle != zielHandle) {
-        vTaskSuspend(aktuellerHandle);
+    if (lockDisplay(100)) {
+        FastLED.clear(true);
+        unlockDisplay();
     }
 
     aktiverTask = zielTask;
     taskWechselAnforderung = false; // Zurücksetzen für den nächsten Aufruf
     navigationsSperre = false;
-    lastXPerc = 0;  
+    lastXPerc = 0;
     lastYPerc = 0;
-    
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.doppelklickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
 
-    if (zielTask != 3 && zielHandle != NULL) {
-        vTaskResume(zielHandle);
-    }
-    
-    setEventSperre(750);
+    joystick2.reset(); // Klick-Zustand sauber zuruecksetzen (kein Nachfeuern)
+
+    if (zielTask == 3)
+        startMusic(); // Musik beim Betreten der Musik-App starten
+
+    setEventSperre(250);
     Serial.printf("Task %d aktiv\n", zielTask);
 }
-
-
-
 
 void starteTask(int nummer) { wechsleZuTask(nummer); }
 void stopAlleTasks() { zurueckZumMenue(); }
@@ -5029,45 +5576,101 @@ void stopAlleTasks() { zurueckZumMenue(); }
 // 5. FREE-RTOS TASKS
 // ==========================================
 
+// Musik-App: Equalizer-Visualizer, der zur prozeduralen Melodie tanzt.
+// Die eigentliche Melodie spielt der AudioTask (SoundUtils); musicBeat liefert den Takt.
+void taskMusik(void *pv)
+{
+    for (;;)
+    {
+        if (aktiverTask != 3) {
+            vTaskDelay(20 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (!lockDisplay(20)) {
+            vTaskDelay(5 / portTICK_PERIOD_MS);
+            continue;
+        }
+        if (aktiverTask != 3) {
+            unlockDisplay();
+            continue;
+        }
 
-void taskE(void * pv) { for(;;) { Serial.println("E..."); vTaskDelay(1000/portTICK_PERIOD_MS); } }
+        FastLED.clear();
+        unsigned long jetzt = millis();
 
+        // 8 Balken über die Breite, unten grün -> oben rot
+        for (int bar = 0; bar < 8; bar++)
+        {
+            int bx = 1 + bar * 4;
+            float phase = jetzt / 130.0 + bar * 0.8;
+            int h = 2 + (int)(fabs(sin(phase)) * 9) + (musicBeat % 4);
+            if (h > 15) h = 15;
+            for (int y = 15; y > 15 - h; y--)
+            {
+                CRGB c = themeCol((15 - y) * 16 + jetzt / 20, 220); // Balkenverlauf im Design
+                setPixel(bx, y, c);
+                setPixel(bx + 1, y, c);
+            }
+        }
+        FastLED.show();
+        unlockDisplay();
+        vTaskDelay(45 / portTICK_PERIOD_MS);
+    }
+}
 
 // ==========================================
 // 6. SETUP & LOOP
 // ==========================================
 void setup() {
     Serial.begin(115200);
-  // 1. Speichersystem mounten & Config laden
-    initLittleFS();
-// Lade Default-Daten beim Start, z.B. für einen leeren User
-loadConfigForUser("");
-    // WiFi & NTP
-    WiFi.begin(ssid, password);
-    while (WiFi.status() != WL_CONNECTED) { delay(500); }
-  Serial.print("\nWLAN verbunden. IP: ");
-Serial.println(WiFi.localIP());
-
-    // 2. Webserver initialisieren und als Task starten
-    setupWebServer();
-    TaskHandle_t handleWeb = NULL;
-    xTaskCreate(taskWebServerHandler, "TaskWeb", 4096, NULL, 1, &handleWeb);
-    configTime(3600, 3600, "pool.ntp.org");
-    Serial.print("Warte auf Zeit-Sync...");
-    struct tm timeinfo;
-    while (!getLocalTime(&timeinfo)) { delay(500); Serial.print("."); }
-    Serial.println(" Zeit synchronisiert!");
-
-    time_t now;
-    time(&now);
-    GSheet.setSystemTime(now); 
+    delay(500);
+    Serial.println("\n--- PIXELBOARD START ---");
 
     clickCounterMutex = xSemaphoreCreateMutex();
+    displayMutex = xSemaphoreCreateMutex();
+    initLittleFS();
+    loadConfigForUser(""); // Lädt Stadt & User
 
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.begin(ssid, password);
+    Serial.print("Verbinde WiFi");
+    int retry = 0;
+    while (WiFi.status() != WL_CONNECTED && retry < 30) { // Erhöht auf 30 (15 Sek.)
+        delay(500); 
+        Serial.print("."); 
+        retry++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("\nVerbunden!");
+        Serial.print("IP-Adresse: ");
+        Serial.println(WiFi.localIP());
+
+        // Dem ESP32 kurz Zeit geben, die Netzwerk-Routen zu stabilisieren
+        delay(1000); 
+
+        if (MDNS.begin("pixelboard")) {
+            MDNS.addService("http", "tcp", 80);
+            Serial.println("DNS: http://pixelboard.local");
+        }
+        
+        // MODERNE METHODE: Setzt die Zeitzone für Europa/Berlin (inkl. automatischer Sommer-/Winterzeit)
+        configTzTime("CET-1CEST,M3.5.0,M10.5.0/3", "pool.ntp.org", "time.nist.gov");
+        Serial.println("NTP-Anfrage gestartet...");
+    } else {
+        Serial.println("\nWLAN-Verbindung fehlgeschlagen! Uhr wird nicht synchronisieren.");
+    }
+    startCaptivePortal();
+
+    // Matrix & Audio
     FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
     FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
-    FastLED.setBrightness(15);
-    
+    FastLED.setBrightness(18);
+    // Hartes Strom-Limit fürs 5V/3A-Netzteil: max ~2400mA für die LEDs (~600mA Reserve
+    // für den ESP32). FastLED dimmt automatisch ab, bevor zu viel gezogen wird -> kein Brownout.
+    FastLED.setMaxPowerInVoltsAndMilliamps(5, 2400);
+
+    // WICHTIG: Text-Anzeigen initialisieren, sonst stürzt taskUhr beim Auswählen ab!
     AnzeigeOben.SetFont(MatriseFontData);
     AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 1, 0);
     AnzeigeUnten.SetFont(MatriseFontData);
@@ -5075,98 +5678,81 @@ Serial.println(WiFi.localIP());
     AnzeigeOben.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0xff, 0xff, 0xff);
     AnzeigeUnten.SetTextColrOptions(COLR_RGB | COLR_SINGLE, 0x00, 0xff, 0xff);
 
-    // Alle Tasks in FreeRTOS einklinken
-    xTaskCreate(taskUhr, "TaskA", 4096, NULL, 1, &handleA);
-    xTaskCreate(taskWetter, "TaskB", 4096, NULL, 1, &handleB);
-    xTaskCreate(taskSnakeHandler, "TaskC", 4096, NULL, 1, &handleC);          // Snake Task (Index 2)
-    xTaskCreate(taskDataHandler, "TaskDHT", 8192, NULL, 1, &handleData); // DHT Task (Index 3)
-    xTaskCreate(taskE, "TaskE", 2048, NULL, 1, &handleE);
+    initAudio();
 
-    // Alle beim Boot suspendieren
-   
-    vTaskSuspend(handleA); vTaskSuspend(handleB); vTaskSuspend(handleC);
-   
-   // vTaskSuspend(handleData); 
-    vTaskSuspend(handleE);
-joystick2.setInverted(true, true);
+    // Webserver & Apps
+    setupWebServer();
+    // Netzwerk-Tasks auf Kern 0 (stoeren das Rendern nicht)
+    xTaskCreatePinnedToCore(taskWebServerHandler, "Web", 4096, NULL, 1, NULL, 0);
 
+    // ALLE Anzeige-Tasks auf Kern 1 pinnen -> nie zwei gleichzeitig auf FastLED
+    // (verhindert "durcheinander", NTP-im-Menue und das Einfrieren)
+    xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleA, 1);
+    xTaskCreatePinnedToCore(taskWetter, "Wetter", 4096, NULL, 1, &handleB, 1);
+    xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleC, 1);
+    xTaskCreatePinnedToCore(taskMusik, "Musik", 2560, NULL, 1, &handleData, 1); // Task 3
+    xTaskCreatePinnedToCore(taskAnim, "Anim", 4096, NULL, 1, &handleE, 1);      // Task 4
+
+    // Wetterdaten im Hintergrund auf Kern 0 (blockiert nie die Anzeige)
+    xTaskCreatePinnedToCore(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL, 0);
+
+    joystick2.setInverted(true, true);
+    // Joysticks im Ruhezustand neu kalibrieren (ADC jetzt bereit) -> verhindert haengende Navigation
+    delay(50);
+    joystick1.kalibrieren();
+    joystick2.kalibrieren();
     printMenu();
 }
 
 void loop() {
-    // 1. Hardware abfragen (Master Controller = Joystick 2)
-    joystick1.klickenErkennen(); 
-    joystick2.klickenErkennen(); 
-    struct ClickEvent clicks = readAndClearClicks();
+    joystick1.klickenErkennen();
+    joystick2.klickenErkennen();
 
-    // 2. Sperrzeit abwarten (Verhindert doppeltes Feuern im Umschaltmoment)
     if (eventSperreAktiv()) {
-        joystick2.einfacherKlickZaehler = 0;
-        joystick2.doppelklickZaehler = 0;
-        joystick2.langKlickZaehler = 0;
-        
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        // Klicks NICHT verwerfen - sie werden direkt nach der kurzen Sperre verarbeitet
+        vTaskDelay(5 / portTICK_PERIOD_MS);
         return;
     }
 
-    // ========== IM MENÜ (aktiverTask == -1) ==========
+    struct ClickEvent clicks = readAndClearClicks();
+
     if (aktiverTask == -1) {
-        if (clicks.langKlick > 0 || clicks.einfacherKlick > 0) {
+        // IM MENÜ
+        if (clicks.einfacherKlick > 0 || clicks.langKlick > 0) {
             if (fokusModus > 0) {
-                starteTask(fokusModus - 1); 
-                return;
+                playSound(SND_SELECT);
+                wechsleZuTask(fokusModus - 1);
+                return; // WICHTIG: nicht danach noch printMenu() ueber die App zeichnen
             }
         }
 
         int xPerc = joystick2.readXPercent();
-        const int TRIG_POS = 80;    
-        const int TRIG_NEG = -80;   
-        const int RELEASE_ABS = 60; 
-        const int NAV_TIMEOUT_MS = 200; 
-
         if (!navigationsSperre) {
-            if (xPerc <= TRIG_NEG) { 
-                int naechsterModus = fokusModus + 1;
-                if (naechsterModus > 5) naechsterModus = 1; 
-                fokusModus = naechsterModus;
+            if (xPerc <= -80) {
+                fokusModus = (fokusModus >= 5) ? 1 : fokusModus + 1;
                 navigationsSperre = true;
-                navigationSperreZeit = millis();
-                printMenu();
-            } else if (xPerc >= TRIG_POS) { 
-                int naechsterModus = fokusModus - 1;
-                if (fokusModus == 0) naechsterModus = 5;
-                else if (naechsterModus < 1) naechsterModus = 5; 
-                fokusModus = naechsterModus;
+                playSound(SND_SWIPE);
+            } else if (xPerc >= 80) {
+                fokusModus = (fokusModus <= 1) ? 5 : fokusModus - 1;
                 navigationsSperre = true;
-                navigationSperreZeit = millis();
-                printMenu();
+                playSound(SND_SWIPE);
             }
-        } else {
-            if (abs(xPerc) < RELEASE_ABS) {
-                navigationsSperre = false;
-            } else if ((millis() - navigationSperreZeit) > NAV_TIMEOUT_MS) {
-                navigationsSperre = false;
-            }
+        } else if (abs(xPerc) < 60) {
+            navigationsSperre = false;
         }
-
-        // KORREKTUR: printMenu() wird jetzt immer aufgerufen, damit alle Symbole animieren
-        printMenu(); 
-    } 
-    // ========== IN LAUFENDER TASK ==========
-    else {
+        printMenu();
+    } else {
+        // IN EINER APP
         if (clicks.doppelklick > 0) {
+            playSound(SND_DIE);
             zurueckZumMenue();
-            return;
-        }
-
-        if (clicks.langKlick > 0) {
-            int nextTask = (aktiverTask + 1) % 5;
-            fokusModus = nextTask + 1; 
-            wechsleZuTask(nextTask);
-            return;
+        } else if (clicks.langKlick > 0) {
+            playSound(SND_SELECT);
+            int next = (aktiverTask + 1) % 5; // Uhr, Wetter, Snake, Musik, Animationen
+            fokusModus = next + 1;
+            wechsleZuTask(next);
         }
     }
-
     vTaskDelay(10 / portTICK_PERIOD_MS);
 }
 ````
