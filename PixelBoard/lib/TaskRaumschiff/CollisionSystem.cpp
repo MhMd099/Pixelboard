@@ -26,20 +26,22 @@ static bool sweptShotHitsAsteroid(const Projectile& shot, const Asteroid& astero
     if (!asteroid.active)
         return false;
 
+    const int shotPadding = shot.charged ? 1 : 0;
+    const int asteroidPadding = 1;
     int shotMinX = min(shot.prevX, shot.x);
     int shotMaxX = max(shot.prevX, shot.x);
     int shotMinY = min(shot.prevY, shot.y);
     int shotMaxY = max(shot.prevY, shot.y);
 
-    int asteroidMinX = min(asteroid.prevX, asteroid.x);
+    int asteroidMinX = min(asteroid.prevX, asteroid.x) - asteroidPadding;
     int asteroidMaxX = max(asteroid.prevX + asteroid.size - 1,
-                           asteroid.x + asteroid.size - 1);
-    int asteroidMinY = min(asteroid.prevY, asteroid.y);
+                           asteroid.x + asteroid.size - 1) + asteroidPadding;
+    int asteroidMinY = min(asteroid.prevY, asteroid.y) - asteroidPadding;
     int asteroidMaxY = max(asteroid.prevY + asteroid.size - 1,
-                           asteroid.y + asteroid.size - 1);
+                           asteroid.y + asteroid.size - 1) + asteroidPadding;
 
-    return rangesOverlap(shotMinX, shotMaxX, asteroidMinX, asteroidMaxX) &&
-           rangesOverlap(shotMinY, shotMaxY, asteroidMinY, asteroidMaxY);
+    return rangesOverlap(shotMinX - shotPadding, shotMaxX + shotPadding, asteroidMinX, asteroidMaxX) &&
+           rangesOverlap(shotMinY - shotPadding, shotMaxY + shotPadding, asteroidMinY, asteroidMaxY);
 }
 
 static bool pointInPowerUp(int x, int y, const PowerUp& powerUp)

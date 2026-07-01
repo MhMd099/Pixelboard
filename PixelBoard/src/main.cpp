@@ -543,6 +543,7 @@ void taskMusik(void *pv)
 void taskWifiManager(void *pv)
 {
     bool timeConfigured = false;
+    bool mdnsStarted = false;
 
     for (;;)
     {
@@ -556,10 +557,30 @@ void taskWifiManager(void *pv)
                 timeConfigured = true;
                 Serial.println("WLAN verbunden, NTP gestartet: " + WiFi.localIP().toString());
             }
+
+            if (!mdnsStarted)
+            {
+                String host = deviceHostname();
+                if (MDNS.begin(host.c_str()))
+                {
+                    MDNS.addService("http", "tcp", 80);
+                    mdnsStarted = true;
+                    Serial.println("mDNS aktiv: http://" + host + ".local");
+                }
+                else
+                {
+                    Serial.println("mDNS Start fehlgeschlagen.");
+                }
+            }
         }
         else
         {
             timeConfigured = false;
+            if (mdnsStarted)
+            {
+                MDNS.end();
+                mdnsStarted = false;
+            }
         }
 
         vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -573,15 +594,22 @@ void taskI2CJoystickHandler(void *pv)
 
     for (;;)
     {
-        Wire.requestFrom((uint8_t)J3_I2C_ADDRESS, (uint8_t)5);
+        uint8_t received = Wire.requestFrom((uint8_t)J3_I2C_ADDRESS, (uint8_t)5);
 
-        if (Wire.available() >= 5)
+        if (received >= 5 && Wire.available() >= 5)
         {
             int rawX = (Wire.read() << 8) | Wire.read();
             int rawY = (Wire.read() << 8) | Wire.read();
             bool pressed = (Wire.read() == 1);
 
             joystick3.setI2CData(rawX, rawY, pressed);
+            joystick3.update();
+        }
+        else
+        {
+            while (Wire.available() > 0)
+                Wire.read();
+            joystick3.setI2CData(512, 512, false);
             joystick3.update();
         }
 

@@ -24,6 +24,7 @@ bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
 static const char* captiveSsid = "PixelBoard";
 static const char* deviceConfigPath = "/device.json";
+static const char* deviceHostNameValue = "pixelboard";
 static unsigned long lastWifiBeginMs = 0;
 static unsigned long firstWifiAttemptMs = 0;
 
@@ -94,11 +95,20 @@ String configuredWifiSsid() {
     return wifiSsid;
 }
 
+String deviceHostname() {
+    return String(deviceHostNameValue);
+}
+
+String deviceLocalUrl() {
+    return String("http://") + deviceHostname() + ".local";
+}
+
 void beginWifiConnection() {
     if (!hasWifiCredentials()) return;
 
     WiFi.mode(WIFI_AP_STA);
     WiFi.setAutoReconnect(true);
+    WiFi.setHostname(deviceHostNameValue);
     WiFi.disconnect(false, false);
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
     lastWifiBeginMs = millis();
@@ -448,6 +458,8 @@ void handleRoot() {
     if (wifiConnected) {
         html += "<p class='ok'>Verbunden mit <b>" + htmlEscape(WiFi.SSID()) + "</b></p>";
         html += "<p>IP: <b>" + WiFi.localIP().toString() + "</b></p>";
+        html += "<p>Hostname: <b>" + htmlEscape(deviceHostname()) + "</b></p>";
+        html += "<p>mDNS: <b>" + htmlEscape(deviceLocalUrl()) + "</b></p>";
     } else if (hasWifiCredentials()) {
         html += "<p class='bad'>Nicht verbunden. Gespeichert: <b>" + htmlEscape(savedSsid) + "</b></p>";
     } else {
@@ -484,16 +496,26 @@ void handleRoot() {
     server.send(200, "text/html", html);
 }
 
+void handleIpInfo() {
+    String json = "{";
+    json += "\"host\":\"" + deviceHostname() + "\"";
+    json += ",\"url\":\"" + deviceLocalUrl() + "\"";
+    json += ",\"connected\":" + String(WiFi.status() == WL_CONNECTED ? 1 : 0);
+    json += ",\"ip\":\"" + (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : String("")) + "\"";
+    json += "}";
+    server.send(200, "application/json", json);
+}
+
 void handleShooterPage() {
     String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
-<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:860px;margin:0 auto;padding:10px}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.row{display:grid;grid-template-columns:145px 1fr 64px;align-items:center;gap:8px;margin:10px 0}input,select,button{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line{background:#17243a;border-radius:6px;padding:7px}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2{grid-template-columns:1fr}.row{grid-template-columns:112px 1fr 52px}}</style>
-</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='role'>Web = Gegner / GameMaster. P1 = Joystick 1, P2 = Joystick 2/I2C.</div><div class='score' id='score'>Team Score 0</div>
-<div class='panel'><h2>Spieler</h2><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='P1 Name'><input id='p2name' placeholder='P2 Name'></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
+<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:920px;margin:0 auto;padding:10px}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='role'>P1 = Joystick 1. P2 = Joystick 2 / I2C. Web = Gegner und GameMaster fuer P1+P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
+<div class='panel'><h2>Spieler</h2><div class='hint'>Schaden steigt mit eigenem Score plus Kills. Boost und Multi Shot kommen zusaetzlich oben drauf.</div><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='P1 Name'><input id='p2name' placeholder='P2 Name'></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
 <div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
-<div class='panel'><h2>Director</h2><label><input type='checkbox' id='autoWeb'> Auto-Spawns auch mit Web-Gamemaster</label><div class='row'><label>Max Gegner</label><input id='maxA' type='range' min='1' max='16' value='8'><output id='maxAo'>8</output></div><div class='row'><label>Spawn ms</label><input id='spawnMs' type='range' min='50' max='5000' step='50' value='1200'><output id='spawnMso'>1200</output></div><div class='row'><label>Move ms</label><input id='moveMs' type='range' min='20' max='1000' step='10' value='220'><output id='moveMso'>220</output></div><div class='row'><label>Klein %</label><input id='smallP' type='range' min='0' max='100' step='5' value='35'><output id='smallPo'>35</output></div><div class='row'><label>PowerUp %</label><input id='powerP' type='range' min='0' max='100' step='5' value='25'><output id='powerPo'>25</output></div><button class='full' onclick='applyDirector()'>Director anwenden</button><div class='stat' id='directorStats'></div></div>
-<div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='2000' step='5' value='25'><output id='spawnHpo'>25</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='8' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
-<div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='5000' step='50' value='500'><output id='bossHpo'>500</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='3'><output id='bossSizeo'>3</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='2000' step='10' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='5' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='8' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
-<script>let synced=false;const labels=['P1 Joystick 1','P2 Joystick 2/I2C'];const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function playerHtml(p,i){let life=p.alive?'lebt':'tot';return `<div class='player p${i}'><b>${labels[i]}</b><div>${p.name} - <span class='${p.alive?'':'dead'}'>${life}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?'Boss HP '+j.boss.hp+' / '+j.boss.maxHp+' Size '+j.boss.size:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span>`;by('lastMatch').textContent=j.lastMatch.score>0?`Letztes Match: ${j.lastMatch.name} - ${j.lastMatch.score} (P1 ${j.lastMatch.p1}, P2 ${j.lastMatch.p2})`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state()},700);ping();state();</script></body></html>)HTML";
+<div class='panel'><h2>Director</h2><label><input type='checkbox' id='autoWeb'> Auto-Spawns auch mit Web-Gamemaster</label><div class='row'><label>Max Gegner</label><input id='maxA' type='range' min='1' max='16' value='8'><output id='maxAo'>8</output></div><div class='row'><label>Spawn ms</label><input id='spawnMs' type='range' min='80' max='8000' step='20' value='1200'><output id='spawnMso'>1200</output></div><div class='row'><label>Move ms</label><input id='moveMs' type='range' min='15' max='1500' step='5' value='220'><output id='moveMso'>220</output></div><div class='row'><label>Klein %</label><input id='smallP' type='range' min='0' max='100' step='5' value='35'><output id='smallPo'>35</output></div><div class='row'><label>PowerUp %</label><input id='powerP' type='range' min='0' max='100' step='5' value='25'><output id='powerPo'>25</output></div><button class='full' onclick='applyDirector()'>Director anwenden</button><div class='stat' id='directorStats'></div></div>
+<div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='8000' step='10' value='24'><output id='spawnHpo'>24</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='16' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
+<div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='20000' step='100' value='900'><output id='bossHpo'>900</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='4'><output id='bossSizeo'>4</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='6000' step='20' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='7' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='12' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
+<script>let synced=false;const labels=['P1 Joystick 1','P2 Joystick 2 / I2C'];const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function playerHtml(p,i){let status=!p.active?'wartet':(p.alive?'lebt':'tot');let cls=!p.active?'wait':(p.alive?'':'dead');return `<div class='player p${i}'><b>${labels[i]}</b><div>${p.name} - <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>Naechstes +1 bei ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function loadNetwork(){try{let r=await fetch('/ip');let j=await r.json();let text=j.connected?`Netzwerk: ${j.ip} | ${j.url}`:`Netzwerk: offline | Host ${j.host}`;by('networkLine').textContent=text}catch(e){}}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Auto Web ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;by('lastMatch').textContent=j.lastMatch.score>0?`Letztes Match: ${j.lastMatch.name} - ${j.lastMatch.score} (P1 ${j.lastMatch.p1}, P2 ${j.lastMatch.p2})`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state();loadNetwork()},700);ping();state();loadNetwork();</script></body></html>)HTML";
     server.send(200, "text/html", html);
 }
 
@@ -688,6 +710,7 @@ static void handleNotFound() {
 
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/ip", HTTP_GET, handleIpInfo);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
     server.on("/shooter/input", HTTP_GET, handleShooterInput);
@@ -818,20 +841,28 @@ void getTopScores(PlayerData* list, int& count) {
 
     count = 0;
     for (JsonPair kv : doc.as<JsonObject>()) {
-        if (count < 10 && isScoreEntry(kv)) {
-            list[count].name = kv.key().c_str();
-            list[count].score = readHighScore(kv.value());
-            count++;
+        if (!isScoreEntry(kv)) {
+            continue;
         }
-    }
 
-    for (int i = 0; i < count - 1; i++) {
-        for (int j = 0; j < count - i - 1; j++) {
-            if (list[j].score < list[j + 1].score) {
-                PlayerData temp = list[j];
-                list[j] = list[j + 1];
-                list[j + 1] = temp;
+        int score = readHighScore(kv.value());
+        if (count < 3) {
+            int pos = count;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
             }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+            count++;
+        } else if (score > list[2].score) {
+            int pos = 2;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
         }
     }
 }

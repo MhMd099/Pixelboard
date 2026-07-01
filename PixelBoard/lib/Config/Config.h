@@ -20,6 +20,8 @@ void saveWifiCredentials(String newSsid, String newPassword);
 void beginWifiConnection();
 void maintainWifiConnection();
 void stopCaptivePortal();
+String deviceHostname();
+String deviceLocalUrl();
 
 // --- Geraete-Einstellungen ---
 extern int currentDhtPin;

@@ -39,12 +39,11 @@ static String urlEncode(const String& value) {
     return out;
 }
 
-static String weatherCityQuery() {
+static String normalizeWeatherCity() {
     String city = currentCity;
     city.trim();
     if (city == "") city = "Innsbruck";
-    if (city.indexOf(',') < 0) city += ",AT";
-    return urlEncode(city);
+    return city;
 }
 
 static bool fetchJson(const String& path, JsonDocument& doc, int& httpCode) {
@@ -98,10 +97,10 @@ static bool fetchJson(const String& path, JsonDocument& doc, int& httpCode) {
     return httpCode >= 200 && httpCode < 300;
 }
 
-static bool fetchCoordinates(float& lat, float& lon) {
+static bool fetchCoordinatesForQuery(const String& cityQuery, float& lat, float& lon) {
     JsonDocument geo;
     int httpCode = 0;
-    String path = "/geo/1.0/direct?q=" + weatherCityQuery() +
+    String path = "/geo/1.0/direct?q=" + urlEncode(cityQuery) +
                   "&limit=1&appid=" + String(weatherApiKey);
     if (!fetchJson(path, geo, httpCode)) {
         Serial.print("[WETTER] Geo Fehler HTTP ");
@@ -124,6 +123,17 @@ static bool fetchCoordinates(float& lat, float& lon) {
     Serial.print(" lon=");
     Serial.println(lon, 4);
     return true;
+}
+
+static bool fetchCoordinates(float& lat, float& lon) {
+    String city = normalizeWeatherCity();
+    if (fetchCoordinatesForQuery(city, lat, lon))
+        return true;
+
+    if (city.indexOf(',') >= 0)
+        return false;
+
+    return fetchCoordinatesForQuery(city + ",AT", lat, lon);
 }
 
 static bool fetchWetter() {

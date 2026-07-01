@@ -8,6 +8,7 @@
 #include <FastLED.h>
 
 extern Joystick joystick1;
+extern Joystick joystick2;
 extern Joystick joystick3;
 
 static GameState gameState = MENU;
@@ -39,12 +40,15 @@ static uint32_t lastAsteroidMoveMs = 0;
 static uint32_t lastHazardMoveMs = 0;
 static uint32_t lastPowerUpMoveMs = 0;
 static uint32_t lastAsteroidSpawnMs = 0;
+static uint32_t lastAutoHazardSpawnMs = 0;
 static uint32_t lastGameOverRenderMs = 0;
-static uint32_t nextBossScore = 55;
+static uint32_t nextBossScore = 300;
 static uint32_t lastMatchScore = 0;
 static uint32_t lastMatchP1Score = 0;
 static uint32_t lastMatchP2Score = 0;
 static uint32_t slowFieldUntil = 0;
+static uint16_t bossesSpawned = 0;
+static uint8_t bossVolleyCounter = 0;
 static bool lastFireButtonState[RAUMSCHIFF_MAX_PLAYERS];
 static bool highScoreSaved = false;
 static char playerNames[RAUMSCHIFF_MAX_PLAYERS][16] = {"P1", "P2"};
@@ -65,6 +69,8 @@ static const uint16_t multiShotDurationMs = 9000;
 static const uint16_t damageBoostDurationMs = 12000;
 static const uint16_t slowFieldDurationMs = 7000;
 static const uint16_t laserDurationMs = 130;
+static const uint16_t bossScoreGapBase = 300;
+static const uint16_t bossScoreGapGrowth = 120;
 
 static portMUX_TYPE webInputMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint8_t webSpawnRequestSize = 0;
@@ -184,6 +190,45 @@ static uint16_t chargedShotDamage(uint8_t playerIndex)
     return baseShotDamage(playerIndex) * 3;
 }
 
+static uint8_t damageLevelFromProgress(uint8_t playerIndex)
+{
+    if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
+        return 0;
+
+    uint8_t fromScore = spieler[playerIndex].score / 40;
+    uint8_t fromKills = spieler[playerIndex].kills / 8;
+    uint8_t level = fromScore + fromKills;
+    if (level > 20)
+        level = 20;
+    return level;
+}
+
+static uint32_t nextDamageScore(uint8_t playerIndex)
+{
+    if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
+        return 40;
+
+    uint32_t scoreBand = (spieler[playerIndex].score / 40) + 1;
+    return scoreBand * 40;
+}
+
+static void refreshDamageLevel(uint8_t playerIndex)
+{
+    if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
+        return;
+
+    uint8_t newLevel = damageLevelFromProgress(playerIndex);
+    if (newLevel > spieler[playerIndex].damageLevel)
+        Audio::playBuff();
+    spieler[playerIndex].damageLevel = newLevel;
+}
+
+static void scheduleNextBoss()
+{
+    uint32_t gap = bossScoreGapBase + min((uint32_t)720, (uint32_t)bossesSpawned * bossScoreGapGrowth);
+    nextBossScore = score + gap;
+}
+
 static void resetPlayer(uint8_t index, bool active)
 {
     spieler[index].x = 4;
@@ -217,7 +262,10 @@ void raumschiffAddScoreTo(uint8_t playerIndex, uint8_t points)
 {
     score += points;
     if (playerIndex < RAUMSCHIFF_MAX_PLAYERS)
+    {
         spieler[playerIndex].score += points;
+        refreshDamageLevel(playerIndex);
+    }
 }
 
 static String teamName()
@@ -238,14 +286,7 @@ void raumschiffRegisterKill(uint8_t playerIndex, uint16_t points, int dropX, int
     spieler[playerIndex].score += points;
     spieler[playerIndex].kills++;
 
-    uint8_t newLevel = spieler[playerIndex].kills / 6;
-    if (newLevel > 12)
-        newLevel = 12;
-    if (newLevel > spieler[playerIndex].damageLevel)
-    {
-        spieler[playerIndex].damageLevel = newLevel;
-        Audio::playBuff();
-    }
+    refreshDamageLevel(playerIndex);
 
     raumschiffMaybeDropPowerUp(dropX, dropY);
 }
@@ -296,9 +337,9 @@ void raumschiffRequestWebSpawn(uint8_t size, uint16_t hp, uint8_t speed, uint8_t
 {
     if (size < 1) size = 1;
     if (size > 5) size = 5;
-    if (hp > 2000) hp = 2000;
+    if (hp > 8000) hp = 8000;
     if (speed < 1) speed = 1;
-    if (speed > 8) speed = 8;
+    if (speed > 16) speed = 16;
     if (kind > ENEMY_MINIBOSS) kind = ENEMY_SMALL;
 
     portENTER_CRITICAL(&webInputMux);
@@ -313,7 +354,7 @@ void raumschiffRequestWebSpawn(uint8_t size, uint16_t hp, uint8_t speed, uint8_t
 void raumschiffRequestBoss(uint16_t hp, uint8_t size)
 {
     if (hp < 1) hp = 250;
-    if (hp > 5000) hp = 5000;
+    if (hp > 20000) hp = 20000;
     if (size < 3) size = 3;
     if (size > 7) size = 7;
 
@@ -328,11 +369,11 @@ void raumschiffRequestHazard(uint8_t type, uint8_t radius, uint8_t speed, uint16
 {
     if (type == HAZARD_NONE) type = HAZARD_BLACK_HOLE;
     if (radius < 1) radius = 1;
-    if (radius > 5) radius = 5;
+    if (radius > 7) radius = 7;
     if (speed < 1) speed = 1;
-    if (speed > 8) speed = 8;
+    if (speed > 12) speed = 12;
     if (hp < 1) hp = 80;
-    if (hp > 2000) hp = 2000;
+    if (hp > 6000) hp = 6000;
 
     portENTER_CRITICAL(&webInputMux);
     webHazardRequestType = type;
@@ -359,10 +400,10 @@ void raumschiffSetDirectorSettings(uint16_t spawnIntervalMs,
                                    uint8_t powerUpChancePercent,
                                    bool autoWhenWebConnected)
 {
-    spawnIntervalMs = constrain(spawnIntervalMs, (uint16_t)50, (uint16_t)5000);
+    spawnIntervalMs = constrain(spawnIntervalMs, (uint16_t)80, (uint16_t)8000);
     maxActiveAsteroids = constrain(maxActiveAsteroids, (uint8_t)1, asteroidCount);
     smallAsteroidPercent = constrain(smallAsteroidPercent, (uint8_t)0, (uint8_t)100);
-    asteroidMoveMs = constrain(asteroidMoveMs, (uint16_t)20, (uint16_t)1000);
+    asteroidMoveMs = constrain(asteroidMoveMs, (uint16_t)15, (uint16_t)1500);
     powerUpChancePercent = constrain(powerUpChancePercent, (uint8_t)0, (uint8_t)100);
 
     portENTER_CRITICAL(&webInputMux);
@@ -453,6 +494,24 @@ static bool fireLaser(uint8_t playerIndex)
     return false;
 }
 
+static void finishBoss(uint8_t owner, bool awardScore)
+{
+    if (!boss.active)
+        return;
+
+    int dropX = boss.x;
+    int dropY = boss.y;
+    boss.active = false;
+    boss.phase = 0;
+
+    if (awardScore && owner < RAUMSCHIFF_MAX_PLAYERS)
+        raumschiffRegisterKill(owner, 40, dropX, dropY);
+
+    bossesSpawned++;
+    scheduleNextBoss();
+    Audio::playExplosion();
+}
+
 void raumschiffApplyPowerUpToPlayer(uint8_t playerIndex, uint8_t effect)
 {
     if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
@@ -481,18 +540,26 @@ void raumschiffApplyPowerUpToPlayer(uint8_t playerIndex, uint8_t effect)
         break;
 
     case POWERUP_EMP:
+    {
+        bool bossDefeated = false;
         for (uint8_t i = 0; i < asteroidCount; i++)
             asteroiden[i].active = false;
         for (uint8_t i = 0; i < projectileCount; i++)
             enemyProjectiles[i].active = false;
         if (boss.active)
         {
-            boss.hp -= min(8, boss.hp);
+            int damage = min(8, boss.hp);
+            boss.hp -= damage;
             if (boss.hp <= 0)
-                boss.active = false;
+            {
+                finishBoss(playerIndex, true);
+                bossDefeated = true;
+            }
         }
-        Audio::playExplosion();
+        if (!bossDefeated)
+            Audio::playExplosion();
         break;
+    }
 
     case POWERUP_SLOW_FIELD:
         slowFieldUntil = now + slowFieldDurationMs;
@@ -531,10 +598,7 @@ void raumschiffDamageBoss(uint8_t owner, uint16_t damage)
         return;
     }
 
-    boss.active = false;
-    if (owner < RAUMSCHIFF_MAX_PLAYERS)
-        raumschiffRegisterKill(owner, 40, boss.x, boss.y);
-    Audio::playExplosion();
+    finishBoss(owner, true);
 }
 
 bool raumschiffWebPlayerConnected()
@@ -545,12 +609,14 @@ bool raumschiffWebPlayerConnected()
 String raumschiffStateJson()
 {
     String json = "{";
+    json.reserve(1400);
     json += "\"state\":" + String((int)gameState);
     json += ",\"score\":" + String(score);
     json += ",\"web\":" + String(webConnectedNow() ? 1 : 0);
     json += ",\"boss\":{\"active\":" + String(boss.active ? 1 : 0);
     json += ",\"hp\":" + String(boss.active ? boss.hp : 0);
     json += ",\"maxHp\":" + String(boss.maxHp);
+    json += ",\"phase\":" + String(boss.phase);
     json += ",\"size\":" + String(boss.size);
     json += "}";
     json += ",\"director\":{\"spawnMs\":" + String((uint16_t)directorSpawnIntervalMs);
@@ -595,8 +661,10 @@ String raumschiffStateJson()
         json += ",\"multi\":" + String(secondsLeft(spieler[i].multiShotUntil));
         json += ",\"boost\":" + String(secondsLeft(spieler[i].damageBoostUntil));
         json += ",\"invert\":" + String(secondsLeft(spieler[i].invertUntil));
+        json += ",\"baseDamage\":" + String(baseShotDamage(i));
         json += ",\"damage\":" + String(normalShotDamage(i));
         json += ",\"chargedDamage\":" + String(chargedShotDamage(i));
+        json += ",\"nextDamageScore\":" + String(nextDamageScore(i));
         json += ",\"x\":" + String(spieler[i].x);
         json += ",\"y\":" + String(spieler[i].y);
         json += "}";
@@ -789,14 +857,14 @@ static void applyInput(uint8_t playerIndex, const InputState& input)
 static uint16_t defaultHpFor(uint8_t size, uint8_t kind)
 {
     if (kind == ENEMY_MINIBOSS)
-        return 120 + (score / 4);
+        return 28 + (score / 14);
     if (kind == ENEMY_HEAVY || size >= 4)
-        return 25 + (score / 12);
-    if (size == 3)
         return 10 + (score / 20);
+    if (size == 3)
+        return 5 + (score / 28);
     if (size == 2)
-        return 3 + (score > 80 ? 2 : (score > 35 ? 1 : 0));
-    return 1 + (score > 120 ? 1 : 0);
+        return 2 + (score > 110 ? 1 : 0);
+    return 1 + (score > 180 ? 1 : 0);
 }
 
 static bool spawnAsteroidWith(uint8_t size, uint16_t hp, uint8_t speed, uint8_t kind)
@@ -808,7 +876,7 @@ static bool spawnAsteroidWith(uint8_t size, uint16_t hp, uint8_t speed, uint8_t 
     if (hp < 1)
         hp = defaultHpFor(size, kind);
     if (speed < 1) speed = 1;
-    if (speed > 8) speed = 8;
+    if (speed > 16) speed = 16;
 
     for (uint8_t i = 0; i < asteroidCount; i++)
     {
@@ -844,6 +912,7 @@ static void spawnBossWith(uint16_t hp, uint8_t size)
     boss.phase = 1;
     boss.size = size;
     boss.attackTimer = millis();
+    bossVolleyCounter = 0;
     gameState = BOSS;
     Audio::playBoss();
 }
@@ -852,9 +921,9 @@ static bool spawnHazardWith(uint8_t type, uint8_t radius, uint8_t speed, uint16_
 {
     if (type == HAZARD_NONE) type = HAZARD_BLACK_HOLE;
     if (radius < 1) radius = 1;
-    if (radius > 5) radius = 5;
+    if (radius > 7) radius = 7;
     if (speed < 1) speed = 1;
-    if (speed > 8) speed = 8;
+    if (speed > 12) speed = 12;
     if (hp < 1) hp = 80;
 
     for (uint8_t i = 0; i < hazardCount; i++)
@@ -952,12 +1021,12 @@ static void spawnAsteroid()
     uint8_t size = 1;
     uint8_t kind = ENEMY_SMALL;
     uint8_t roll = random(0, 100);
-    if (score > 80 && roll > 92)
+    if (score > 180 && roll > 97)
     {
-        size = 3 + random(0, 3);
+        size = 3 + random(0, 2);
         kind = ENEMY_MINIBOSS;
     }
-    else if (roll >= directorSmallAsteroidPercent + 35)
+    else if (score > 70 && roll >= directorSmallAsteroidPercent + 45)
     {
         size = 3 + random(0, 2);
         kind = ENEMY_HEAVY;
@@ -969,13 +1038,25 @@ static void spawnAsteroid()
     }
 
     uint32_t speedBoost = score / 70;
-    if (speedBoost > 5) speedBoost = 5;
+    if (speedBoost > 6) speedBoost = 6;
     uint8_t speed = 1 + speedBoost;
     uint32_t speedChance = score;
-    if (speedChance > 70) speedChance = 70;
+    if (speedChance > 80) speedChance = 80;
     if (random(0, 100) < speedChance)
         speed++;
-    if (speed > 8) speed = 8;
+    if (speed > 12) speed = 12;
+
+    if (score > 55 &&
+        activeHazardCount() == 0 &&
+        now - lastAutoHazardSpawnMs > 6500 &&
+        random(0, 100) < (webActive && directorAutoWhenWebConnected ? 12 : 6))
+    {
+        uint8_t radius = score > 220 ? 3 : 2;
+        uint16_t hp = 35 + min((uint32_t)120, score / 3);
+        uint8_t hazardSpeed = 1 + min((uint32_t)3, score / 120);
+        if (spawnHazardWith(HAZARD_BLACK_HOLE, radius, hazardSpeed, hp))
+            lastAutoHazardSpawnMs = now;
+    }
 
     if (spawnAsteroidWith(size, 0, speed, kind))
         lastAsteroidSpawnMs = now;
@@ -1094,36 +1175,123 @@ static void updatePowerUps()
     }
 }
 
+static bool spawnEnemyProjectileAt(int x, int y, int dx, int dy, uint16_t damage)
+{
+    for (uint8_t i = 0; i < projectileCount; i++)
+    {
+        if (!enemyProjectiles[i].active)
+        {
+            enemyProjectiles[i].x = x;
+            enemyProjectiles[i].y = constrain(y, 0, fieldHeight - 1);
+            enemyProjectiles[i].prevX = enemyProjectiles[i].x;
+            enemyProjectiles[i].prevY = enemyProjectiles[i].y;
+            enemyProjectiles[i].dx = dx;
+            enemyProjectiles[i].dy = dy;
+            enemyProjectiles[i].owner = 255;
+            enemyProjectiles[i].damage = damage;
+            enemyProjectiles[i].charged = false;
+            enemyProjectiles[i].active = true;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool spawnBossEscort(uint8_t kind, uint8_t size, uint16_t hp, uint8_t speed, int8_t yOffset)
+{
+    for (uint8_t i = 0; i < asteroidCount; i++)
+    {
+        if (!asteroiden[i].active)
+        {
+            asteroiden[i].size = size;
+            asteroiden[i].x = constrain(boss.x - size - 2, 10, fieldWidth - size);
+            asteroiden[i].y = constrain(boss.y + yOffset, 1, fieldHeight - size - 1);
+            asteroiden[i].prevX = asteroiden[i].x;
+            asteroiden[i].prevY = asteroiden[i].y;
+            asteroiden[i].hp = hp;
+            asteroiden[i].maxHp = hp;
+            asteroiden[i].speed = speed;
+            asteroiden[i].kind = kind;
+            asteroiden[i].active = true;
+            return true;
+        }
+    }
+    return false;
+}
+
 static void bossLogic()
 {
     if (!boss.active)
         return;
 
     uint32_t now = millis();
-    if (now - boss.attackTimer <= 1150)
+    uint8_t hpPercent = boss.maxHp > 0 ? (uint32_t)boss.hp * 100 / boss.maxHp : 100;
+    boss.phase = 1;
+    if (hpPercent <= 60)
+        boss.phase = 2;
+    if (hpPercent <= 28)
+        boss.phase = 3;
+
+    uint16_t interval = 1100;
+    if (boss.phase == 2)
+        interval = 950;
+    else if (boss.phase >= 3)
+        interval = 850;
+
+    if (now - boss.attackTimer <= interval)
         return;
 
-    for (uint8_t i = 0; i < projectileCount; i++)
+    bossVolleyCounter++;
+
+    if (boss.phase == 1)
     {
-        if (!enemyProjectiles[i].active)
+        if ((bossVolleyCounter % 3) == 0)
         {
-            enemyProjectiles[i].x = boss.x - 2;
-            enemyProjectiles[i].y = boss.y + random(-1, 2);
-            enemyProjectiles[i].prevX = enemyProjectiles[i].x;
-            enemyProjectiles[i].prevY = enemyProjectiles[i].y;
-            enemyProjectiles[i].dx = -1;
-            enemyProjectiles[i].dy = 0;
-            enemyProjectiles[i].owner = 255;
-            enemyProjectiles[i].damage = 1;
-            enemyProjectiles[i].charged = false;
-            enemyProjectiles[i].active = true;
-            Audio::playBoss();
-            break;
+            spawnEnemyProjectileAt(boss.x - 2, boss.y - 1, -1, -1, 1);
+            spawnEnemyProjectileAt(boss.x - 2, boss.y, -1, 0, 1);
+            spawnEnemyProjectileAt(boss.x - 2, boss.y + 1, -1, 1, 1);
+        }
+        else
+        {
+            spawnEnemyProjectileAt(boss.x - 2, boss.y + random(-1, 2), -1, 0, 2);
+        }
+    }
+    else if (boss.phase == 2)
+    {
+        spawnEnemyProjectileAt(boss.x - 2, boss.y - 2, -1, -1, 1);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y, -1, 0, 2);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y + 2, -1, 1, 1);
+
+        if ((bossVolleyCounter % 3) == 0)
+            spawnBossEscort(ENEMY_MEDIUM, 2, 4 + score / 45, 2 + min((uint32_t)2, score / 160), random(-2, 3));
+    }
+    else
+    {
+        spawnEnemyProjectileAt(boss.x - 2, boss.y - 3, -1, -2, 1);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y - 1, -1, -1, 2);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y, -1, 0, 3);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y + 1, -1, 1, 2);
+        spawnEnemyProjectileAt(boss.x - 2, boss.y + 3, -1, 2, 1);
+
+        if ((bossVolleyCounter % 2) == 0)
+        {
+            spawnBossEscort(ENEMY_SMALL, 1, 2 + score / 80, 3 + min((uint32_t)2, score / 180), -2);
+            spawnBossEscort((bossVolleyCounter % 4) == 0 ? ENEMY_HEAVY : ENEMY_MEDIUM,
+                            (bossVolleyCounter % 4) == 0 ? 3 : 2,
+                            (bossVolleyCounter % 4) == 0 ? (8 + score / 30) : (4 + score / 50),
+                            2 + min((uint32_t)3, score / 150),
+                            2);
         }
     }
 
-    boss.y = constrain(boss.y + random(-1, 2), 3, fieldHeight - 4);
+    if (boss.phase >= 3 && (bossVolleyCounter % 4) == 0)
+    {
+        boss.hp += min(8, boss.maxHp - boss.hp);
+    }
+
+    boss.y = constrain(boss.y + random(-(int)boss.phase, boss.phase + 1), 3, fieldHeight - 4);
     boss.attackTimer = now;
+    Audio::playBoss();
 }
 
 static void drawShip(uint8_t index)
@@ -1217,14 +1385,18 @@ static void drawLaser(const LaserBeam& beam)
 
 static void drawPlayerHealthDots()
 {
+    uint8_t slot = 0;
     for (uint8_t p = 0; p < RAUMSCHIFF_MAX_PLAYERS; p++)
     {
+        if (!spieler[p].active)
+            continue;
         CRGB col = playerColor(p);
         CRGB dim = col;
         dim.nscale8(45);
-        uint8_t y = fieldHeight - 1 - p;
+        uint8_t y = fieldHeight - 1 - slot;
         for (uint8_t hp = 0; hp < 3; hp++)
             setPixel(hp, y, spieler[p].hp > hp ? col : dim);
+        slot++;
     }
 }
 
@@ -1388,14 +1560,13 @@ void raumschiffGameTick()
 
         if (!boss.active && score >= nextBossScore)
         {
-            uint32_t scoreBoost = score / 3;
-            if (scoreBoost > 700) scoreBoost = 700;
-            uint16_t hp = 180 + activeLivingPlayers() * 70 + scoreBoost;
+            uint32_t scoreBoost = score / 2;
+            if (scoreBoost > 1400) scoreBoost = 1400;
+            uint16_t hp = 260 + activeLivingPlayers() * 110 + scoreBoost + bossesSpawned * 55;
             uint32_t sizeBoost = score / 250;
             if (sizeBoost > 4) sizeBoost = 4;
             uint8_t size = 3 + sizeBoost;
             spawnBossWith(hp, size);
-            nextBossScore += 90 + score / 4;
         }
         return;
     }
@@ -1430,9 +1601,12 @@ void raumschiffResetGame()
     lastHazardMoveMs = 0;
     lastPowerUpMoveMs = 0;
     lastAsteroidSpawnMs = 0;
+    lastAutoHazardSpawnMs = 0;
     lastGameOverRenderMs = 0;
-    nextBossScore = 55;
+    nextBossScore = bossScoreGapBase;
     slowFieldUntil = 0;
+    bossesSpawned = 0;
+    bossVolleyCounter = 0;
     highScoreSaved = false;
 
     portENTER_CRITICAL(&webInputMux);
