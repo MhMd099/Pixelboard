@@ -24,7 +24,6 @@ void maintainWifiConnection();
 extern int currentDhtPin;
 extern int currentDhtType;
 void loadDeviceSettings();
-void saveDhtSettings(int pin, int type);
 
 // --- Funktionen ---
 void initLittleFS();

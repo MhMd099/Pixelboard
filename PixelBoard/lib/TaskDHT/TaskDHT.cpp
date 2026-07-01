@@ -132,7 +132,7 @@ static void drawTempLine(int y, float temp, CRGB labelCol, CRGB valueCol) {
 
     x = drawInteger(x, y, whole, valueCol);
     if (whole < 100) {
-        drawDot(x - 1, y, valueCol);
+        drawDot(x, y, valueCol);
         drawDigitW(x + 1, y, frac, valueCol);
         x += 5;
     }

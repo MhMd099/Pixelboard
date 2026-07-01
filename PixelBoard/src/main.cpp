@@ -20,6 +20,7 @@
 #include "TaskSnake.h"
 #include "TaskAnim.h"
 #include "TaskDHT.h" // <--- NEUER DHT TASK
+#include <LittleFS.h>
 
 // ==========================================
 // 1. HARDWARE & KONFIGURATION
@@ -96,40 +97,197 @@ void printMenu() {
     FastLED.clear();
     unsigned long jetzt = millis();
 
-    // Hintergrund
     for (int x = 0; x < 32; x++)
         for (int y = 0; y < 16; y++)
             setPixel(x, y, themeCol(x * 5 - y * 3 + jetzt / 35, 55));
 
-    // Menü-Vorschauen
     if (fokusModus == 0) {
-        // ... (Dein komplexer Pixelboard-Schriftzug bleibt unverändert, ich kürze ihn hier visuell für die Lesbarkeit, du kannst deinen originalen P-I-X-E-L Code hier einsetzen)
-        drawIcon(14, 5, 0x7E3F1, themeCol(jetzt / 10, 255)); // Platzhalter für Startseite
-    } 
-    else {
-        switch (fokusModus) {
-            case 1: // Uhr
-                setPixel(16, 8, themeCol(jetzt / 10, 255));
-                setPixel(16, 7, themeCol(jetzt / 10 + 64, 220));
-                break;
-            case 2: // Wetter
-                setPixel(10, 6, CRGB::Yellow); setPixel(16, 9, CRGB::White);
-                break;
-            case 3: // Snake
-                setPixel(16, 8, themeCol(jetzt / 10, 255));
-                setPixel(27, 5, themeCol(jetzt / 10 + 128, 255));
-                break;
-            case 4: // Musik
-                setPixel(16, 8, CHSV(jetzt/10, 255, 255));
-                break;
-            case 5: // Animationen
-                setPixel(16, 8, themeCol(jetzt/5, 200));
-                break;
-            case 6: // DHT
-                drawIcon(14, 5, menuIcons[5], themeCol(jetzt/10, 255));
-                break;
+        static const uint8_t glyphs[6][7] = {
+            {0x1F, 0x11, 0x11, 0x1F, 0x10, 0x10, 0x10}, // P
+            {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}, // I
+            {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, // X
+            {0x1F, 0x10, 0x10, 0x1F, 0x10, 0x10, 0x1F}, // E
+            {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, // L
+            {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M
+        };
+
+        struct Coord { int8_t x; int8_t y; };
+        static Coord path[150];
+        static int pathLength = 0;
+        static bool pathInitialized = false;
+
+        if (!pathInitialized) {
+            int pIdx = 0;
+            int xOffsets[5] = {2, 8, 14, 20, 26};
+            for (char b = 0; b < 5; b++) {
+                int xOff = xOffsets[b];
+                bool upward = (b % 2 == 0);
+                if (upward) {
+                    for (int y = 6; y >= 0; y--)
+                        for (int x = 0; x < 5; x++)
+                            if ((glyphs[b][y] >> (4 - x)) & 1)
+                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
+                } else {
+                    for (int y = 0; y <= 6; y++)
+                        for (int x = 0; x < 5; x++)
+                            if ((glyphs[b][y] >> (4 - x)) & 1)
+                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
+                }
+            }
+
+            int xOffsetsUnten[4] = {4, 10, 16, 22};
+            for (int y = 6; y >= 0; y--)
+                for (int x = 0; x < 5; x++)
+                    if ((glyphs[5][y] >> (4 - x)) & 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9)};
+            for (int y = 0; y <= 6; y++)
+                for (int x = 0; x < 5; x++)
+                    if ((glyphs[3][y] >> (4 - x)) & 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9)};
+            for (int y = 6; y >= 0; y--)
+                for (int x = 0; x < 5; x++)
+                    if (x == 0 || x == 4 || x == y - 1)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9)};
+            for (int y = 0; y <= 6; y++)
+                for (int x = 0; x < 5; x++)
+                    if (x == 0 || x == 4 || y == 6)
+                        path[pIdx++] = {(int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9)};
+
+            pathLength = pIdx;
+            pathInitialized = true;
         }
+
+        uint8_t currentHue = jetzt / 3;
+        for (int i = 0; i < pathLength; i++) {
+            setPixel(path[i].x, path[i].y, themeCol(currentHue, 255));
+            currentHue += 5;
+        }
+
+        FastLED.show();
+        unlockDisplay();
+        return;
     }
+
+    switch (fokusModus) {
+        case 1: {
+            int cx = 16, cy = 8;
+            for (int x = 0; x < 32; x++) {
+                for (int y = 0; y < 16; y++) {
+                    int dist = (x - cx) * (x - cx) + (y - cy) * (y - cy);
+                    if (dist >= 40 && dist <= 56) setPixel(x, y, themeCol(jetzt / 30 + x * 4, 210));
+                    else if (dist < 40) setPixel(x, y, themeCol(jetzt / 45 + y * 6, 45));
+                }
+            }
+
+            setPixel(16, 8, themeCol(jetzt / 20, 255));
+            bool tick = (jetzt / 1000) % 2 == 0;
+            if (tick) {
+                setPixel(16, 7, themeCol(jetzt / 20 + 64, 255));
+                setPixel(16, 6, themeCol(jetzt / 20 + 64, 255));
+                setPixel(17, 8, themeCol(jetzt / 20 + 128, 255));
+                setPixel(18, 8, themeCol(jetzt / 20 + 128, 255));
+            } else {
+                setPixel(17, 7, themeCol(jetzt / 20 + 64, 255));
+                setPixel(18, 6, themeCol(jetzt / 20 + 64, 255));
+                setPixel(16, 9, themeCol(jetzt / 20 + 128, 255));
+                setPixel(16, 10, themeCol(jetzt / 20 + 128, 255));
+            }
+            break;
+        }
+
+        case 2: {
+            int sx = 10, sy = 6;
+            for (int x = 5; x <= 15; x++)
+                for (int y = 1; y <= 11; y++)
+                    if ((x - sx) * (x - sx) + (y - sy) * (y - sy) < 16)
+                        setPixel(x, y, CRGB::Yellow);
+
+            setPixel(10, 1, CRGB::Orange);
+            setPixel(10, 11, CRGB::Orange);
+            setPixel(5, 6, CRGB::Orange);
+            setPixel(15, 6, CRGB::Orange);
+
+            int wX = (int)(sin(jetzt / 400.0) * 2.0);
+            for (int x = 12 + wX; x <= 28 + wX; x++)
+                if (x >= 0 && x < 32) setPixel(x, 12, CRGB::White);
+
+            auto drawCloudBlobAnim = [wX](int cx, int cy, int r) {
+                int dynCx = cx + wX;
+                for (int x = dynCx - r; x <= dynCx + r; x++)
+                    for (int y = cy - r; y <= cy + r; y++)
+                        if ((x - dynCx) * (x - dynCx) + (y - cy) * (y - cy) <= r * r && x >= 0 && x < 32 && y >= 0 && y < 16)
+                            setPixel(x, y, CRGB::White);
+            };
+            drawCloudBlobAnim(16, 9, 3);
+            drawCloudBlobAnim(21, 7, 4);
+            drawCloudBlobAnim(25, 10, 3);
+            break;
+        }
+
+        case 3: {
+            const int len = 16;
+            int head = (int)((jetzt / 80) % 44) - 6;
+            for (int i = 0; i < len; i++) {
+                int x = head - i;
+                if (x < 0 || x >= 32) continue;
+                int y = 8 + (int)(sin(x / 3.2 + jetzt / 280.0) * 4.0);
+                if (y < 0 || y >= 16) continue;
+
+                if (i == 0) {
+                    setPixel(x, y, themeCol(jetzt / 20, 255));
+                    setPixel(x, y - 1, themeCol(jetzt / 20 + 64, 200));
+                    if ((jetzt / 180) % 2) setPixel(x + 1, y, themeCol(jetzt / 20 + 128, 255));
+                } else {
+                    uint8_t v = (uint8_t)map(i, 1, len, 235, 60);
+                    setPixel(x, y, themeCol(jetzt / 35 + i * 8, v));
+                }
+            }
+
+            uint8_t puls = 150 + (uint8_t)(sin(jetzt / 200.0) * 90);
+            setPixel(27, 5, themeCol(jetzt / 20 + 160, puls));
+            setPixel(27, 4, themeCol(jetzt / 20 + 96, 220));
+            break;
+        }
+
+        case 4: {
+            auto drawNote = [&](int nx, int ny, CRGB col) {
+                setPixel(nx, ny + 2, col);
+                setPixel(nx + 1, ny + 2, col);
+                setPixel(nx, ny + 3, col);
+                setPixel(nx + 1, ny + 3, col);
+                for (int y = ny - 3; y <= ny + 2; y++) setPixel(nx + 1, y, col);
+                setPixel(nx + 2, ny - 3, col);
+                setPixel(nx + 2, ny - 2, col);
+            };
+
+            int b1 = (int)(sin(jetzt / 180.0) * 2.0);
+            int b2 = (int)(sin(jetzt / 180.0 + 1.2) * 2.0);
+            int b3 = (int)(sin(jetzt / 180.0 + 2.4) * 2.0);
+            drawNote(5, 7 + b1, themeCol(jetzt / 12, 235));
+            drawNote(14, 8 + b2, themeCol(jetzt / 12 + 85, 235));
+            drawNote(23, 7 + b3, themeCol(jetzt / 12 + 170, 235));
+            break;
+        }
+
+        case 5:
+            for (int y = 0; y < 16; y++)
+                for (int x = 0; x < 32; x++) {
+                    int v = (sin8(x * 14 + jetzt / 6) + sin8(y * 16 - jetzt / 8) + sin8((x * 3 + y * 5) + jetzt / 5)) / 3;
+                    setPixel(x, y, themeCol(v + jetzt / 30, 200));
+                }
+            break;
+
+        case 6:
+            drawChar3x5(5, 2, 'D', themeCol(jetzt / 20, 255));
+            drawChar3x5(13, 2, 'H', themeCol(jetzt / 20 + 70, 255));
+            drawChar3x5(21, 2, 'T', themeCol(jetzt / 20 + 140, 255));
+            for (int y = 9; y <= 14; y++) setPixel(8, y, themeCol(jetzt / 25 + y * 8, 220));
+            for (int x = 7; x <= 9; x++) setPixel(x, 14, themeCol(jetzt / 25 + x * 8, 220));
+            for (int y = 10; y <= 14; y++) setPixel(23, y, themeCol(jetzt / 25 + y * 10 + 90, 220));
+            for (int x = 22; x <= 24; x++) setPixel(x, 14, themeCol(jetzt / 25 + x * 8 + 90, 220));
+            break;
+    }
+
     FastLED.show();
     unlockDisplay();
 }

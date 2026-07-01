@@ -141,37 +141,12 @@ void loadDeviceSettings() {
     currentDhtPin = 21;
     currentDhtType = 22;
 
-    if (!LittleFS.exists("/device.json")) return;
-
-    File file = LittleFS.open("/device.json", "r");
-    if (!file) return;
-
-    JsonDocument doc;
-    if (!deserializeJson(doc, file)) {
-        currentDhtPin = normalizeDhtPin(doc["dhtPin"] | currentDhtPin);
-        currentDhtType = normalizeDhtType(doc["dhtType"] | currentDhtType);
-    }
-    file.close();
+    
 
     Serial.printf("DHT geladen: GPIO %d, DHT%d\n", currentDhtPin, currentDhtType);
 }
 
-void saveDhtSettings(int pin, int type) {
-    currentDhtPin = normalizeDhtPin(pin);
-    currentDhtType = normalizeDhtType(type);
 
-    JsonDocument doc;
-    doc["dhtPin"] = currentDhtPin;
-    doc["dhtType"] = currentDhtType;
-
-    File file = LittleFS.open("/device.json", "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-    }
-
-    Serial.printf("DHT gespeichert: GPIO %d, DHT%d\n", currentDhtPin, currentDhtType);
-}
 
 static JsonObject userObject(JsonDocument& doc, const String& user) {
     if (!doc[user].is<JsonObject>()) {
@@ -393,13 +368,7 @@ void handleRoot() {
     }
     html += "</select><br><input type='submit' value='Uhr speichern'></form>";
 
-    html += "<hr><h4>DHT Sensor</h4>";
-    html += "<form action='/updateDht' method='POST'>";
-    html += "<input type='number' name='pin' min='0' max='33' value='" + String(currentDhtPin) + "' required><br>";
-    html += "<select name='type'>";
-    appendOption(html, 22, currentDhtType, "DHT22");
-    appendOption(html, 11, currentDhtType, "DHT11");
-    html += "</select><br><input type='submit' value='DHT speichern'></form>";
+   
 
     html += "</div></body></html>";
     server.send(200, "text/html", html);
@@ -447,13 +416,6 @@ void handleUpdateClock() {
     server.send(303);
 }
 
-void handleUpdateDht() {
-    int pin = server.hasArg("pin") ? server.arg("pin").toInt() : currentDhtPin;
-    int type = server.hasArg("type") ? server.arg("type").toInt() : currentDhtType;
-    saveDhtSettings(pin, type);
-    server.sendHeader("Location", "/");
-    server.send(303);
-}
 
 void handleLogout() {
     loadConfigForUser("default");
@@ -501,7 +463,6 @@ void setupWebServer() {
     server.on("/updateCity", HTTP_POST, handleUpdateCity);
     server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
     server.on("/updateClock", HTTP_POST, handleUpdateClock);
-    server.on("/updateDht", HTTP_POST, handleUpdateDht);
     server.on("/logout", HTTP_GET, handleLogout);
     server.on("/generate_204", HTTP_GET, handleCaptiveProbe);
     server.on("/gen_204", HTTP_GET, handleCaptiveProbe);
