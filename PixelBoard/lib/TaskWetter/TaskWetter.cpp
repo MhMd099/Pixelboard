@@ -1,6 +1,6 @@
 #include "TaskWetter.h"
 #include <WiFi.h>
-#include <HTTPClient.h>
+#include <WiFiClient.h>
 #include <ArduinoJson.h>
 #include <FastLED.h>
 #include "HardwareUtils.h"
@@ -20,36 +20,56 @@ extern void drawDigitW(int x, int y, int n, CRGB c);
 static bool fetchWetter() {
     if (WiFi.status() != WL_CONNECTED) return false;
 
-    HTTPClient http;
-    http.setConnectTimeout(4000);
-    http.setTimeout(5000);
-    http.useHTTP10(true); // verhindert haeufige -11 Read-Timeouts (kein keep-alive/chunked)
-
     String safeCity = currentCity;
     safeCity.replace(" ", "%20");
-    String url = "http://api.openweathermap.org/data/2.5/weather?q=" + safeCity +
+    String path = "/data/2.5/weather?q=" + safeCity +
                  "&appid=" + String(weatherApiKey) + "&units=metric";
-    Serial.printf("[WETTER] Rufe Daten ab für: '%s'\n", currentCity.c_str());
 
-    if (!http.begin(url)) { Serial.println("[WETTER] begin() fehlgeschlagen"); return false; }
+    WiFiClient client;
+    client.setTimeout(5000);
+    if (!client.connect("api.openweathermap.org", 80)) {
+        Serial.println("[WETTER] Verbindung fehlgeschlagen");
+        return false;
+    }
 
-    int httpCode = http.GET();
+    client.print(F("GET "));
+    client.print(path);
+    client.print(F(" HTTP/1.0\r\nHost: api.openweathermap.org\r\nConnection: close\r\n\r\n"));
+
+    int httpCode = 0;
+    unsigned long deadline = millis() + 5000UL;
+    while (client.connected() && millis() < deadline) {
+        String line = client.readStringUntil('\n');
+        line.trim();
+
+        if (line.startsWith("HTTP/")) {
+            int firstSpace = line.indexOf(' ');
+            if (firstSpace > 0) httpCode = line.substring(firstSpace + 1).toInt();
+        }
+        if (line.length() == 0) break;
+    }
+
     bool ok = false;
     if (httpCode == 200) {
         JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, http.getStream());
+        DeserializationError err = deserializeJson(doc, client);
         if (!err) {
             aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
             weatherID    = doc["weather"][0]["id"] | weatherID;
-            Serial.printf("[WETTER] OK! Temp: %.1f  ID: %d\n", aktuelleTemp, weatherID);
+            Serial.print("[WETTER] OK! Temp: ");
+            Serial.print(aktuelleTemp, 1);
+            Serial.print("  ID: ");
+            Serial.println(weatherID);
             ok = true;
         } else {
-            Serial.printf("[WETTER] JSON-Fehler: %s\n", err.c_str());
+            Serial.print("[WETTER] JSON-Fehler: ");
+            Serial.println(err.c_str());
         }
     } else {
-        Serial.printf("[WETTER] Fehler! HTTP Code: %d\n", httpCode);
+        Serial.print("[WETTER] Fehler! HTTP Code: ");
+        Serial.println(httpCode);
     }
-    http.end();
+    client.stop();
     return ok;
 }
 

@@ -1,6 +1,7 @@
 ﻿#include <Arduino.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <Wire.h>
 
 #include "time.h"
 #include "HardwareUtils.h" 
@@ -48,11 +49,17 @@
 #define J2_PIN_Y 39
 #define J2_PIN_TASTER 14
 
+// --- Joystick 3 (Nano via I2C, keine ESP32-pinMode/analogRead-Logik) ---
+#define I2C_SDA 32
+#define I2C_SCL 33
+#define J3_I2C_ADDRESS 0x08
+
 // ==========================================
 // 2. GLOBALE VARIABLEN & HANDLES
 // ==========================================
 Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN);
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);
+Joystick joystick3;
 
 // KLAR BENANNTE TASKS
 TaskHandle_t handleUhr    = NULL; // Task 0
@@ -281,10 +288,6 @@ void printMenu() {
             drawChar3x5(5, 2, 'D', themeCol(jetzt / 20, 255));
             drawChar3x5(13, 2, 'H', themeCol(jetzt / 20 + 70, 255));
             drawChar3x5(21, 2, 'T', themeCol(jetzt / 20 + 140, 255));
-            for (int y = 9; y <= 14; y++) setPixel(8, y, themeCol(jetzt / 25 + y * 8, 220));
-            for (int x = 7; x <= 9; x++) setPixel(x, 14, themeCol(jetzt / 25 + x * 8, 220));
-            for (int y = 10; y <= 14; y++) setPixel(23, y, themeCol(jetzt / 25 + y * 10 + 90, 220));
-            for (int x = 22; x <= 24; x++) setPixel(x, 14, themeCol(jetzt / 25 + x * 8 + 90, 220));
             break;
     }
 
@@ -334,7 +337,9 @@ void wechsleZuTask(int zielTask) {
     if (zielTask == 3) startMusic(); 
 
     setEventSperre(250);
-    Serial.printf("Task %d aktiv\n", zielTask);
+    Serial.print("Task ");
+    Serial.print(zielTask);
+    Serial.println(" aktiv");
 }
 
 void zurueckZumMenue() {
@@ -435,6 +440,26 @@ void taskWifiManager(void *pv) {
     }
 }
 
+void taskI2CJoystickHandler(void *pv) {
+    TickType_t lastWake = xTaskGetTickCount();
+    const TickType_t interval = pdMS_TO_TICKS(15);
+
+    for (;;) {
+        Wire.requestFrom((uint8_t)J3_I2C_ADDRESS, (uint8_t)5);
+
+        if (Wire.available() >= 5) {
+            int rawX = (Wire.read() << 8) | Wire.read();
+            int rawY = (Wire.read() << 8) | Wire.read();
+            bool pressed = (Wire.read() == 1);
+
+            joystick3.setI2CData(rawX, rawY, pressed);
+            joystick3.update();
+        }
+
+        vTaskDelayUntil(&lastWake, interval);
+    }
+}
+
 // ==========================================
 // 6. SETUP
 // ==========================================
@@ -448,8 +473,10 @@ void setup() {
     initLittleFS();
     loadWifiCredentials();
     loadDeviceSettings();
-    loadConfigForUser("default"); 
-    startCaptivePortal();
+    loadConfigForUser("");
+    Wire.begin(I2C_SDA, I2C_SCL);
+    Serial.println("I2C-Bus aktiv auf GPIO 32 (SDA) und GPIO 33 (SCL).");
+    if (!hasWifiCredentials()) startCaptivePortal();
     if (hasWifiCredentials()) beginWifiConnection();
 
     FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
@@ -466,6 +493,7 @@ void setup() {
     setupWebServer();
 
     // ALL TASKS PINNED TO CORE 1
+    xTaskCreatePinnedToCore(taskI2CJoystickHandler, "I2CJoy", 2048, NULL, 4, NULL, 1);
     xTaskCreatePinnedToCore(taskWebServerHandler, "Web", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(taskWifiManager, "WiFi", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleUhr, 1);
@@ -481,6 +509,7 @@ void setup() {
     delay(50);
     joystick1.kalibrieren();
     joystick2.kalibrieren();
+    joystick3.kalibrieren();
     printMenu();
 }
 

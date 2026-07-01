@@ -26,11 +26,15 @@ Taster_v2::Taster_v2(int pin, int modus, unsigned long entprellen, unsigned long
   doppelklickZaehler = 0;
   langKlickZaehler = 0;
 
-  // Aktiviert genau den Modus, den wir im Hauptprogramm wählen!
-  pinMode(tasterPin, tasterModus); 
+  // Aktiviert genau den Modus, den wir im Hauptprogramm waehlen.
+  if (tasterPin >= 0) {
+    pinMode(tasterPin, tasterModus);
+  }
 }
 
 void Taster_v2::klickenErkennen() {
+  if (tasterPin < 0) return;
+
   int aktuellerZustand = digitalRead(tasterPin); 
   unsigned long jetzt = millis();
 
@@ -92,6 +96,14 @@ void Taster_v2::klickenErkennen() {
 }
 
 void Taster_v2::reset() {
+  if (tasterPin < 0) {
+    ignoreBisLoslassen = false;
+    einfacherKlickZaehler = 0;
+    doppelklickZaehler = 0;
+    langKlickZaehler = 0;
+    return;
+  }
+
   int cur = digitalRead(tasterPin);
   bool aktivJetzt = (tasterModus == INPUT_PULLUP) ? (cur == LOW) : (cur == HIGH);
   ignoreBisLoslassen = aktivJetzt;   // wenn beim Wechsel noch gedrückt: bis Loslassen ignorieren
@@ -107,6 +119,8 @@ void Taster_v2::reset() {
 }
 
 int Taster_v2::isPressed() {
+  if (tasterPin < 0) return false;
+
   // Gibt true (1) zurück, wenn der Taster aktiv gedrückt ist
   return (tasterModus == INPUT_PULLUP) ? (digitalRead(tasterPin) == LOW) : (digitalRead(tasterPin) == HIGH);
 }

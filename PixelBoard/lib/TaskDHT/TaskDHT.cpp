@@ -35,7 +35,10 @@ static void ensureSensor() {
     dht->begin();
     lastReadingOk = false;
     lastReadMs = 0;
-    Serial.printf("TaskDHT: Sensor aktiv auf GPIO %d als DHT%d\n", activePin, activeType);
+    Serial.print("TaskDHT: Sensor aktiv auf GPIO ");
+    Serial.print(activePin);
+    Serial.print(" als DHT");
+    Serial.println(activeType);
 }
 
 static bool validReading(float t, float h) {
@@ -71,7 +74,10 @@ static void readSensorIfDue() {
     } else {
         lastReadingOk = false;
         if (now - lastErrorLogMs > 10000UL) {
-            Serial.printf("TaskDHT: Keine gueltige Messung auf GPIO %d als DHT%d\n", activePin, activeType);
+            Serial.print("TaskDHT: Keine gueltige Messung auf GPIO ");
+            Serial.print(activePin);
+            Serial.print(" als DHT");
+            Serial.println(activeType);
             lastErrorLogMs = now;
         }
     }

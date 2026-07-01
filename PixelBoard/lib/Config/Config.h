@@ -19,6 +19,7 @@ String configuredWifiSsid();
 void saveWifiCredentials(String newSsid, String newPassword);
 void beginWifiConnection();
 void maintainWifiConnection();
+void stopCaptivePortal();
 
 // --- Geraete-Einstellungen ---
 extern int currentDhtPin;
@@ -28,6 +29,7 @@ void loadDeviceSettings();
 // --- Funktionen ---
 void initLittleFS();
 void loadConfigForUser(String user);
+void ensureUserExists(String user);
 void saveConfig(String user, String city);
 void saveTheme(String user, int themeIdx);
 void saveClockStyle(String user, int clockIdx);

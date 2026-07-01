@@ -18,18 +18,20 @@ class Taster_v2 {
     bool ersterKlickErkannt;
     unsigned long letzterKlickMillis;
     bool langKlickErkannt;
+    bool ignoreBisLoslassen; // nach reset(): laufenden Druck ignorieren, bis losgelassen
 
   public:
     int einfacherKlickZaehler;
     int doppelklickZaehler;
     int langKlickZaehler;
-    
+
     int isPressed();
 
     // Der Konstruktor akzeptiert jetzt den Modus (Standardwert ist INPUT_PULLDOWN, falls nichts übergeben wird)
-    Taster_v2(int pin, int modus = INPUT_PULLDOWN, unsigned long entprellen = 20, unsigned long doppelklickZ = 400, unsigned long langKlickZ = 1000);
-    
+    Taster_v2(int pin, int modus = INPUT_PULLDOWN, unsigned long entprellen = 20, unsigned long doppelklickZ = 350, unsigned long langKlickZ = 700);
+
     void klickenErkennen();
+    void reset(); // Zähler + Zustand zurücksetzen, laufenden Druck verbrauchen
 };
 
 #endif

@@ -23,6 +23,7 @@ bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
 static const char* captiveSsid = "PixelBoard";
 static unsigned long lastWifiBeginMs = 0;
+static unsigned long firstWifiAttemptMs = 0;
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
@@ -99,14 +100,24 @@ void beginWifiConnection() {
     WiFi.disconnect(false, false);
     WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
     lastWifiBeginMs = millis();
+    if (firstWifiAttemptMs == 0) firstWifiAttemptMs = lastWifiBeginMs;
     Serial.println("Verbinde mit WLAN: " + wifiSsid);
 }
 
 void maintainWifiConnection() {
-    if (!hasWifiCredentials()) return;
-    if (WiFi.status() == WL_CONNECTED) return;
+    if (!hasWifiCredentials()) {
+        startCaptivePortal();
+        return;
+    }
+    if (WiFi.status() == WL_CONNECTED) {
+        stopCaptivePortal();
+        return;
+    }
 
     unsigned long now = millis();
+    if (firstWifiAttemptMs != 0 && now - firstWifiAttemptMs > 20000UL) {
+        startCaptivePortal();
+    }
     if (lastWifiBeginMs == 0 || now - lastWifiBeginMs > 30000UL) {
         beginWifiConnection();
     }
@@ -143,7 +154,10 @@ void loadDeviceSettings() {
 
     
 
-    Serial.printf("DHT geladen: GPIO %d, DHT%d\n", currentDhtPin, currentDhtType);
+    Serial.print("DHT geladen: GPIO ");
+    Serial.print(currentDhtPin);
+    Serial.print(", DHT");
+    Serial.println(currentDhtType);
 }
 
 
@@ -160,11 +174,11 @@ static JsonObject userObject(JsonDocument& doc, const String& user) {
 static int clockIndexFromLegacy(int idx);
 
 static void removeLegacyUserKeys(JsonObject obj) {
-    if (!obj["t"].is<const char*>()) {
+    if (!obj["t"].is<const char*>() && obj["theme"].is<int>()) {
         int oldTheme = obj["theme"] | g_themeIndex;
         obj["t"] = String(themeCode(oldTheme));
     }
-    if (!obj["u"].is<const char*>()) {
+    if (!obj["u"].is<const char*>() && obj["clock"].is<int>()) {
         int oldClock = clockIndexFromLegacy(obj["clock"] | g_clockStyle);
         obj["u"] = String(clockCode(oldClock));
     }
@@ -236,6 +250,30 @@ void loadConfigForUser(String user) {
     if (currentCity != alteStadt) forceWeatherUpdate = true;
     Serial.println("Config geladen: User=" + currentUser + ", Stadt=" + currentCity +
                    ", Design=" + String(themeName(g_themeIndex)) + ", Uhr=" + String(clockStyleName(g_clockStyle)));
+}
+
+void ensureUserExists(String user) {
+    user.trim();
+    if (user == "") return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    if (!doc[user].is<JsonObject>()) {
+        String oldCity = doc[user].is<const char*>() ? doc[user].as<String>() : "";
+        JsonObject obj = doc[user].to<JsonObject>();
+        if (oldCity != "") obj["c"] = oldCity;
+
+        File file = LittleFS.open("/config.json", "w");
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+        }
+    }
 }
 
 void saveConfig(String user, String city) {
@@ -334,6 +372,14 @@ void handleRoot() {
 
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
+    html += "<div class='card'><h3>User</h3>";
+    if (currentUser == "") html += "<p>Kein User aktiv.</p>";
+    else html += "<p>Aktiv: <b>" + htmlEscape(currentUser) + "</b></p>";
+    html += "<form action='/doLogin' method='POST'>";
+    html += "<input type='text' name='username' placeholder='Username' value='" + htmlEscape(currentUser) + "' required><br>";
+    html += "<input type='submit' value='Login / Registrieren'></form>";
+    html += "<p><a href='/logout'>Logout</a></p></div>";
+
     html += "<div class='card'><h3>WLAN</h3>";
     if (wifiConnected) {
         html += "<p class='ok'>Verbunden mit <b>" + htmlEscape(WiFi.SSID()) + "</b></p>";
@@ -377,6 +423,8 @@ void handleRoot() {
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
+        u.trim();
+        ensureUserExists(u);
         loadConfigForUser(u);
     }
     server.sendHeader("Location", "/");
@@ -418,7 +466,7 @@ void handleUpdateClock() {
 
 
 void handleLogout() {
-    loadConfigForUser("default");
+    loadConfigForUser("");
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -438,6 +486,16 @@ void startCaptivePortal() {
     }
 }
 
+void stopCaptivePortal() {
+    if (!captivePortalActive) return;
+
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_STA);
+    captivePortalActive = false;
+    Serial.println("Captive Portal beendet, Access Point ist aus.");
+}
+
 static void redirectToPortal() {
     String url = captivePortalActive ? ("http://" + WiFi.softAPIP().toString() + "/") : "/";
     server.sendHeader("Location", url, true);
@@ -448,7 +506,39 @@ static void handleCaptiveProbe() {
     redirectToPortal();
 }
 
+static String contentTypeForPath(const String& path) {
+    if (path.endsWith(".html")) return "text/html";
+    if (path.endsWith(".css")) return "text/css";
+    if (path.endsWith(".js")) return "application/javascript";
+    if (path.endsWith(".json")) return "application/json";
+    if (path.endsWith(".svg")) return "image/svg+xml";
+    if (path.endsWith(".png")) return "image/png";
+    if (path.endsWith(".jpg") || path.endsWith(".jpeg")) return "image/jpeg";
+    if (path.endsWith(".ico")) return "image/x-icon";
+    return "application/octet-stream";
+}
+
+static bool serveLittleFsFile(String path) {
+    if (path.endsWith("/")) path += "index.html";
+
+    String gzPath = path + ".gz";
+    bool gz = LittleFS.exists(gzPath);
+    String filePath = gz ? gzPath : path;
+    if (!LittleFS.exists(filePath)) return false;
+
+    File file = LittleFS.open(filePath, "r");
+    if (!file) return false;
+
+    if (gz) server.sendHeader("Content-Encoding", "gzip");
+    server.sendHeader("Cache-Control", "public, max-age=86400");
+    server.streamFile(file, contentTypeForPath(path));
+    file.close();
+    return true;
+}
+
 static void handleNotFound() {
+    if (serveLittleFsFile(server.uri())) return;
+
     if (captivePortalActive) {
         redirectToPortal();
     } else {
@@ -542,7 +632,12 @@ void printTopThree() {
 
     Serial.println("--- TOP 3 HIGHSCORES ---");
     for (int i = 0; i < min(count, 3); i++) {
-        Serial.printf("%d. %s: %d Punkte\n", i + 1, scores[i].name.c_str(), scores[i].score);
+        Serial.print(i + 1);
+        Serial.print(". ");
+        Serial.print(scores[i].name);
+        Serial.print(": ");
+        Serial.print(scores[i].score);
+        Serial.println(" Punkte");
     }
     Serial.println("------------------------");
 }

@@ -4,10 +4,13 @@
 #include "HardwareUtils.h"
 #include "Config.h"
 #include "SoundUtils.h" // NEU
+#include "Joystick.h"
 
 
 extern volatile bool taskWechselAnforderung;
 extern volatile int aktiverTask;
+extern Joystick joystick1;
+extern Joystick joystick3;
 
 // Global verfügbar machen
 extern void drawDigitW(int x, int y, int n, CRGB c);
@@ -15,17 +18,36 @@ extern void drawChar3x5(int x, int y, char c, CRGB color);
 
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
-#define PIN_X 34
-#define PIN_Y 35
-#define PIN_SW 13 
 
 enum GameState { STATE_MENU, STATE_SHOW_HIGHSCORES, STATE_PLAYING, STATE_GAMEOVER };
 GameState currentState = STATE_MENU;
 
 struct Point { int x, y; };
 
+static bool applySnakeInput(Joystick& stick, Point& dir) {
+    int xPerc = stick.readXPercent();
+    int yPerc = stick.readYPercent();
+
+    if (yPerc > 70 && dir.x == 0) {
+        dir = {1, 0};
+        return true;
+    }
+    if (yPerc < -70 && dir.x == 0) {
+        dir = {-1, 0};
+        return true;
+    }
+    if (xPerc < -70 && dir.y == 0) {
+        dir = {0, 1};
+        return true;
+    }
+    if (xPerc > 70 && dir.y == 0) {
+        dir = {0, -1};
+        return true;
+    }
+    return false;
+}
+
 void taskSnakeHandler(void *pvParameters) {
-    pinMode(PIN_SW, INPUT_PULLDOWN);
     Point snake[100]; 
     int snakeLength = 3; 
     Point dir = {1, 0}; 
@@ -48,7 +70,7 @@ void taskSnakeHandler(void *pvParameters) {
         }
         taskWechselAnforderung = false;
         
-        bool clicked = (digitalRead(PIN_SW) == HIGH);
+        bool clicked = joystick1.isPressed() || joystick3.isPressed();
         static bool lastClicked = false;
         bool btnPress = (clicked && !lastClicked);
         lastClicked = clicked;
@@ -104,11 +126,9 @@ void taskSnakeHandler(void *pvParameters) {
             }
 
           case STATE_PLAYING: { // <-- KLAMMERN ZUGEFÜGT
-                int rawX = analogRead(PIN_X); int rawY = analogRead(PIN_Y);
-                if (rawY > 2800 && dir.x == 0) { dir.x = 1; dir.y = 0; }      
-                else if (rawY < 400 && dir.x == 0) { dir.x = -1; dir.y = 0; } 
-                else if (rawX < 400 && dir.y == 0) { dir.y = 1; dir.x = 0; }  
-                else if (rawX > 2800 && dir.y == 0) { dir.y = -1; dir.x = 0; }
+                if (!applySnakeInput(joystick1, dir)) {
+                    applySnakeInput(joystick3, dir);
+                }
 
                 if (millis() - lastMoveTime > moveInterval) {
                     lastMoveTime = millis();

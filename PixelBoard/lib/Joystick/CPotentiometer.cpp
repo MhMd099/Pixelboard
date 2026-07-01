@@ -6,7 +6,9 @@
 
 CPotentiometer::CPotentiometer(int pin) {
   this->pin = pin;
-  pinMode(pin, INPUT);
+  if (pin >= 0) {
+    pinMode(pin, INPUT);
+  }
   
   // Setze Standardbereiche
   minValue = DEFAULT_MIN_RAW;
@@ -20,6 +22,7 @@ CPotentiometer::CPotentiometer(int pin) {
 }
 
 int CPotentiometer::readRaw() {
+  if (this->pin < 0) return 0;
   return analogRead(this->pin);
 }
 
