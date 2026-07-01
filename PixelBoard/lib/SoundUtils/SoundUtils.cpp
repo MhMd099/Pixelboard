@@ -11,6 +11,8 @@ QueueHandle_t soundQueue = NULL;
 
 volatile bool musicPlaying = false;
 volatile int musicBeat = 0;
+static volatile uint32_t soundSerial = 0;
+static volatile uint8_t activeSoundPriority = 0;
 
 struct Note {
   uint16_t freq;
@@ -33,6 +35,16 @@ static const Note melodie[] = {
 
 static const int melodyLen =
     sizeof(melodie) / sizeof(melodie[0]);
+
+static uint8_t soundPriority(SoundType type)
+{
+  if(type == SND_BOSS) return 5;
+  if(type == SND_EXPLOSION || type == SND_DIE) return 4;
+  if(type == SND_HIT || type == SND_EAT) return 3;
+  if(type == SND_SHOOT) return 2;
+  if(type == SND_BUFF || type == SND_UI || type == SND_SELECT || type == SND_SWIPE) return 1;
+  return 0;
+}
 
 static void initI2S()
 {
@@ -94,7 +106,12 @@ static void playSilence()
       portMAX_DELAY);
 }
 
-static void playEffect(int freq,int durationMs)
+static bool interrupted(uint32_t localSerial)
+{
+  return soundSerial != localSerial;
+}
+
+static void playEffect(int freq,int durationMs,uint32_t localSerial)
 {
   size_t written;
 
@@ -117,6 +134,9 @@ static void playEffect(int freq,int durationMs)
 
   for(int i=0;i<samples;i++)
   {
+    if((i & 0x3F) == 0 && interrupted(localSerial))
+      break;
+
     int16_t sample =
       ((i/halfPeriod)&1)
       ?22000
@@ -135,7 +155,8 @@ static void playEffect(int freq,int durationMs)
 
 static void playMusicNote(
     int freq,
-    int durationMs)
+    int durationMs,
+    uint32_t localSerial)
 {
   size_t written;
 
@@ -148,6 +169,9 @@ static void playMusicNote(
 
     for(int i=0;i<samples;i++)
     {
+      if((i & 0x3F) == 0 && interrupted(localSerial))
+        return;
+
       i2s_write(
           I2S_NUM_0,
           &zero,
@@ -167,6 +191,9 @@ static void playMusicNote(
 
   for(int i=0;i<samples;i++)
   {
+    if((i & 0x3F) == 0 && interrupted(localSerial))
+      return;
+
     int16_t sample =
       ((i/halfPeriod)&1)
       ?2200
@@ -190,13 +217,58 @@ static void audioTask(void *pvParameters)
 
   for(;;)
   {
-    if(musicPlaying)
+    if(soundQueue != NULL &&
+       xQueueReceive(soundQueue, &current, musicPlaying ? 0 : pdMS_TO_TICKS(5)))
+    {
+      musicIndex = 0;
+
+      int freq = 1000;
+      int dur  = 30;
+
+      if(current == SND_SWIPE || current == SND_UI)
+      {
+        freq = 1200;
+        dur  = 30;
+      }
+      else if(current == SND_SELECT || current == SND_BUFF)
+      {
+        freq = 1500;
+        dur  = 45;
+      }
+      else if(current == SND_EAT || current == SND_SHOOT)
+      {
+        freq = 1850;
+        dur  = 36;
+      }
+      else if(current == SND_HIT)
+      {
+        freq = 760;
+        dur  = 55;
+      }
+      else if(current == SND_DIE || current == SND_EXPLOSION)
+      {
+        freq = 330;
+        dur  = 95;
+      }
+      else if(current == SND_BOSS)
+      {
+        freq = 180;
+        dur  = 100;
+      }
+
+      activeSoundPriority = soundPriority(current);
+      uint32_t localSerial = soundSerial;
+      playEffect(freq, dur, localSerial);
+      activeSoundPriority = 0;
+    }
+    else if(musicPlaying)
     {
       const Note n = melodie[musicIndex];
+      uint32_t localSerial = soundSerial;
 
-      playMusicNote(n.freq, n.dur);
+      playMusicNote(n.freq, n.dur, localSerial);
 
-      playMusicNote(0, 10);
+      playMusicNote(0, 10, localSerial);
 
       musicIndex++;
 
@@ -204,40 +276,6 @@ static void audioTask(void *pvParameters)
         musicIndex = 0;
 
       musicBeat++;
-    }
-    else if(soundQueue != NULL &&
-            xQueueReceive(
-              soundQueue,
-              &current,
-              pdMS_TO_TICKS(5)))
-    {
-      musicIndex = 0;
-
-      int freq = 1000;
-      int dur  = 30;
-
-      if(current == SND_SWIPE)
-      {
-        freq = 1200;
-        dur  = 30;
-      }
-      else if(current == SND_SELECT)
-      {
-        freq = 1500;
-        dur  = 45;
-      }
-      else if(current == SND_EAT)
-      {
-        freq = 1800;
-        dur  = 40;
-      }
-      else if(current == SND_DIE)
-      {
-        freq = 400;
-        dur  = 90;
-      }
-
-      playEffect(freq, dur);
     }
     else
     {
@@ -268,6 +306,11 @@ void playSound(SoundType type)
 {
   if(soundQueue != NULL)
   {
+    uint8_t priority = soundPriority(type);
+    if(activeSoundPriority > 0 && priority < activeSoundPriority)
+      return;
+
+    soundSerial++;
     xQueueReset(soundQueue);
 
     xQueueSend(soundQueue,&type,0);
@@ -283,4 +326,15 @@ void startMusic()
 void stopMusic()
 {
   musicPlaying = false;
+}
+
+namespace Audio {
+  void playShot() { playSound(SND_SHOOT); }
+  void playExplosion() { playSound(SND_EXPLOSION); }
+  void playBoss() { playSound(SND_BOSS); }
+  void playHit() { playSound(SND_HIT); }
+  void playBuff() { playSound(SND_BUFF); }
+  void playUI() { playSound(SND_UI); }
+  void startMusic() { ::startMusic(); }
+  void stopMusic() { ::stopMusic(); }
 }

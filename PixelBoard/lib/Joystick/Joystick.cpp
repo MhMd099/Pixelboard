@@ -128,7 +128,7 @@ bool Joystick::isPressed() {
   if (isI2C) {
     return i2cButtonPressed;
   } else {
-    return (digitalRead(tasterPin) == HIGH);
+    return (tasterModus == INPUT_PULLUP) ? (digitalRead(tasterPin) == LOW) : (digitalRead(tasterPin) == HIGH);
   }
 }
 

@@ -5,6 +5,7 @@
 #include <DNSServer.h>
 #include <WiFi.h>
 #include "HardwareUtils.h"
+#include "RaumschiffGame.h"
 
 const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
 
@@ -22,6 +23,7 @@ DNSServer dnsServer;
 bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
 static const char* captiveSsid = "PixelBoard";
+static const char* deviceConfigPath = "/device.json";
 static unsigned long lastWifiBeginMs = 0;
 static unsigned long firstWifiAttemptMs = 0;
 
@@ -197,6 +199,42 @@ static int readHighScore(JsonVariant data) {
     return obj["h"] | (obj["highscore"] | 0);
 }
 
+static String loadDefaultCity() {
+    String city = "Innsbruck";
+    if (!LittleFS.exists(deviceConfigPath)) return city;
+
+    File file = LittleFS.open(deviceConfigPath, "r");
+    if (!file) return city;
+
+    JsonDocument doc;
+    if (!deserializeJson(doc, file) && doc["city"].is<const char*>()) {
+        city = doc["city"].as<String>();
+        city.trim();
+        if (city == "") city = "Innsbruck";
+    }
+    file.close();
+    return city;
+}
+
+static void saveDefaultCity(const String& city) {
+    JsonDocument doc;
+    doc["city"] = city;
+
+    File file = LittleFS.open(deviceConfigPath, "w");
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+        Serial.println("Default-Stadt gespeichert: " + city);
+    }
+}
+
+static bool isScoreEntry(JsonPair kv) {
+    String key = kv.key().c_str();
+    if (key == "" || key[0] == '_') return false;
+    if (!kv.value().is<JsonObject>()) return false;
+    return readHighScore(kv.value()) > 0;
+}
+
 static int clockIndexFromLegacy(int idx) {
     if (idx == 3) return 2;
     if (idx == 2) return 0;
@@ -210,11 +248,12 @@ void loadConfigForUser(String user) {
     String alteStadt = currentCity;
     int themeIdx = 0;
     int clockIdx = 0;
+    String defaultCity = loadDefaultCity();
 
     if (user == "") {
-        currentCity = "Innsbruck";
+        currentCity = defaultCity;
     } else {
-        currentCity = "Innsbruck";
+        currentCity = defaultCity;
         if (LittleFS.exists("/config.json")) {
             File file = LittleFS.open("/config.json", "r");
             JsonDocument doc;
@@ -222,7 +261,7 @@ void loadConfigForUser(String user) {
                 if (doc[user].is<JsonObject>()) {
                     JsonObject obj = doc[user].as<JsonObject>();
                     currentCity = obj["c"].is<const char*>() ? obj["c"].as<String>() :
-                                  (obj["city"].is<const char*>() ? obj["city"].as<String>() : "Innsbruck");
+                                  (obj["city"].is<const char*>() ? obj["city"].as<String>() : defaultCity);
 
                     if (obj["t"].is<const char*>()) {
                         const char* tCode = obj["t"];
@@ -372,6 +411,8 @@ void handleRoot() {
 
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
+    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a></p>";
+
     html += "<div class='card'><h3>User</h3>";
     if (currentUser == "") html += "<p>Kein User aktiv.</p>";
     else html += "<p>Aktiv: <b>" + htmlEscape(currentUser) + "</b></p>";
@@ -418,6 +459,82 @@ void handleRoot() {
 
     html += "</div></body></html>";
     server.send(200, "text/html", html);
+}
+
+void handleShooterPage() {
+    String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
+<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:860px;margin:0 auto;padding:10px}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.row{display:grid;grid-template-columns:145px 1fr 64px;align-items:center;gap:8px;margin:10px 0}input,select,button{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line{background:#17243a;border-radius:6px;padding:7px}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2{grid-template-columns:1fr}.row{grid-template-columns:112px 1fr 52px}}</style>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='role'>Web = Gegner / GameMaster. P1 = Joystick 1, P2 = Joystick 2/I2C.</div><div class='score' id='score'>Team Score 0</div>
+<div class='panel'><h2>Spieler</h2><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='P1 Name'><input id='p2name' placeholder='P2 Name'></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
+<div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
+<div class='panel'><h2>Director</h2><label><input type='checkbox' id='autoWeb'> Auto-Spawns auch mit Web-Gamemaster</label><div class='row'><label>Max Gegner</label><input id='maxA' type='range' min='1' max='16' value='8'><output id='maxAo'>8</output></div><div class='row'><label>Spawn ms</label><input id='spawnMs' type='range' min='50' max='5000' step='50' value='1200'><output id='spawnMso'>1200</output></div><div class='row'><label>Move ms</label><input id='moveMs' type='range' min='20' max='1000' step='10' value='220'><output id='moveMso'>220</output></div><div class='row'><label>Klein %</label><input id='smallP' type='range' min='0' max='100' step='5' value='35'><output id='smallPo'>35</output></div><div class='row'><label>PowerUp %</label><input id='powerP' type='range' min='0' max='100' step='5' value='25'><output id='powerPo'>25</output></div><button class='full' onclick='applyDirector()'>Director anwenden</button><div class='stat' id='directorStats'></div></div>
+<div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='2000' step='5' value='25'><output id='spawnHpo'>25</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='8' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
+<div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='5000' step='50' value='500'><output id='bossHpo'>500</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='3'><output id='bossSizeo'>3</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='2000' step='10' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='5' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='8' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
+<script>let synced=false;const labels=['P1 Joystick 1','P2 Joystick 2/I2C'];const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function playerHtml(p,i){let life=p.alive?'lebt':'tot';return `<div class='player p${i}'><b>${labels[i]}</b><div>${p.name} - <span class='${p.alive?'':'dead'}'>${life}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?'Boss HP '+j.boss.hp+' / '+j.boss.maxHp+' Size '+j.boss.size:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span>`;by('lastMatch').textContent=j.lastMatch.score>0?`Letztes Match: ${j.lastMatch.name} - ${j.lastMatch.score} (P1 ${j.lastMatch.p1}, P2 ${j.lastMatch.p2})`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state()},700);ping();state();</script></body></html>)HTML";
+    server.send(200, "text/html", html);
+}
+
+void handleShooterState() {
+    server.send(200, "application/json", raumschiffStateJson());
+}
+
+void handleShooterInput() {
+    int8_t dx = server.hasArg("dx") ? (int8_t)server.arg("dx").toInt() : 0;
+    int8_t dy = server.hasArg("dy") ? (int8_t)server.arg("dy").toInt() : 0;
+    bool shoot = server.hasArg("shoot") && server.arg("shoot").toInt() != 0;
+    bool dash = server.hasArg("dash") && server.arg("dash").toInt() != 0;
+    bool charge = server.hasArg("charge") && server.arg("charge").toInt() != 0;
+    raumschiffSetWebInput(dx, dy, shoot, dash, charge);
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterSpawn() {
+    uint8_t size = server.hasArg("size") ? (uint8_t)server.arg("size").toInt() : 1;
+    uint16_t hp = server.hasArg("hp") ? (uint16_t)server.arg("hp").toInt() : 0;
+    uint8_t speed = server.hasArg("speed") ? (uint8_t)server.arg("speed").toInt() : 1;
+    uint8_t kind = server.hasArg("kind") ? (uint8_t)server.arg("kind").toInt() : ENEMY_SMALL;
+    raumschiffRequestWebSpawn(size, hp, speed, kind);
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterBoss() {
+    uint16_t hp = server.hasArg("hp") ? (uint16_t)server.arg("hp").toInt() : 500;
+    uint8_t size = server.hasArg("size") ? (uint8_t)server.arg("size").toInt() : 3;
+    raumschiffRequestBoss(hp, size);
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterHazard() {
+    uint8_t type = server.hasArg("type") ? (uint8_t)server.arg("type").toInt() : HAZARD_BLACK_HOLE;
+    uint8_t radius = server.hasArg("radius") ? (uint8_t)server.arg("radius").toInt() : 2;
+    uint8_t speed = server.hasArg("speed") ? (uint8_t)server.arg("speed").toInt() : 2;
+    uint16_t hp = server.hasArg("hp") ? (uint16_t)server.arg("hp").toInt() : 120;
+    raumschiffRequestHazard(type, radius, speed, hp);
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterPowerUp() {
+    raumschiffRequestPowerUp();
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterDirector() {
+    uint16_t spawnMs = server.hasArg("spawn") ? (uint16_t)server.arg("spawn").toInt() : 1700;
+    uint8_t maxAsteroids = server.hasArg("max") ? (uint8_t)server.arg("max").toInt() : 4;
+    uint8_t smallPercent = server.hasArg("small") ? (uint8_t)server.arg("small").toInt() : 45;
+    uint16_t moveMs = server.hasArg("move") ? (uint16_t)server.arg("move").toInt() : 220;
+    uint8_t powerChance = server.hasArg("power") ? (uint8_t)server.arg("power").toInt() : 25;
+    bool autoWeb = server.hasArg("auto") && server.arg("auto").toInt() != 0;
+    raumschiffSetDirectorSettings(spawnMs, maxAsteroids, smallPercent, moveMs, powerChance, autoWeb);
+    server.send(200, "application/json", "{\"ok\":1}");
+}
+
+void handleShooterNames() {
+    if (server.hasArg("p1"))
+        raumschiffSetPlayerName(0, server.arg("p1"));
+    if (server.hasArg("p2"))
+        raumschiffSetPlayerName(1, server.arg("p2"));
+    server.send(200, "application/json", "{\"ok\":1}");
 }
 
 void handleDoLogin() {
@@ -548,6 +665,15 @@ static void handleNotFound() {
 
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
+    server.on("/shooter", HTTP_GET, handleShooterPage);
+    server.on("/shooter/state", HTTP_GET, handleShooterState);
+    server.on("/shooter/input", HTTP_GET, handleShooterInput);
+    server.on("/shooter/spawn", HTTP_GET, handleShooterSpawn);
+    server.on("/shooter/boss", HTTP_GET, handleShooterBoss);
+    server.on("/shooter/hazard", HTTP_GET, handleShooterHazard);
+    server.on("/shooter/powerup", HTTP_GET, handleShooterPowerUp);
+    server.on("/shooter/director", HTTP_GET, handleShooterDirector);
+    server.on("/shooter/names", HTTP_GET, handleShooterNames);
     server.on("/doLogin", HTTP_POST, handleDoLogin);
     server.on("/saveWifi", HTTP_POST, handleSaveWifi);
     server.on("/updateCity", HTTP_POST, handleUpdateCity);

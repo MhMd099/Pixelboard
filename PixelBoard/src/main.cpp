@@ -595,7 +595,7 @@ void taskI2CJoystickHandler(void *pv)
 void setup()
 {
     Serial.begin(115200);
-    delay(500);
+    vTaskDelay(pdMS_TO_TICKS(500));
 
     clickCounterMutex = xSemaphoreCreateMutex();
     displayMutex = xSemaphoreCreateMutex();
@@ -645,7 +645,7 @@ void setup()
         &handleRaumschiff,
         1);
     joystick2.setInverted(true, true);
-    delay(50);
+    vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
     joystick2.kalibrieren();
     joystick3.kalibrieren();

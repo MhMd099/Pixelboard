@@ -50,6 +50,6 @@ void taskRaumschiffHandler(void *pvParameters)
 
         unlockDisplay();
 
-        vTaskDelay(60 / portTICK_PERIOD_MS);
+        vTaskDelay(pdMS_TO_TICKS(16));
     }
 }
