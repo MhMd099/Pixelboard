@@ -1,14 +1,30 @@
-#pragma once
-#include <Arduino.h>
-#include <FastLED.h>
+#ifndef RAUMSCHIFFGAME_H
+#define RAUMSCHIFFGAME_H
 
-enum GameStateRaumschiff {
-    STATE_RS_PLAYING,
-    STATE_RS_GAMEOVER
+#include <Arduino.h>
+
+struct Spieler
+{
+    int x;
+    int y;
+    uint8_t size; // NEU
 };
 
-void RaumschiffInit();
+struct Asteroid
+{
+    int x;
+    int y;
+    uint8_t size; // NEU
 
-void RaumschiffUpdate(int xInput, int yInput, bool shoot);
+    uint8_t speed;
+    uint8_t type;
+};
 
-void RaumschiffRender();
+extern Spieler spieler;
+extern Asteroid asteroiden[];
+extern const uint8_t asteroidAnzahl;
+
+void raumschiffResetGame();
+void raumschiffGameTick();
+
+#endif

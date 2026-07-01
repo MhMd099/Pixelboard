@@ -1,134 +1,167 @@
 #include "RaumschiffGame.h"
+
+#include <FastLED.h>
+#include <Arduino.h>
+
 #include "HardwareUtils.h"
-#include "SoundUtils.h"
-#include "Config.h"
+#include "Joystick.h"
+#include "CollisionSystem.h"
 
-struct Bullet {
-    int x;
-    int y;
-    bool active;
+extern Joystick joystick1;
+extern Joystick joystick3;
+
+static bool gameInitialized = false;
+static bool gameActive = false;
+static int lastTaskState = -1;
+
+Spieler spieler;
+
+struct Stern
+{
+    float x;
+    uint8_t y;
+    uint8_t speed;
+    uint8_t brightness;
 };
 
-struct Enemy {
-    int x;
-    int y;
-    bool active;
-};
+static const uint8_t sternAnzahl = 45;
+static Stern sterne[sternAnzahl];
 
-static int shipX = 16;
-static int shipY = 14;
+const uint8_t asteroidAnzahl = 6;
+Asteroid asteroiden[asteroidAnzahl];
 
-static Bullet bullets[10];
-static Enemy enemies[6];
 
-static unsigned long lastEnemySpawn = 0;
-static unsigned long lastShot = 0;
+// ---------------- INPUT ----------------
+void raumschiffHandleInput()
+{
+    int x = joystick1.readXPercent();
+    int y = joystick1.readYPercent();
 
-void RaumschiffInit() {
+    if (abs(x) < 25)
+        x = joystick3.readXPercent();
 
-    shipX = 16;
-    shipY = 14;
+    if (abs(y) < 25)
+        y = joystick3.readYPercent();
 
-    for (int i = 0; i < 10; i++) bullets[i].active = false;
-    for (int i = 0; i < 6; i++) enemies[i].active = false;
+    if (x > 60) spieler.y--;
+    if (x < -60) spieler.y++;
+    if (y > 60) spieler.x++;
+    if (y < -60) spieler.x--;
+
+    spieler.x = constrain(spieler.x, 1, 30);
+    spieler.y = constrain(spieler.y, 1, 14);
 }
 
-static void spawnEnemy() {
 
-    for (int i = 0; i < 6; i++) {
-        if (!enemies[i].active) {
-            enemies[i].x = random(0, 32);
-            enemies[i].y = 0;
-            enemies[i].active = true;
-            break;
+// ---------------- UPDATE WORLD ----------------
+static void raumschiffUpdateState()
+{
+    for (int i = 0; i < sternAnzahl; i++)
+    {
+        sterne[i].x -= sterne[i].speed * 0.08f;
+
+        if (sterne[i].x < 0)
+        {
+            sterne[i].x = random(32, 40);
+            sterne[i].y = random(0, 16);
+        }
+    }
+
+    for (int i = 0; i < asteroidAnzahl; i++)
+    {
+        asteroiden[i].x -= asteroiden[i].speed;
+
+        if (asteroiden[i].x < 0)
+        {
+            asteroiden[i].x = random(32, 50);
+            asteroiden[i].y = random(2, 14);
         }
     }
 }
 
-static void shoot() {
 
-    if (millis() - lastShot < 200) return;
-    lastShot = millis();
+// ---------------- RENDER ----------------
+static void raumschiffRender()
+{
+    FastLED.clear();
 
-    for (int i = 0; i < 10; i++) {
-        if (!bullets[i].active) {
-            bullets[i].x = shipX;
-            bullets[i].y = shipY - 1;
-            bullets[i].active = true;
-            playSound(SND_SELECT);
-            break;
-        }
-    }
-}
-
-void RaumschiffUpdate(int xInput, int yInput, bool shootBtn) {
-
-    shipX += xInput / 40;
-
-    if (shipX < 0) shipX = 0;
-    if (shipX > 31) shipX = 31;
-
-    if (shootBtn) shoot();
-
-    if (millis() - lastEnemySpawn > 800) {
-        spawnEnemy();
-        lastEnemySpawn = millis();
+    for (int i = 0; i < sternAnzahl; i++)
+    {
+        setPixel((int)sterne[i].x,
+                 sterne[i].y,
+                 CRGB(sterne[i].brightness,
+                      sterne[i].brightness,
+                      sterne[i].brightness));
     }
 
-    for (int i = 0; i < 10; i++) {
-        if (bullets[i].active) {
-            bullets[i].y--;
-
-            if (bullets[i].y < 0)
-                bullets[i].active = false;
-        }
-    }
-
-    for (int i = 0; i < 6; i++) {
-        if (enemies[i].active) {
-            enemies[i].y++;
-
-            if (enemies[i].y > 15)
-                enemies[i].active = false;
-        }
-    }
-
-    // Kollision
-    for (int b = 0; b < 10; b++) {
-        for (int e = 0; e < 6; e++) {
-
-            if (!bullets[b].active || !enemies[e].active) continue;
-
-            if (bullets[b].x == enemies[e].x &&
-                bullets[b].y == enemies[e].y) {
-
-                bullets[b].active = false;
-                enemies[e].active = false;
-
-                playSound(SND_EAT);
+    for (int i = 0; i < asteroidAnzahl; i++)
+    {
+        for (int dx = 0; dx < asteroiden[i].size; dx++)
+        {
+            for (int dy = 0; dy < asteroiden[i].size; dy++)
+            {
+                setPixel(
+                    asteroiden[i].x + dx,
+                    asteroiden[i].y + dy,
+                    CRGB(120, 120, 120));
             }
         }
     }
-}
 
-void RaumschiffRender() {
-
-    FastLED.clear();
-
-    // Player Ship
-    setPixel(shipX, shipY, CRGB::Blue);
-
-    // Bullets
-    for (int i = 0; i < 10; i++) {
-        if (bullets[i].active)
-            setPixel(bullets[i].x, bullets[i].y, CRGB::White);
-    }
-
-    // Enemies
-    for (int i = 0; i < 6; i++) {
-        if (enemies[i].active)
-            setPixel(enemies[i].x, enemies[i].y, CRGB::Red);
+    for (int dx = 0; dx < spieler.size; dx++)
+    {
+        for (int dy = 0; dy < spieler.size; dy++)
+        {
+            setPixel(
+                spieler.x + dx,
+                spieler.y + dy,
+                CRGB(0, 255, 0));
+        }
     }
 
     FastLED.show();
+}
+
+
+// ---------------- RESET GAME ----------------
+void raumschiffResetGame()
+{
+    spieler.x = 10;
+    spieler.y = 10;
+    spieler.size = 3;
+
+    gameActive = true;
+
+    for (int i = 0; i < sternAnzahl; i++)
+    {
+        sterne[i].x = random(10, 32);
+        sterne[i].y = random(0, 16);
+        sterne[i].speed = random(1, 4);
+        sterne[i].brightness = random(40, 180);
+    }
+
+    for (int i = 0; i < asteroidAnzahl; i++)
+    {
+        asteroiden[i].x = random(32, 50);
+        asteroiden[i].y = random(2, 14);
+        asteroiden[i].speed = random(1, 3);
+        asteroiden[i].type = random(0, 3);
+        asteroiden[i].size = 3;
+    }
+}
+
+
+// ---------------- GAME LOOP ----------------
+void raumschiffGameTick()
+{
+    if (!gameInitialized)
+    {
+        raumschiffResetGame();
+        gameInitialized = true;
+    }
+
+    raumschiffHandleInput();
+    raumschiffUpdateState();
+    collisionUpdate();
+    raumschiffRender();
 }

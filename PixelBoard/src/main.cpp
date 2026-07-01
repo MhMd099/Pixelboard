@@ -91,8 +91,8 @@ const uint32_t menuIcons[7] = {
     0x74B5E, // 2: Snake
     0x49249, // 3: Musik
     0x24924, // 4: Animationen
-    0x72497,  // 5: DHT
-     0x5A5A5  // 6 Raumschiff (einfach placeholder)
+    0x72497, // 5: DHT
+    0x5A5A5  // 6 Raumschiff (einfach placeholder)
 
 };
 
@@ -329,53 +329,53 @@ void printMenu()
             }
         break;
 
-  case 6:
-{
-    // DHT
+    case 6:
+    {
+        // DHT
 
-    drawChar3x5(5,2,'D',
-                themeCol(jetzt/20,255));
+        drawChar3x5(5, 2, 'D',
+                    themeCol(jetzt / 20, 255));
 
-    drawChar3x5(13,2,'H',
-                themeCol(jetzt/20+70,255));
+        drawChar3x5(13, 2, 'H',
+                    themeCol(jetzt / 20 + 70, 255));
 
-    drawChar3x5(21,2,'T',
-                themeCol(jetzt/20+140,255));
+        drawChar3x5(21, 2, 'T',
+                    themeCol(jetzt / 20 + 140, 255));
 
-    break;
-}
+        break;
+    }
 
-case 7:
-{
-    // Raumschiff
+    case 7:
+    {
+        // Raumschiff
 
-    drawChar3x5(3,2,'R',
-                themeCol(jetzt/20,255));
+        drawChar3x5(3, 2, 'R',
+                    themeCol(jetzt / 20, 255));
 
-    drawChar3x5(11,2,'A',
-                themeCol(jetzt/20+40,255));
+        drawChar3x5(11, 2, 'A',
+                    themeCol(jetzt / 20 + 40, 255));
 
-    drawChar3x5(19,2,'U',
-                themeCol(jetzt/20+80,255));
+        drawChar3x5(19, 2, 'U',
+                    themeCol(jetzt / 20 + 80, 255));
 
-    // kleines Schiff
+        // kleines Schiff
 
-    setPixel(16,11,themeCol(jetzt/20+120,255));
-    setPixel(15,12,themeCol(jetzt/20+120,255));
-    setPixel(16,12,themeCol(jetzt/20+120,255));
-    setPixel(17,12,themeCol(jetzt/20+120,255));
-    setPixel(14,13,themeCol(jetzt/20+180,180));
-    setPixel(15,13,themeCol(jetzt/20+180,180));
-    setPixel(16,13,themeCol(jetzt/20+180,180));
-    setPixel(17,13,themeCol(jetzt/20+180,180));
-    setPixel(18,13,themeCol(jetzt/20+180,180));
+        setPixel(16, 11, themeCol(jetzt / 20 + 120, 255));
+        setPixel(15, 12, themeCol(jetzt / 20 + 120, 255));
+        setPixel(16, 12, themeCol(jetzt / 20 + 120, 255));
+        setPixel(17, 12, themeCol(jetzt / 20 + 120, 255));
+        setPixel(14, 13, themeCol(jetzt / 20 + 180, 180));
+        setPixel(15, 13, themeCol(jetzt / 20 + 180, 180));
+        setPixel(16, 13, themeCol(jetzt / 20 + 180, 180));
+        setPixel(17, 13, themeCol(jetzt / 20 + 180, 180));
+        setPixel(18, 13, themeCol(jetzt / 20 + 180, 180));
 
-    break;
-}
-}
+        break;
+    }
+    }
 
-FastLED.show();
-unlockDisplay();
+    FastLED.show();
+    unlockDisplay();
 }
 
 // ==========================================
@@ -397,8 +397,8 @@ TaskHandle_t getTaskHandle(int nummer)
         return handleAnim;
     case 5:
         return handleDHT;
-        case 6:
-    return handleRaumschiff;
+    case 6:
+        return handleRaumschiff;
     default:
         return NULL;
     }
@@ -416,7 +416,7 @@ bool eventSperreAktiv()
 void wechsleZuTask(int zielTask)
 {
     if (zielTask < 0 || zielTask > 6)
-        return; 
+        return;
 
     int vorherigerTask = aktiverTask;
     aktiverTask = -2;
