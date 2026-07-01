@@ -241,7 +241,7 @@ void collisionUpdate()
     /* laser beams -> hazards and asteroids */
     for (uint8_t l = 0; l < laserBeamCount; l++)
     {
-        if (!laserBeams[l].active)
+        if (!laserBeams[l].active || laserBeams[l].damageApplied)
             continue;
 
         for (uint8_t h = 0; h < hazardCount; h++)
@@ -283,6 +283,8 @@ void collisionUpdate()
         if (boss.active &&
             abs(boss.y - laserBeams[l].y) <= (int)(boss.size / 2 + 1))
             raumschiffDamageBoss(laserBeams[l].owner, laserBeams[l].damage);
+
+        laserBeams[l].damageApplied = true;
     }
 
     /* player bullets -> asteroids */

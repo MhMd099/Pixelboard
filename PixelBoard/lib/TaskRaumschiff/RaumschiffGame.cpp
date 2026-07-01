@@ -25,7 +25,7 @@ static Asteroid asteroiden[asteroidCount];
 static const uint8_t powerUpCount = 6;
 static PowerUp powerUps[powerUpCount];
 
-static const uint8_t laserBeamCount = 2;
+static const uint8_t laserBeamCount = 3;
 static LaserBeam laserBeams[laserBeamCount];
 
 static const uint8_t hazardCount = 4;
@@ -46,9 +46,15 @@ static uint32_t nextBossScore = 300;
 static uint32_t lastMatchScore = 0;
 static uint32_t lastMatchP1Score = 0;
 static uint32_t lastMatchP2Score = 0;
+static uint16_t lastMatchP1Kills = 0;
+static uint16_t lastMatchP2Kills = 0;
+static uint16_t lastMatchBosses = 0;
+static uint32_t matchStartMs = 0;
+static uint32_t lastMatchDurationSec = 0;
 static uint32_t slowFieldUntil = 0;
 static uint16_t bossesSpawned = 0;
 static uint8_t bossVolleyCounter = 0;
+static uint32_t lastWebEnergyRegenMs = 0;
 static bool lastFireButtonState[RAUMSCHIFF_MAX_PLAYERS];
 static bool highScoreSaved = false;
 static char playerNames[RAUMSCHIFF_MAX_PLAYERS][16] = {"P1", "P2"};
@@ -71,6 +77,11 @@ static const uint16_t slowFieldDurationMs = 7000;
 static const uint16_t laserDurationMs = 130;
 static const uint16_t bossScoreGapBase = 300;
 static const uint16_t bossScoreGapGrowth = 120;
+static const uint16_t webEnergyMax = 250;
+static const uint16_t webEnergyStart = 110;
+static const uint8_t p2InputAuto = 0;
+static const uint8_t p2InputEsp32 = 1;
+static const uint8_t p2InputI2c = 2;
 
 static portMUX_TYPE webInputMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile uint8_t webSpawnRequestSize = 0;
@@ -85,6 +96,8 @@ static volatile uint8_t webHazardRequestSpeed = 1;
 static volatile uint16_t webHazardRequestHp = 80;
 static volatile uint8_t webPowerUpRequests = 0;
 static volatile uint32_t webLastInputMs = 0;
+static volatile uint16_t webEnergy = webEnergyStart;
+static volatile uint8_t p2InputMode = p2InputAuto;
 static volatile uint16_t directorSpawnIntervalMs = 1200;
 static volatile uint16_t directorAsteroidMoveMs = 220;
 static volatile uint8_t directorMaxActiveAsteroids = 8;
@@ -163,6 +176,75 @@ static uint8_t secondsLeft(uint32_t untilMs)
         return 0;
     uint32_t remaining = (untilMs - now + 999) / 1000;
     return remaining > 255 ? 255 : (uint8_t)remaining;
+}
+
+static void addWebEnergy(uint16_t amount)
+{
+    portENTER_CRITICAL(&webInputMux);
+    uint16_t current = webEnergy;
+    current = current + amount > webEnergyMax ? webEnergyMax : current + amount;
+    webEnergy = current;
+    portEXIT_CRITICAL(&webInputMux);
+}
+
+static bool spendWebEnergy(uint16_t cost)
+{
+    bool ok = false;
+    portENTER_CRITICAL(&webInputMux);
+    webLastInputMs = millis();
+    if (webEnergy >= cost)
+    {
+        webEnergy -= cost;
+        ok = true;
+    }
+    portEXIT_CRITICAL(&webInputMux);
+    return ok;
+}
+
+static String shortPlayerName(uint8_t index)
+{
+    if (index >= RAUMSCHIFF_MAX_PLAYERS)
+        return "???";
+
+    String name = String(playerNames[index]);
+    name.trim();
+    if (name == "")
+        name = String("P") + String(index + 1);
+    if (name.length() > 3)
+        name = name.substring(0, 3);
+    name.toUpperCase();
+    return name;
+}
+
+static String playerNameOrDefault(uint8_t index)
+{
+    if (index >= RAUMSCHIFF_MAX_PLAYERS)
+        return "Player";
+
+    String name = String(playerNames[index]);
+    name.trim();
+    if (name == "")
+        name = String("P") + String(index + 1);
+    return name;
+}
+
+static void updateWebEnergy()
+{
+    uint32_t now = millis();
+    if (!webConnectedNow() || gameState == MENU || gameState == GAME_OVER)
+    {
+        lastWebEnergyRegenMs = now;
+        return;
+    }
+
+    if (lastWebEnergyRegenMs == 0)
+        lastWebEnergyRegenMs = now;
+
+    while (now - lastWebEnergyRegenMs >= 1000UL)
+    {
+        addWebEnergy(6);
+        lastWebEnergyRegenMs += 1000UL;
+    }
 }
 
 static uint16_t baseShotDamage(uint8_t playerIndex)
@@ -287,6 +369,7 @@ void raumschiffRegisterKill(uint8_t playerIndex, uint16_t points, int dropX, int
     spieler[playerIndex].kills++;
 
     refreshDamageLevel(playerIndex);
+    addWebEnergy(points * 3 + 8);
 
     raumschiffMaybeDropPowerUp(dropX, dropY);
 }
@@ -304,6 +387,10 @@ void raumschiffGameOver()
         lastMatchScore = score;
         lastMatchP1Score = spieler[0].score;
         lastMatchP2Score = spieler[1].score;
+        lastMatchP1Kills = spieler[0].kills;
+        lastMatchP2Kills = spieler[1].kills;
+        lastMatchBosses = bossesSpawned;
+        lastMatchDurationSec = matchStartMs == 0 ? 0 : (millis() - matchStartMs) / 1000UL;
         String team = teamName();
         team.toCharArray(lastMatchName, sizeof(lastMatchName));
         saveHighScore(team, (int)score);
@@ -342,6 +429,11 @@ void raumschiffRequestWebSpawn(uint8_t size, uint16_t hp, uint8_t speed, uint8_t
     if (speed > 16) speed = 16;
     if (kind > ENEMY_MINIBOSS) kind = ENEMY_SMALL;
 
+    uint16_t cost = 8 + size * 3 + speed + kind * 10 + hp / 80;
+    if (cost > 160) cost = 160;
+    if (!spendWebEnergy(cost))
+        return;
+
     portENTER_CRITICAL(&webInputMux);
     webSpawnRequestSize = size;
     webSpawnRequestHp = hp;
@@ -357,6 +449,11 @@ void raumschiffRequestBoss(uint16_t hp, uint8_t size)
     if (hp > 20000) hp = 20000;
     if (size < 3) size = 3;
     if (size > 7) size = 7;
+
+    uint16_t cost = 80 + hp / 150 + size * 8;
+    if (cost > webEnergyMax) cost = webEnergyMax;
+    if (!spendWebEnergy(cost))
+        return;
 
     portENTER_CRITICAL(&webInputMux);
     webBossRequestHp = hp;
@@ -375,6 +472,11 @@ void raumschiffRequestHazard(uint8_t type, uint8_t radius, uint8_t speed, uint16
     if (hp < 1) hp = 80;
     if (hp > 6000) hp = 6000;
 
+    uint16_t cost = 45 + radius * 8 + speed * 3 + hp / 100;
+    if (cost > webEnergyMax) cost = webEnergyMax;
+    if (!spendWebEnergy(cost))
+        return;
+
     portENTER_CRITICAL(&webInputMux);
     webHazardRequestType = type;
     webHazardRequestRadius = radius;
@@ -386,9 +488,23 @@ void raumschiffRequestHazard(uint8_t type, uint8_t radius, uint8_t speed, uint16
 
 void raumschiffRequestPowerUp()
 {
+    if (!spendWebEnergy(30))
+        return;
+
     portENTER_CRITICAL(&webInputMux);
     if (webPowerUpRequests < 250)
         webPowerUpRequests++;
+    webLastInputMs = millis();
+    portEXIT_CRITICAL(&webInputMux);
+}
+
+void raumschiffSetP2InputMode(uint8_t mode)
+{
+    if (mode > p2InputI2c)
+        mode = p2InputAuto;
+
+    portENTER_CRITICAL(&webInputMux);
+    p2InputMode = mode;
     webLastInputMs = millis();
     portEXIT_CRITICAL(&webInputMux);
 }
@@ -473,7 +589,7 @@ void raumschiffMaybeDropPowerUp(int x, int y)
         spawnPowerUpAt(x, y);
 }
 
-static bool fireLaser(uint8_t playerIndex)
+static bool activateLaserBeam(uint8_t playerIndex, int y, uint16_t damage, uint32_t now)
 {
     if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
         return false;
@@ -483,15 +599,34 @@ static bool fireLaser(uint8_t playerIndex)
         if (!laserBeams[i].active)
         {
             laserBeams[i].owner = playerIndex;
-            laserBeams[i].y = spieler[playerIndex].y;
-            laserBeams[i].damage = baseShotDamage(playerIndex) * 35;
-            laserBeams[i].activeUntil = millis() + laserDurationMs;
+            laserBeams[i].y = constrain(y, 0, fieldHeight - 1);
+            laserBeams[i].damage = damage;
+            laserBeams[i].activeUntil = now + laserDurationMs;
+            laserBeams[i].damageApplied = false;
             laserBeams[i].active = true;
-            Audio::playBoss();
             return true;
         }
     }
     return false;
+}
+
+static bool fireLaser(uint8_t playerIndex)
+{
+    if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
+        return false;
+
+    uint32_t now = millis();
+    uint16_t damage = baseShotDamage(playerIndex) * 6;
+    int centerY = spieler[playerIndex].y;
+
+    bool fired = false;
+    fired = activateLaserBeam(playerIndex, centerY - 1, damage, now) || fired;
+    fired = activateLaserBeam(playerIndex, centerY, damage, now) || fired;
+    fired = activateLaserBeam(playerIndex, centerY + 1, damage, now) || fired;
+
+    if (fired)
+        Audio::playBoss();
+    return fired;
 }
 
 static void finishBoss(uint8_t owner, bool awardScore)
@@ -609,10 +744,13 @@ bool raumschiffWebPlayerConnected()
 String raumschiffStateJson()
 {
     String json = "{";
-    json.reserve(1400);
+    json.reserve(1800);
     json += "\"state\":" + String((int)gameState);
     json += ",\"score\":" + String(score);
     json += ",\"web\":" + String(webConnectedNow() ? 1 : 0);
+    json += ",\"webEnergy\":" + String((uint16_t)webEnergy);
+    json += ",\"webEnergyMax\":" + String(webEnergyMax);
+    json += ",\"p2InputMode\":" + String((uint8_t)p2InputMode);
     json += ",\"boss\":{\"active\":" + String(boss.active ? 1 : 0);
     json += ",\"hp\":" + String(boss.active ? boss.hp : 0);
     json += ",\"maxHp\":" + String(boss.maxHp);
@@ -634,6 +772,12 @@ String raumschiffStateJson()
     json += ",\"score\":" + String(lastMatchScore);
     json += ",\"p1\":" + String(lastMatchP1Score);
     json += ",\"p2\":" + String(lastMatchP2Score);
+    json += ",\"p1Name\":\"" + playerNameOrDefault(0) + "\"";
+    json += ",\"p2Name\":\"" + playerNameOrDefault(1) + "\"";
+    json += ",\"p1Kills\":" + String(lastMatchP1Kills);
+    json += ",\"p2Kills\":" + String(lastMatchP2Kills);
+    json += ",\"bosses\":" + String(lastMatchBosses);
+    json += ",\"duration\":" + String(lastMatchDurationSec);
     json += "}";
     PlayerData top[3];
     int topCount = 0;
@@ -651,6 +795,7 @@ String raumschiffStateJson()
     {
         if (i > 0) json += ",";
         json += "{\"name\":\"" + String(playerNames[i]) + "\"";
+        json += ",\"shortName\":\"" + shortPlayerName(i) + "\"";
         json += ",\"active\":" + String(spieler[i].active ? 1 : 0);
         json += ",\"alive\":" + String(spieler[i].hp > 0 ? 1 : 0);
         json += ",\"hp\":" + String(spieler[i].hp);
@@ -730,6 +875,20 @@ static InputState readJoystickInput(uint8_t playerIndex, Joystick& joystick)
     input.touched = input.dx != 0 || input.dy != 0 || pressed ||
                     input.shoot || input.dash || input.charge;
     return input;
+}
+
+static InputState readP2Input()
+{
+    uint8_t mode = p2InputMode;
+    if (mode == p2InputEsp32)
+        return readJoystickInput(1, joystick2);
+    if (mode == p2InputI2c)
+        return readJoystickInput(1, joystick3);
+
+    InputState espInput = readJoystickInput(1, joystick2);
+    if (espInput.touched)
+        return espInput;
+    return readJoystickInput(1, joystick3);
 }
 
 static bool allocatePlayerProjectile(uint8_t playerIndex, int8_t dy, uint8_t damage, bool charged)
@@ -1347,17 +1506,24 @@ static void drawBoss()
     if (!boss.active)
         return;
 
-    for (int8_t dx = -1; dx <= 1; dx++)
+    int8_t half = boss.size / 2;
+    CRGB edge = boss.phase >= 3 ? CRGB::Red : (boss.phase == 2 ? CRGB::OrangeRed : CRGB::Magenta);
+    CRGB core = boss.phase >= 3 && ((millis() / 120) % 2 == 0) ? CRGB::White : CRGB::Purple;
+
+    for (int8_t dx = -half; dx <= half; dx++)
     {
-        for (int8_t dy = -1; dy <= 1; dy++)
+        for (int8_t dy = -half; dy <= half; dy++)
         {
-            CRGB col = (dx == 0 && dy == 0) ? CRGB::White : CRGB::Magenta;
+            bool border = abs(dx) == half || abs(dy) == half;
+            CRGB col = border ? edge : core;
+            if (dx == 0 && dy == 0)
+                col = CRGB::White;
             setPixel(boss.x + dx, boss.y + dy, col);
         }
     }
 
-    setPixel(boss.x - 2, boss.y, CRGB::Purple);
-    setPixel(boss.x + 2, boss.y, CRGB::Purple);
+    setPixel(boss.x - half - 1, boss.y, edge);
+    setPixel(boss.x + half + 1, boss.y, edge);
 }
 
 static void drawHazard(const Hazard& h)
@@ -1510,8 +1676,10 @@ static void renderGameOver()
 
 static void updatePlaying()
 {
+    updateWebEnergy();
+
     InputState p1 = readJoystickInput(0, joystick1);
-    InputState p2 = readJoystickInput(1, joystick3);
+    InputState p2 = readP2Input();
 
     applyInput(0, p1);
     applyInput(1, p2);
@@ -1535,7 +1703,7 @@ void raumschiffGameTick()
     if (gameState == MENU)
     {
         InputState p1 = readJoystickInput(0, joystick1);
-        InputState p2 = readJoystickInput(1, joystick3);
+        InputState p2 = readP2Input();
 
         if (p2.touched)
             spieler[1].active = true;
@@ -1547,6 +1715,8 @@ void raumschiffGameTick()
         if (p1.dash)
         {
             Audio::playUI();
+            matchStartMs = millis();
+            lastWebEnergyRegenMs = matchStartMs;
             gameState = PLAYING;
         }
 
@@ -1604,6 +1774,8 @@ void raumschiffResetGame()
     lastAutoHazardSpawnMs = 0;
     lastGameOverRenderMs = 0;
     nextBossScore = bossScoreGapBase;
+    matchStartMs = 0;
+    lastWebEnergyRegenMs = 0;
     slowFieldUntil = 0;
     bossesSpawned = 0;
     bossVolleyCounter = 0;
@@ -1621,6 +1793,7 @@ void raumschiffResetGame()
     webHazardRequestSpeed = 1;
     webHazardRequestHp = 80;
     webPowerUpRequests = 0;
+    webEnergy = webEnergyStart;
     portEXIT_CRITICAL(&webInputMux);
 
     for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++)
@@ -1629,9 +1802,10 @@ void raumschiffResetGame()
         lastFireButtonState[i] = false;
     }
     lastFireButtonState[0] = joystick1.isPressed();
-    lastFireButtonState[1] = joystick3.isPressed();
+    lastFireButtonState[1] = false;
 
     joystick1.reset();
+    joystick2.reset();
     joystick3.reset();
 
     boss.active = false;
@@ -1688,6 +1862,7 @@ void raumschiffResetGame()
         laserBeams[i].y = 0;
         laserBeams[i].damage = 0;
         laserBeams[i].activeUntil = 0;
+        laserBeams[i].damageApplied = false;
     }
 
     for (uint8_t i = 0; i < hazardCount; i++)

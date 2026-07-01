@@ -121,6 +121,7 @@ struct LaserBeam
     int y;
     uint16_t damage;
     uint32_t activeUntil;
+    bool damageApplied;
     bool active;
 };
 
@@ -178,6 +179,7 @@ void raumschiffRequestWebSpawn(uint8_t size, uint16_t hp = 0, uint8_t speed = 0,
 void raumschiffRequestBoss(uint16_t hp, uint8_t size);
 void raumschiffRequestHazard(uint8_t type, uint8_t radius, uint8_t speed, uint16_t hp);
 void raumschiffRequestPowerUp();
+void raumschiffSetP2InputMode(uint8_t mode);
 void raumschiffSetDirectorSettings(uint16_t spawnIntervalMs,
                                    uint8_t maxActiveAsteroids,
                                    uint8_t smallAsteroidPercent,
