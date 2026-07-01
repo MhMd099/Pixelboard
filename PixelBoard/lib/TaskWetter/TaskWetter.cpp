@@ -17,16 +17,41 @@ extern const char* font3x5[26] ;
 extern void drawChar3x5(int startX, int startY, char c, CRGB color);
 extern void drawDigitW(int x, int y, int n, CRGB c);
 // --- Wetterdaten holen: kurzer Timeout, blockiert nur den Hintergrund-Task ---
-static bool fetchWetter() {
-    if (WiFi.status() != WL_CONNECTED) return false;
+static String urlEncode(const String& value) {
+    const char* hex = "0123456789ABCDEF";
+    String out;
+    out.reserve(value.length() * 3);
+    for (size_t i = 0; i < value.length(); i++) {
+        uint8_t c = (uint8_t)value.charAt(i);
+        if ((c >= 'a' && c <= 'z') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            out += (char)c;
+        } else if (c == ' ') {
+            out += "%20";
+        } else {
+            out += '%';
+            out += hex[(c >> 4) & 0x0F];
+            out += hex[c & 0x0F];
+        }
+    }
+    return out;
+}
 
-    String safeCity = currentCity;
-    safeCity.replace(" ", "%20");
-    String path = "/data/2.5/weather?q=" + safeCity +
-                 "&appid=" + String(weatherApiKey) + "&units=metric";
+static String weatherCityQuery() {
+    String city = currentCity;
+    city.trim();
+    if (city == "") city = "Innsbruck";
+    if (city.indexOf(',') < 0) city += ",AT";
+    return urlEncode(city);
+}
 
+static bool fetchJson(const String& path, JsonDocument& doc, int& httpCode) {
     WiFiClient client;
-    client.setTimeout(5000);
+    client.setTimeout(7000);
+    httpCode = 0;
+
     if (!client.connect("api.openweathermap.org", 80)) {
         Serial.println("[WETTER] Verbindung fehlgeschlagen");
         return false;
@@ -34,43 +59,102 @@ static bool fetchWetter() {
 
     client.print(F("GET "));
     client.print(path);
-    client.print(F(" HTTP/1.0\r\nHost: api.openweathermap.org\r\nConnection: close\r\n\r\n"));
+    client.print(F(" HTTP/1.1\r\nHost: api.openweathermap.org\r\nConnection: close\r\nUser-Agent: PixelBoard\r\n\r\n"));
 
-    int httpCode = 0;
-    unsigned long deadline = millis() + 5000UL;
-    while (client.connected() && millis() < deadline) {
+    unsigned long deadline = millis() + 7000UL;
+    bool headersDone = false;
+    while (millis() < deadline) {
+        if (!client.available()) {
+            if (!client.connected()) break;
+            vTaskDelay(10 / portTICK_PERIOD_MS);
+            continue;
+        }
+
         String line = client.readStringUntil('\n');
         line.trim();
-
         if (line.startsWith("HTTP/")) {
             int firstSpace = line.indexOf(' ');
             if (firstSpace > 0) httpCode = line.substring(firstSpace + 1).toInt();
         }
-        if (line.length() == 0) break;
+        if (line.length() == 0) {
+            headersDone = true;
+            break;
+        }
     }
 
-    bool ok = false;
-    if (httpCode == 200) {
-        JsonDocument doc;
-        DeserializationError err = deserializeJson(doc, client);
-        if (!err) {
-            aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
-            weatherID    = doc["weather"][0]["id"] | weatherID;
-            Serial.print("[WETTER] OK! Temp: ");
-            Serial.print(aktuelleTemp, 1);
-            Serial.print("  ID: ");
-            Serial.println(weatherID);
-            ok = true;
-        } else {
-            Serial.print("[WETTER] JSON-Fehler: ");
-            Serial.println(err.c_str());
-        }
-    } else {
+    if (!headersDone) {
+        Serial.println("[WETTER] Keine HTTP-Header empfangen");
+        client.stop();
+        return false;
+    }
+
+    DeserializationError err = deserializeJson(doc, client);
+    client.stop();
+    if (err) {
+        Serial.print("[WETTER] JSON-Fehler: ");
+        Serial.println(err.c_str());
+        return false;
+    }
+    return httpCode >= 200 && httpCode < 300;
+}
+
+static bool fetchCoordinates(float& lat, float& lon) {
+    JsonDocument geo;
+    int httpCode = 0;
+    String path = "/geo/1.0/direct?q=" + weatherCityQuery() +
+                  "&limit=1&appid=" + String(weatherApiKey);
+    if (!fetchJson(path, geo, httpCode)) {
+        Serial.print("[WETTER] Geo Fehler HTTP ");
+        Serial.println(httpCode);
+        if (httpCode == 401) Serial.println("[WETTER] API-Key pruefen.");
+        return false;
+    }
+
+    if (!geo[0].is<JsonObject>()) {
+        Serial.println("[WETTER] Ort nicht gefunden: " + currentCity);
+        return false;
+    }
+
+    lat = geo[0]["lat"] | 0.0f;
+    lon = geo[0]["lon"] | 0.0f;
+    Serial.print("[WETTER] Ort gefunden: ");
+    Serial.print(geo[0]["name"].as<const char*>());
+    Serial.print(" lat=");
+    Serial.print(lat, 4);
+    Serial.print(" lon=");
+    Serial.println(lon, 4);
+    return true;
+}
+
+static bool fetchWetter() {
+    if (WiFi.status() != WL_CONNECTED) return false;
+
+    float lat = 0.0f;
+    float lon = 0.0f;
+    if (!fetchCoordinates(lat, lon))
+        return false;
+
+    int httpCode = 0;
+    JsonDocument doc;
+    String path = "/data/2.5/weather?lat=" + String(lat, 6) +
+                  "&lon=" + String(lon, 6) +
+                  "&appid=" + String(weatherApiKey) + "&units=metric";
+    if (!fetchJson(path, doc, httpCode)) {
         Serial.print("[WETTER] Fehler! HTTP Code: ");
         Serial.println(httpCode);
+        if (httpCode == 401) Serial.println("[WETTER] API-Key pruefen.");
+        return false;
     }
-    client.stop();
-    return ok;
+
+    aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
+    weatherID = doc["weather"][0]["id"] | weatherID;
+    Serial.print("[WETTER] OK! Stadt: ");
+    Serial.print(currentCity);
+    Serial.print(" Temp: ");
+    Serial.print(aktuelleTemp, 1);
+    Serial.print(" ID: ");
+    Serial.println(weatherID);
+    return true;
 }
 
 // Hintergrund-Task: holt die Daten, ohne je die Anzeige zu blockieren.

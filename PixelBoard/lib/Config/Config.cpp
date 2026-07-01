@@ -145,6 +145,8 @@ void saveWifiCredentials(String newSsid, String newPassword) {
         serializeJson(doc, file);
         file.close();
         Serial.println("WLAN-Daten gespeichert fuer SSID: " + wifiSsid);
+    } else {
+        Serial.println("WLAN-Daten konnten nicht gespeichert werden.");
     }
 
     beginWifiConnection();
@@ -225,6 +227,8 @@ static void saveDefaultCity(const String& city) {
         serializeJson(doc, file);
         file.close();
         Serial.println("Default-Stadt gespeichert: " + city);
+    } else {
+        Serial.println("Default-Stadt konnte nicht gespeichert werden.");
     }
 }
 
@@ -311,6 +315,8 @@ void ensureUserExists(String user) {
         if (file) {
             serializeJson(doc, file);
             file.close();
+        } else {
+            Serial.println("User konnte nicht gespeichert werden.");
         }
     }
 }
@@ -318,6 +324,7 @@ void ensureUserExists(String user) {
 void saveConfig(String user, String city) {
     user.trim();
     city.trim();
+    if (city == "") city = "Innsbruck";
 
     if (currentCity != city) {
         forceWeatherUpdate = true;
@@ -325,7 +332,11 @@ void saveConfig(String user, String city) {
     currentCity = city;
     currentUser = user;
 
-    if (user == "") return;
+    saveDefaultCity(city);
+    if (user == "") {
+        Serial.println("Speichere Default-Stadt: " + city);
+        return;
+    }
 
     JsonDocument doc;
     if (LittleFS.exists("/config.json")) {
@@ -339,8 +350,12 @@ void saveConfig(String user, String city) {
     removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
-    serializeJson(doc, file);
-    file.close();
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    } else {
+        Serial.println("Config konnte nicht gespeichert werden.");
+    }
 
     Serial.println("Speichere fuer " + user + ": " + city);
 }
@@ -362,8 +377,12 @@ void saveTheme(String user, int themeIdx) {
     removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
-    serializeJson(doc, file);
-    file.close();
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    } else {
+        Serial.println("Design konnte nicht gespeichert werden.");
+    }
 
     Serial.println("Design gespeichert fuer " + user + ": " + String(themeName(g_themeIndex)));
 }
@@ -385,8 +404,12 @@ void saveClockStyle(String user, int clockIdx) {
     removeLegacyUserKeys(obj);
 
     File file = LittleFS.open("/config.json", "w");
-    serializeJson(doc, file);
-    file.close();
+    if (file) {
+        serializeJson(doc, file);
+        file.close();
+    } else {
+        Serial.println("Uhr-Stil konnte nicht gespeichert werden.");
+    }
 
     Serial.println("Uhr-Stil gespeichert fuer " + user + ": " + String(clockStyleName(g_clockStyle)));
 }
@@ -719,9 +742,13 @@ void saveHighScore(String user, int score) {
         removeLegacyUserKeys(obj);
 
         File file = LittleFS.open("/config.json", "w");
-        serializeJson(doc, file);
-        file.close();
-        Serial.println("Neuer Highscore gespeichert: " + String(score));
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("Neuer Highscore gespeichert: " + String(score));
+        } else {
+            Serial.println("Highscore konnte nicht gespeichert werden.");
+        }
     } else {
         Serial.println("Score war nicht hoch genug. Aktueller Highscore: " + String(currentHigh));
     }
@@ -739,7 +766,7 @@ void printTopThree() {
     int count = 0;
 
     for (JsonPair kv : doc.as<JsonObject>()) {
-        if (count < 10) {
+        if (count < 10 && isScoreEntry(kv)) {
             scores[count].name = kv.key().c_str();
             scores[count].score = readHighScore(kv.value());
             count++;
@@ -791,7 +818,7 @@ void getTopScores(PlayerData* list, int& count) {
 
     count = 0;
     for (JsonPair kv : doc.as<JsonObject>()) {
-        if (count < 10) {
+        if (count < 10 && isScoreEntry(kv)) {
             list[count].name = kv.key().c_str();
             list[count].score = readHighScore(kv.value());
             count++;
