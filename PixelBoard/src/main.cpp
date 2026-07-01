@@ -24,6 +24,7 @@
 #include "RaumschiffGame.h"
 #include "TaskRaumschiff.h"
 #include "TaskPong.h"
+#include "TaskPacman.h"
 #include <LittleFS.h>
 
 // ==========================================
@@ -38,7 +39,7 @@
 #define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
-static const int APP_COUNT = 8;
+static const int APP_COUNT = 9;
 
 // --- Joystick 1 (Für Snake) ---
 #define J1_PIN_X 34
@@ -74,6 +75,7 @@ TaskHandle_t handleAnim = NULL;   // Task 4 (War vorher handleE)
 TaskHandle_t handleDHT = NULL;    // Task 5 (NEU)
 TaskHandle_t handleRaumschiff = NULL; // Task 6
 TaskHandle_t handlePong = NULL;       // Task 7
+TaskHandle_t handlePacman = NULL;     // Task 8
 
 SemaphoreHandle_t clickCounterMutex = NULL;
 SemaphoreHandle_t displayMutex = NULL; // MUTEX FÜR DAS DISPLAY
@@ -95,7 +97,8 @@ const uint32_t menuIcons[APP_COUNT] = {
     0x24924, // 4: Animationen
     0x72497, // 5: DHT
     0x5A5A5, // 6 Raumschiff (einfach placeholder)
-    0x57575  // 7 Pong
+    0x57575, // 7 Pong
+    0x7AB57  // 8 Pacman
 
 };
 
@@ -391,6 +394,23 @@ void printMenu()
         setPixel(16, by, CRGB::White);
         break;
     }
+
+    case 9:
+    {
+        // Pacman
+        drawChar3x5(2, 2, 'P', themeCol(jetzt / 20, 255));
+        drawChar3x5(10, 2, 'A', themeCol(jetzt / 20 + 50, 255));
+        drawChar3x5(18, 2, 'C', themeCol(jetzt / 20 + 100, 255));
+
+        setPixel(8, 11, CRGB::Yellow);
+        setPixel(9, 11, CRGB(150, 90, 0));
+        setPixel(21, 10, CRGB::Red);
+        setPixel(22, 10, CRGB::Red);
+        setPixel(21, 11, CRGB::Red);
+        setPixel(22, 11, CRGB::Red);
+        for (int x = 12; x < 19; x += 2) setPixel(x, 11, CRGB(60, 48, 20));
+        break;
+    }
     }
 
     FastLED.show();
@@ -420,6 +440,8 @@ TaskHandle_t getTaskHandle(int nummer)
         return handleRaumschiff;
     case 7:
         return handlePong;
+    case 8:
+        return handlePacman;
     default:
         return NULL;
     }
@@ -454,6 +476,7 @@ void wechsleZuTask(int zielTask)
     aktiverTask = zielTask;
     navigationsSperre = false;
     joystick2.reset();
+    joystick3.reset();
 
     if (zielTask == 3)
         startMusic();
@@ -482,6 +505,7 @@ void zurueckZumMenue()
     }
 
     joystick2.reset();
+    joystick3.reset();
     vTaskDelay(30 / portTICK_PERIOD_MS);
 
     aktiverTask = -1;
@@ -499,18 +523,27 @@ struct ClickEvent
 struct ClickEvent readAndClearClicks()
 {
     struct ClickEvent result = {0, 0, 0};
-    if (clickCounterMutex != NULL)
+    result.einfacherKlick = joystick2.einfacherKlickZaehler;
+    result.doppelklick = joystick2.doppelklickZaehler;
+    result.langKlick = joystick2.langKlickZaehler;
+    joystick2.einfacherKlickZaehler = 0;
+    joystick2.doppelklickZaehler = 0;
+    joystick2.langKlickZaehler = 0;
+    return result;
+}
+
+struct ClickEvent readAppClicks()
+{
+    struct ClickEvent result = {0, 0, 0};
+    result.doppelklick = joystick2.doppelklickZaehler;
+    joystick2.doppelklickZaehler = 0;
+
+    if (aktiverTask != 8)
     {
-        if (xSemaphoreTake(clickCounterMutex, pdMS_TO_TICKS(10)) == pdTRUE)
-        {
-            result.einfacherKlick = joystick2.einfacherKlickZaehler;
-            result.doppelklick = joystick2.doppelklickZaehler;
-            result.langKlick = joystick2.langKlickZaehler;
-            joystick2.einfacherKlickZaehler = 0;
-            joystick2.doppelklickZaehler = 0;
-            joystick2.langKlickZaehler = 0;
-            xSemaphoreGive(clickCounterMutex);
-        }
+        result.einfacherKlick = joystick2.einfacherKlickZaehler;
+        result.langKlick = joystick2.langKlickZaehler;
+        joystick2.einfacherKlickZaehler = 0;
+        joystick2.langKlickZaehler = 0;
     }
     return result;
 }
@@ -694,6 +727,7 @@ void setup()
         &handleRaumschiff,
         1);
     xTaskCreatePinnedToCore(taskPongHandler, "Pong", 4096, NULL, 1, &handlePong, 1);
+    xTaskCreatePinnedToCore(taskPacmanHandler, "Pacman", 4096, NULL, 1, &handlePacman, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
@@ -716,7 +750,7 @@ void loop()
         return;
     }
 
-    struct ClickEvent clicks = readAndClearClicks();
+    struct ClickEvent clicks = (aktiverTask == -1) ? readAndClearClicks() : readAppClicks();
 
     if (aktiverTask == -1)
     {
@@ -761,7 +795,7 @@ void loop()
             playSound(SND_DIE);
             zurueckZumMenue();
         }
-        else if (clicks.langKlick > 0)
+        else if (clicks.langKlick > 0 && aktiverTask != 8)
         {
             playSound(SND_SELECT);
             int next = (aktiverTask + 1) % APP_COUNT;

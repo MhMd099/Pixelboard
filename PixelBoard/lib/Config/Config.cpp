@@ -13,6 +13,9 @@ String currentCity = "Innsbruck";
 String currentUser = "";
 String pongLeftUser = "";
 String pongRightUser = "";
+String pacmanP1User = "";
+String pacmanP2User = "";
+bool pacmanGhostManual = false;
 bool forceWeatherUpdate = false;
 
 String wifiSsid = "";
@@ -219,6 +222,12 @@ static int readPongHighScore(JsonVariant data) {
     return obj["pong"] | 0;
 }
 
+static int readPacmanHighScore(JsonVariant data) {
+    if (!data.is<JsonObject>()) return 0;
+    JsonObject obj = data.as<JsonObject>();
+    return obj["pac"] | 0;
+}
+
 static String loadDefaultCity() {
     String city = "Innsbruck";
     if (!LittleFS.exists(deviceConfigPath)) return city;
@@ -262,6 +271,13 @@ static bool isPongScoreEntry(JsonPair kv) {
     if (key == "" || key[0] == '_') return false;
     if (!kv.value().is<JsonObject>()) return false;
     return readPongHighScore(kv.value()) > 0;
+}
+
+static bool isPacmanScoreEntry(JsonPair kv) {
+    String key = kv.key().c_str();
+    if (key == "" || key[0] == '_') return false;
+    if (!kv.value().is<JsonObject>()) return false;
+    return readPacmanHighScore(kv.value()) > 0;
 }
 
 static int clockIndexFromLegacy(int idx) {
@@ -459,7 +475,7 @@ void handleRoot() {
 
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
-    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a> &nbsp; <a style='color:#a7f3d0' href='/pong'>Pong Dashboard</a></p>";
+    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a> &nbsp; <a style='color:#a7f3d0' href='/pong'>Pong Dashboard</a> &nbsp; <a style='color:#facc15' href='/pacman'>Pacman Dashboard</a></p>";
 
     html += "<div class='card'><h3>User</h3>";
     if (currentUser == "") html += "<p>Kein User aktiv.</p>";
@@ -651,6 +667,53 @@ void handlePongLogin() {
     server.send(303);
 }
 
+void handlePacmanPage() {
+    PlayerData top[3];
+    int topCount = 0;
+    getTopPacmanScores(top, topCount);
+
+    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
+    html += ".wrap{max-width:520px;margin:0 auto}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}label{font-size:13px;color:#bfdbfe}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;margin:6px 0;font-size:15px}";
+    html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}@media(max-width:460px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
+    html += "<h1>Pacman Dashboard</h1>";
+    html += "<div class='card'><h2>Spieler</h2>";
+    html += "<div class='line'>P1: <b>" + (pacmanP1User == "" ? String("-") : htmlEscape(pacmanP1User)) + "</b> | P2: <b>" + (pacmanP2User == "" ? String("-") : htmlEscape(pacmanP2User)) + "</b></div>";
+    html += "<div class='line muted'>P1 = ESP32 Joystick 1. P2 = I2C Joystick. Joystick 2 bleibt Menu und Ghost: Klick wechselt Geist, Langklick nutzt Ability, Doppelklick zurueck.</div>";
+    html += "<form action='/pacman/login' method='POST'><div class='grid'><div><label>Pacman 1</label><input name='p1' placeholder='Name P1' value='" + htmlEscape(pacmanP1User) + "'></div>";
+    html += "<div><label>Pacman 2</label><input name='p2' placeholder='Name P2 optional' value='" + htmlEscape(pacmanP2User) + "'></div></div>";
+    html += "<label class='check'><input type='checkbox' name='ghost' value='1'";
+    if (pacmanGhostManual) html += " checked";
+    html += "> Ghost manuell ueber Joystick 2</label><button>Pacman speichern</button></form>";
+    if (pacmanP1User != "") html += "<div class='line ok'>" + htmlEscape(pacmanP1User) + " Highscore: " + String(getPacmanHighScore(pacmanP1User)) + "</div>";
+    if (pacmanP2User != "" && pacmanP2User != pacmanP1User) html += "<div class='line ok'>" + htmlEscape(pacmanP2User) + " Highscore: " + String(getPacmanHighScore(pacmanP2User)) + "</div>";
+    html += "</div><div class='card'><h2>Top 3 Pacman</h2>";
+    if (topCount == 0) html += "<div class='line'>Noch keine Pacman Scores.</div>";
+    for (int i = 0; i < topCount; i++)
+        html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
+    html += "</div><div class='card'><a style='color:#93c5fd' href='/'>Zurueck</a></div></div></body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handlePacmanLogin() {
+    if (server.hasArg("p1")) {
+        pacmanP1User = server.arg("p1");
+        pacmanP1User.trim();
+        ensureUserExists(pacmanP1User);
+    }
+    if (server.hasArg("p2")) {
+        pacmanP2User = server.arg("p2");
+        pacmanP2User.trim();
+        ensureUserExists(pacmanP2User);
+    }
+    pacmanGhostManual = server.hasArg("ghost");
+    if (pacmanP1User != "") loadConfigForUser(pacmanP1User);
+    else if (pacmanP2User != "") loadConfigForUser(pacmanP2User);
+    server.sendHeader("Location", "/pacman");
+    server.send(303);
+}
+
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
@@ -782,6 +845,8 @@ void setupWebServer() {
     server.on("/ip", HTTP_GET, handleIpInfo);
     server.on("/pong", HTTP_GET, handlePongPage);
     server.on("/pong/login", HTTP_POST, handlePongLogin);
+    server.on("/pacman", HTTP_GET, handlePacmanPage);
+    server.on("/pacman/login", HTTP_POST, handlePacmanLogin);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
     server.on("/shooter/input", HTTP_GET, handleShooterInput);
@@ -942,6 +1007,47 @@ int getPongHighScore(String user) {
     return readPongHighScore(doc[user]);
 }
 
+void savePacmanHighScore(String user, int score) {
+    user.trim();
+    if (user == "" || score <= 0) return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    JsonObject obj = userObject(doc, user);
+    int currentHigh = readPacmanHighScore(doc[user]);
+    if (score > currentHigh) {
+        obj["pac"] = score;
+        removeLegacyUserKeys(obj);
+
+        File file = LittleFS.open("/config.json", "w");
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("Neuer Pacman-Highscore gespeichert: " + String(score));
+        } else {
+            Serial.println("Pacman-Highscore konnte nicht gespeichert werden.");
+        }
+    }
+}
+
+int getPacmanHighScore(String user) {
+    user.trim();
+    if (user == "" || !LittleFS.exists("/config.json")) return 0;
+
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return 0;
+
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+    return readPacmanHighScore(doc[user]);
+}
+
 void getTopScores(PlayerData* list, int& count) {
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
@@ -997,6 +1103,44 @@ void getTopPongScores(PlayerData* list, int& count) {
         }
 
         int score = readPongHighScore(kv.value());
+        if (count < 3) {
+            int pos = count;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+            count++;
+        } else if (score > list[2].score) {
+            int pos = 2;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+        }
+    }
+}
+
+void getTopPacmanScores(PlayerData* list, int& count) {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) {
+        count = 0;
+        return;
+    }
+    deserializeJson(doc, file);
+    file.close();
+
+    count = 0;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (!isPacmanScoreEntry(kv)) {
+            continue;
+        }
+
+        int score = readPacmanHighScore(kv.value());
         if (count < 3) {
             int pos = count;
             while (pos > 0 && list[pos - 1].score < score) {

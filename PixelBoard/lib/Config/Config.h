@@ -11,6 +11,9 @@ extern String currentCity;
 extern String currentUser;
 extern String pongLeftUser;
 extern String pongRightUser;
+extern String pacmanP1User;
+extern String pacmanP2User;
+extern bool pacmanGhostManual;
 
 // --- WLAN / Captive Portal ---
 extern String wifiSsid;
@@ -45,9 +48,12 @@ int getHighScore(String user);
 void printTopThree();
 void savePongHighScore(String user, int score);
 int getPongHighScore(String user);
+void savePacmanHighScore(String user, int score);
+int getPacmanHighScore(String user);
 
 struct PlayerData { String name; int score; };
 void getTopScores(PlayerData* list, int& count);
 void getTopPongScores(PlayerData* list, int& count);
+void getTopPacmanScores(PlayerData* list, int& count);
 
 #endif
