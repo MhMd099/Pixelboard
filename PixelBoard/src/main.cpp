@@ -23,6 +23,7 @@
 #include "TaskDHT.h" // <--- NEUER DHT TASK
 #include "RaumschiffGame.h"
 #include "TaskRaumschiff.h"
+#include "TaskPong.h"
 #include <LittleFS.h>
 
 // ==========================================
@@ -37,6 +38,7 @@
 #define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
+static const int APP_COUNT = 8;
 
 // --- Joystick 1 (Für Snake) ---
 #define J1_PIN_X 34
@@ -70,12 +72,13 @@ TaskHandle_t handleSnake = NULL;  // Task 2
 TaskHandle_t handleMusik = NULL;  // Task 3 (War vorher handleData)
 TaskHandle_t handleAnim = NULL;   // Task 4 (War vorher handleE)
 TaskHandle_t handleDHT = NULL;    // Task 5 (NEU)
-TaskHandle_t handleRaumschiff = NULL;
+TaskHandle_t handleRaumschiff = NULL; // Task 6
+TaskHandle_t handlePong = NULL;       // Task 7
 
 SemaphoreHandle_t clickCounterMutex = NULL;
 SemaphoreHandle_t displayMutex = NULL; // MUTEX FÜR DAS DISPLAY
 
-volatile int aktiverTask = -1; // -1 = Menü, 0-5 = Apps
+volatile int aktiverTask = -1; // -1 = Menü, 0..APP_COUNT-1 = Apps
 volatile bool taskWechselAnforderung = false;
 int fokusModus = 0; // Navigation im Menü
 bool navigationsSperre = false;
@@ -84,15 +87,15 @@ unsigned long eventSperreBis = 0;
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
 // ==========================================
-// 6 Icons für 6 Apps
-const uint32_t menuIcons[7] = {
+const uint32_t menuIcons[APP_COUNT] = {
     0x3A5A7, // 0: Uhr
     0x3EEDC, // 1: Wetter
     0x74B5E, // 2: Snake
     0x49249, // 3: Musik
     0x24924, // 4: Animationen
     0x72497, // 5: DHT
-    0x5A5A5  // 6 Raumschiff (einfach placeholder)
+    0x5A5A5, // 6 Raumschiff (einfach placeholder)
+    0x57575  // 7 Pong
 
 };
 
@@ -372,6 +375,22 @@ void printMenu()
 
         break;
     }
+
+    case 8:
+    {
+        // Pong
+        drawChar3x5(3, 2, 'P', themeCol(jetzt / 20, 255));
+        drawChar3x5(11, 2, 'O', themeCol(jetzt / 20 + 50, 255));
+        drawChar3x5(19, 2, 'N', themeCol(jetzt / 20 + 100, 255));
+
+        int by = 11 + (int)(sin(jetzt / 170.0) * 3.0);
+        for (int y = 5; y < 10; y++) {
+            setPixel(2, y, CRGB::Cyan);
+            setPixel(29, y + 2, CRGB::Orange);
+        }
+        setPixel(16, by, CRGB::White);
+        break;
+    }
     }
 
     FastLED.show();
@@ -399,6 +418,8 @@ TaskHandle_t getTaskHandle(int nummer)
         return handleDHT;
     case 6:
         return handleRaumschiff;
+    case 7:
+        return handlePong;
     default:
         return NULL;
     }
@@ -415,7 +436,7 @@ bool eventSperreAktiv()
 
 void wechsleZuTask(int zielTask)
 {
-    if (zielTask < 0 || zielTask > 6)
+    if (zielTask < 0 || zielTask >= APP_COUNT)
         return;
 
     int vorherigerTask = aktiverTask;
@@ -672,6 +693,7 @@ void setup()
         1,
         &handleRaumschiff,
         1);
+    xTaskCreatePinnedToCore(taskPongHandler, "Pong", 4096, NULL, 1, &handlePong, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
@@ -714,13 +736,13 @@ void loop()
         {
             if (xPerc <= -80)
             {
-                fokusModus = (fokusModus >= 7) ? 1 : fokusModus + 1; // Erweitert auf 6
+                fokusModus = (fokusModus >= APP_COUNT) ? 1 : fokusModus + 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             }
             else if (xPerc >= 80)
             {
-                fokusModus = (fokusModus <= 1) ? 7 : fokusModus - 1; // Erweitert auf 6
+                fokusModus = (fokusModus <= 1) ? APP_COUNT : fokusModus - 1;
                 navigationsSperre = true;
                 playSound(SND_SWIPE);
             }
@@ -742,7 +764,7 @@ void loop()
         else if (clicks.langKlick > 0)
         {
             playSound(SND_SELECT);
-            int next = (aktiverTask + 1) % 7; // Erweitert auf 6
+            int next = (aktiverTask + 1) % APP_COUNT;
             fokusModus = next + 1;
             wechsleZuTask(next);
         }

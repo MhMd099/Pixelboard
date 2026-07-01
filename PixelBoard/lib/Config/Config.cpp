@@ -11,6 +11,8 @@ const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
 
 String currentCity = "Innsbruck";
 String currentUser = "";
+String pongLeftUser = "";
+String pongRightUser = "";
 bool forceWeatherUpdate = false;
 
 String wifiSsid = "";
@@ -211,6 +213,12 @@ static int readHighScore(JsonVariant data) {
     return obj["h"] | (obj["highscore"] | 0);
 }
 
+static int readPongHighScore(JsonVariant data) {
+    if (!data.is<JsonObject>()) return 0;
+    JsonObject obj = data.as<JsonObject>();
+    return obj["pong"] | 0;
+}
+
 static String loadDefaultCity() {
     String city = "Innsbruck";
     if (!LittleFS.exists(deviceConfigPath)) return city;
@@ -247,6 +255,13 @@ static bool isScoreEntry(JsonPair kv) {
     if (key == "" || key[0] == '_') return false;
     if (!kv.value().is<JsonObject>()) return false;
     return readHighScore(kv.value()) > 0;
+}
+
+static bool isPongScoreEntry(JsonPair kv) {
+    String key = kv.key().c_str();
+    if (key == "" || key[0] == '_') return false;
+    if (!kv.value().is<JsonObject>()) return false;
+    return readPongHighScore(kv.value()) > 0;
 }
 
 static int clockIndexFromLegacy(int idx) {
@@ -444,7 +459,7 @@ void handleRoot() {
 
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
-    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a></p>";
+    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a> &nbsp; <a style='color:#a7f3d0' href='/pong'>Pong Dashboard</a></p>";
 
     html += "<div class='card'><h3>User</h3>";
     if (currentUser == "") html += "<p>Kein User aktiv.</p>";
@@ -589,6 +604,53 @@ void handleShooterNames() {
     server.send(200, "application/json", "{\"ok\":1}");
 }
 
+void handlePongPage() {
+    PlayerData top[3];
+    int topCount = 0;
+    getTopPongScores(top, topCount);
+
+    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
+    html += ".wrap{max-width:480px;margin:0 auto}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}label{font-size:13px;color:#bfdbfe}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;margin:6px 0;font-size:15px}";
+    html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}@media(max-width:420px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
+    html += "<h1>Pong Dashboard</h1>";
+    html += "<div class='card'><h2>Spieler</h2>";
+    html += "<div class='line'>Links: <b>" + (pongLeftUser == "" ? String("Bot") : htmlEscape(pongLeftUser)) + "</b> | Rechts: <b>" + (pongRightUser == "" ? String("Bot") : htmlEscape(pongRightUser)) + "</b></div>";
+    html += "<div class='line muted'>Links = I2C Joystick. Rechts = ESP32 Joystick 1. Feld leer lassen aktiviert den Bot.</div>";
+    html += "<form action='/pong/login' method='POST'><div class='grid'><div><label>Links</label><input name='left' placeholder='Name links oder leer fuer Bot' value='" + htmlEscape(pongLeftUser) + "'></div>";
+    html += "<div><label>Rechts</label><input name='right' placeholder='Name rechts oder leer fuer Bot' value='" + htmlEscape(pongRightUser) + "'></div></div><button>Spieler speichern</button></form>";
+    if (pongLeftUser != "") html += "<div class='line ok'>" + htmlEscape(pongLeftUser) + " Best Rally: " + String(getPongHighScore(pongLeftUser)) + "</div>";
+    if (pongRightUser != "" && pongRightUser != pongLeftUser) html += "<div class='line ok'>" + htmlEscape(pongRightUser) + " Best Rally: " + String(getPongHighScore(pongRightUser)) + "</div>";
+    html += "</div>";
+    html += "<div class='card'><h2>Top 3 Rally</h2>";
+    if (topCount == 0) html += "<div class='line'>Noch keine Pong Scores.</div>";
+    for (int i = 0; i < topCount; i++)
+        html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
+    html += "</div><div class='card'><a style='color:#93c5fd' href='/'>Zurueck</a></div></div></body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handlePongLogin() {
+    if (server.hasArg("left")) {
+        pongLeftUser = server.arg("left");
+        pongLeftUser.trim();
+        ensureUserExists(pongLeftUser);
+    }
+    if (server.hasArg("right")) {
+        pongRightUser = server.arg("right");
+        pongRightUser.trim();
+        ensureUserExists(pongRightUser);
+    }
+    if (pongLeftUser != "") {
+        loadConfigForUser(pongLeftUser);
+    } else if (pongRightUser != "") {
+        loadConfigForUser(pongRightUser);
+    }
+    server.sendHeader("Location", "/pong");
+    server.send(303);
+}
+
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
@@ -718,6 +780,8 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/ip", HTTP_GET, handleIpInfo);
+    server.on("/pong", HTTP_GET, handlePongPage);
+    server.on("/pong/login", HTTP_POST, handlePongLogin);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
     server.on("/shooter/input", HTTP_GET, handleShooterInput);
@@ -837,6 +901,47 @@ int getHighScore(String user) {
     return 0;
 }
 
+void savePongHighScore(String user, int score) {
+    user.trim();
+    if (user == "" || score <= 0) return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    JsonObject obj = userObject(doc, user);
+    int currentHigh = readPongHighScore(doc[user]);
+    if (score > currentHigh) {
+        obj["pong"] = score;
+        removeLegacyUserKeys(obj);
+
+        File file = LittleFS.open("/config.json", "w");
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("Neuer Pong-Highscore gespeichert: " + String(score));
+        } else {
+            Serial.println("Pong-Highscore konnte nicht gespeichert werden.");
+        }
+    }
+}
+
+int getPongHighScore(String user) {
+    user.trim();
+    if (user == "" || !LittleFS.exists("/config.json")) return 0;
+
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return 0;
+
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+    return readPongHighScore(doc[user]);
+}
+
 void getTopScores(PlayerData* list, int& count) {
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
@@ -854,6 +959,44 @@ void getTopScores(PlayerData* list, int& count) {
         }
 
         int score = readHighScore(kv.value());
+        if (count < 3) {
+            int pos = count;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+            count++;
+        } else if (score > list[2].score) {
+            int pos = 2;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+        }
+    }
+}
+
+void getTopPongScores(PlayerData* list, int& count) {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) {
+        count = 0;
+        return;
+    }
+    deserializeJson(doc, file);
+    file.close();
+
+    count = 0;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (!isPongScoreEntry(kv)) {
+            continue;
+        }
+
+        int score = readPongHighScore(kv.value());
         if (count < 3) {
             int pos = count;
             while (pos > 0 && list[pos - 1].score < score) {

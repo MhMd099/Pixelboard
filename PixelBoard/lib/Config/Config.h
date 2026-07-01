@@ -9,6 +9,8 @@ extern const char* weatherApiKey;
 extern bool forceWeatherUpdate;
 extern String currentCity;
 extern String currentUser;
+extern String pongLeftUser;
+extern String pongRightUser;
 
 // --- WLAN / Captive Portal ---
 extern String wifiSsid;
@@ -41,8 +43,11 @@ void taskWebServerHandler(void * pvParameters);
 void saveHighScore(String user, int score);
 int getHighScore(String user);
 void printTopThree();
+void savePongHighScore(String user, int score);
+int getPongHighScore(String user);
 
 struct PlayerData { String name; int score; };
 void getTopScores(PlayerData* list, int& count);
+void getTopPongScores(PlayerData* list, int& count);
 
 #endif
