@@ -26,11 +26,16 @@ const uint32_t TICK_MS = 33;
 
 const int16_t WALK_VX = 12;
 const int16_t DUCK_VX = 7;
-const int16_t JUMP_VY = -28;
-const int16_t JUMP_HOLD_BOOST = -2;
-const int16_t GRAVITY = 3;
-const int16_t MAX_FALL_VY = 26;
-const uint8_t MAX_JUMP_HOLD_TICKS = 7;
+const int16_t JUMP_VY = -24;
+const int16_t STOMP_VY = -14;
+const int16_t GRAVITY_HOLD = 1;
+const int16_t GRAVITY_RELEASE = 5;
+const int16_t GRAVITY_FALL = 4;
+const int16_t ENEMY_GRAVITY = 3;
+const int16_t MAX_FALL_VY = 28;
+const uint8_t MAX_JUMP_HOLD_TICKS = 8;
+const uint8_t COYOTE_TICKS = 3;
+const uint8_t JUMP_BUFFER_TICKS = 3;
 
 enum MarioMode : uint8_t { MARIO_LOBBY, MARIO_PLAYING, MARIO_WIN, MARIO_GAMEOVER };
 enum MarioPower : uint8_t { MARIO_SMALL, MARIO_SUPER, MARIO_FIRE };
@@ -65,6 +70,8 @@ struct Player {
     int16_t vy;
     uint8_t power;
     uint8_t jumpHoldTicks;
+    uint8_t coyoteTicks;
+    uint8_t jumpBufferTicks;
     bool onGround;
     bool ducking;
     uint32_t invulnerableUntil;
@@ -129,6 +136,8 @@ const EnemySpawn enemySpawns[] = {
     {116, 14, ENEMY_KOOPA}, {145, 7, ENEMY_CROW}, {158, 10, ENEMY_CROW}
 };
 
+const uint8_t checkpointMarks[] = {2, 42, 72, 104, 134};
+
 bool blockAlive[sizeof(levelBlocks) / sizeof(levelBlocks[0])];
 bool coinCollected[sizeof(levelCoins) / sizeof(levelCoins[0])];
 Enemy enemies[8];
@@ -140,6 +149,7 @@ Player mario;
 uint16_t marioScore = 0;
 uint8_t marioCoins = 0;
 int16_t cameraX = 0;
+uint8_t checkpointIndex = 0;
 uint32_t lastTickMs = 0;
 uint32_t modeStartedMs = 0;
 bool lastUp1 = false;
@@ -151,9 +161,13 @@ int pixelY(int16_t fixedValue) { return fixedValue / SCALE; }
 uint8_t packedX(uint16_t packed) { return (uint8_t)(packed >> 4); }
 uint8_t packedY(uint16_t packed) { return (uint8_t)(packed & 0x0F); }
 
+uint8_t heightFor(uint8_t power, bool ducking) {
+    if (power == MARIO_SMALL) return 2;
+    return ducking ? 2 : 3;
+}
+
 uint8_t playerHeight() {
-    if (mario.power == MARIO_SMALL) return 2;
-    return mario.ducking ? 2 : 3;
+    return heightFor(mario.power, mario.ducking);
 }
 
 bool inWorldY(int y) {
@@ -189,6 +203,80 @@ bool bboxSolidAt(int16_t fx, int16_t fy, uint8_t h) {
         if (solidAt(x, top + dy)) return true;
     }
     return false;
+}
+
+bool fitsAt(int16_t fx, int16_t fy, uint8_t h) {
+    return !bboxSolidAt(fx, fy, h);
+}
+
+bool resolvePlayerEmbedding() {
+    uint8_t h = playerHeight();
+    if (fitsAt(mario.x, mario.y, h)) return true;
+
+    static const int8_t xOffsets[] = {0, -1, 1, -2, 2};
+    for (uint8_t up = 0; up <= 5; up++) {
+        for (uint8_t i = 0; i < sizeof(xOffsets) / sizeof(xOffsets[0]); i++) {
+            int16_t nx = mario.x + xOffsets[i] * SCALE;
+            int16_t ny = mario.y - up * SCALE;
+            if (!fitsAt(nx, ny, h)) continue;
+            mario.x = nx;
+            mario.y = ny;
+            mario.vx = 0;
+            mario.vy = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+void setPowerKeepingFeet(uint8_t newPower) {
+    uint8_t oldH = playerHeight();
+    int16_t feet = mario.y + oldH * SCALE - 1;
+
+    uint8_t oldPower = mario.power;
+    bool oldDucking = mario.ducking;
+    mario.power = newPower;
+    if (mario.power == MARIO_SMALL) mario.ducking = false;
+
+    uint8_t newH = playerHeight();
+    int16_t newY = feet - newH * SCALE + 1;
+    if (fitsAt(mario.x, newY, newH)) {
+        mario.y = newY;
+        return;
+    }
+
+    for (uint8_t lift = 1; lift <= 3; lift++) {
+        int16_t liftedY = newY - lift * SCALE;
+        if (!fitsAt(mario.x, liftedY, newH)) continue;
+        mario.y = liftedY;
+        return;
+    }
+
+    mario.power = oldPower;
+    mario.ducking = oldDucking;
+    resolvePlayerEmbedding();
+}
+
+void setDuckingKeepingFeet(bool wantsDuck) {
+    if (mario.power == MARIO_SMALL) {
+        mario.ducking = false;
+        return;
+    }
+    if (mario.ducking == wantsDuck) return;
+
+    uint8_t oldH = playerHeight();
+    int16_t feet = mario.y + oldH * SCALE - 1;
+    bool oldDucking = mario.ducking;
+    mario.ducking = wantsDuck;
+    uint8_t newH = playerHeight();
+    int16_t newY = feet - newH * SCALE + 1;
+
+    if (fitsAt(mario.x, newY, newH)) {
+        mario.y = newY;
+        return;
+    }
+
+    mario.ducking = oldDucking;
 }
 
 void spawnItem(uint8_t type, int x, int y) {
@@ -269,29 +357,80 @@ void initEnemies() {
     }
 }
 
-void resetLevel(bool resetLives) {
-    if (resetLives) marioLives = 3;
-    mario.x = 2 * SCALE;
-    mario.y = 12 * SCALE;
-    mario.vx = 0;
-    mario.vy = 0;
-    mario.power = MARIO_SMALL;
-    mario.jumpHoldTicks = 0;
-    mario.onGround = false;
-    mario.ducking = false;
-    mario.invulnerableUntil = 0;
-    marioScore = 0;
-    marioCoins = 0;
-    cameraX = 0;
-    for (size_t i = 0; i < sizeof(blockAlive) / sizeof(blockAlive[0]); i++) blockAlive[i] = true;
-    for (size_t i = 0; i < sizeof(coinCollected) / sizeof(coinCollected[0]); i++) coinCollected[i] = false;
+uint8_t checkpointX() {
+    return checkpointMarks[checkpointIndex];
+}
+
+int16_t safeSpawnY(uint8_t x, uint8_t h) {
+    int16_t fx = x * SCALE;
+    for (int y = 0; y < SCREEN_H - h; y++) {
+        if (!fitsAt(fx, y * SCALE, h)) continue;
+        if (solidAt(x, y + h)) return y * SCALE;
+    }
+    return 12 * SCALE;
+}
+
+void clearTransientObjects() {
     for (uint8_t i = 0; i < 4; i++) {
         items[i].active = false;
         fireballs[i].active = false;
     }
+}
+
+void placeMarioAtCheckpoint() {
+    mario.x = checkpointX() * SCALE;
+    mario.y = safeSpawnY(checkpointX(), heightFor(MARIO_SMALL, false));
+    mario.vx = 0;
+    mario.vy = 0;
+    mario.power = MARIO_SMALL;
+    mario.jumpHoldTicks = 0;
+    mario.coyoteTicks = 0;
+    mario.jumpBufferTicks = 0;
+    mario.onGround = false;
+    mario.ducking = false;
+    mario.invulnerableUntil = millis() + 1300UL;
+    int target = checkpointX() - 8;
+    if (target < 0) target = 0;
+    if (target > WORLD_W - SCREEN_W) target = WORLD_W - SCREEN_W;
+    cameraX = target;
+    resolvePlayerEmbedding();
+}
+
+void resetLevel(bool fullReset) {
+    if (fullReset) {
+        marioLives = 3;
+        marioScore = 0;
+        marioCoins = 0;
+        checkpointIndex = 0;
+        for (size_t i = 0; i < sizeof(blockAlive) / sizeof(blockAlive[0]); i++) blockAlive[i] = true;
+        for (size_t i = 0; i < sizeof(coinCollected) / sizeof(coinCollected[0]); i++) coinCollected[i] = false;
+    }
+    clearTransientObjects();
     initEnemies();
+    placeMarioAtCheckpoint();
+    if (fullReset) mario.invulnerableUntil = 0;
     mode = MARIO_LOBBY;
     modeStartedMs = millis();
+}
+
+void respawnFromCheckpoint() {
+    clearTransientObjects();
+    initEnemies();
+    placeMarioAtCheckpoint();
+    mode = MARIO_PLAYING;
+    modeStartedMs = millis();
+}
+
+void loseLifeAndRespawn() {
+    uint32_t now = millis();
+    if (marioLives > 0) marioLives--;
+    playSound(SND_DIE);
+    if (marioLives == 0) {
+        mode = MARIO_GAMEOVER;
+        modeStartedMs = now;
+        return;
+    }
+    respawnFromCheckpoint();
 }
 
 InputState readInput() {
@@ -367,8 +506,8 @@ void collectItems() {
     for (uint8_t i = 0; i < 4; i++) {
         if (!items[i].active) continue;
         if (!aabbPx(px, py, 1, ph, pixelX(items[i].x), pixelY(items[i].y), 1, 1)) continue;
-        if (items[i].type == ITEM_MUSHROOM && mario.power == MARIO_SMALL) mario.power = MARIO_SUPER;
-        else mario.power = MARIO_FIRE;
+        if (items[i].type == ITEM_MUSHROOM && mario.power == MARIO_SMALL) setPowerKeepingFeet(MARIO_SUPER);
+        else setPowerKeepingFeet(MARIO_FIRE);
         items[i].active = false;
         marioScore += 200;
         playSound(SND_BUFF);
@@ -379,28 +518,19 @@ void damageMario() {
     uint32_t now = millis();
     if ((long)(mario.invulnerableUntil - now) > 0) return;
     if (mario.power == MARIO_FIRE) {
-        mario.power = MARIO_SUPER;
+        setPowerKeepingFeet(MARIO_SUPER);
         mario.invulnerableUntil = now + 1300UL;
         playSound(SND_HIT);
         return;
     }
     if (mario.power == MARIO_SUPER) {
-        mario.power = MARIO_SMALL;
-        mario.ducking = false;
+        setPowerKeepingFeet(MARIO_SMALL);
         mario.invulnerableUntil = now + 1300UL;
         playSound(SND_HIT);
         return;
     }
 
-    if (marioLives > 0) marioLives--;
-    playSound(SND_DIE);
-    if (marioLives == 0) {
-        mode = MARIO_GAMEOVER;
-        modeStartedMs = now;
-    } else {
-        resetLevel(false);
-        mode = MARIO_PLAYING;
-    }
+    loseLifeAndRespawn();
 }
 
 bool enemySolidAt(Enemy& e, int16_t fx, int16_t fy) {
@@ -409,7 +539,7 @@ bool enemySolidAt(Enemy& e, int16_t fx, int16_t fy) {
 
 void updateGroundEnemy(Enemy& e) {
     if (e.state == 1) return;
-    e.vy += GRAVITY;
+    e.vy += ENEMY_GRAVITY;
     if (e.vy > MAX_FALL_VY) e.vy = MAX_FALL_VY;
 
     int8_t xdir = e.vx > 0 ? 1 : -1;
@@ -504,7 +634,7 @@ void checkEnemyCollisions() {
             } else {
                 e.active = false;
             }
-            mario.vy = JUMP_VY / 2;
+            mario.vy = STOMP_VY;
             marioScore += 100;
             playSound(SND_HIT);
         } else if (e.type == ENEMY_KOOPA && e.state == 1) {
@@ -524,36 +654,78 @@ void updateCamera() {
     cameraX = target;
 }
 
+void updateCheckpoint() {
+    int px = pixelX(mario.x);
+    while (checkpointIndex + 1 < sizeof(checkpointMarks) / sizeof(checkpointMarks[0]) &&
+           px >= checkpointMarks[checkpointIndex + 1]) {
+        checkpointIndex++;
+        playSound(SND_BUFF);
+    }
+}
+
+void startJump() {
+    mario.vy = JUMP_VY;
+    mario.jumpHoldTicks = 0;
+    mario.jumpBufferTicks = 0;
+    mario.coyoteTicks = 0;
+    mario.onGround = false;
+    playSound(SND_SELECT);
+}
+
+void applyMarioGravity(bool jumpHeld) {
+    int16_t gravity = GRAVITY_FALL;
+    if (mario.vy < 0) {
+        if (jumpHeld && mario.jumpHoldTicks < MAX_JUMP_HOLD_TICKS) {
+            gravity = GRAVITY_HOLD;
+            mario.jumpHoldTicks++;
+        } else {
+            gravity = GRAVITY_RELEASE;
+        }
+    }
+
+    mario.vy += gravity;
+    if (mario.vy > MAX_FALL_VY) mario.vy = MAX_FALL_VY;
+}
+
 void updatePlaying() {
     InputState in = readInput();
-    mario.ducking = in.duck && mario.power != MARIO_SMALL;
+    if (!resolvePlayerEmbedding()) {
+        respawnFromCheckpoint();
+        return;
+    }
+    setDuckingKeepingFeet(in.duck && mario.power != MARIO_SMALL);
     mario.vx = in.move * (mario.ducking ? DUCK_VX : WALK_VX);
     if (in.action) shootFireball();
 
-    if (in.jumpPressed && mario.onGround) {
-        mario.vy = JUMP_VY;
-        mario.jumpHoldTicks = 0;
-        mario.onGround = false;
-        playSound(SND_SELECT);
-    }
-    if (in.jumpHeld && !mario.onGround && mario.vy < 0 && mario.jumpHoldTicks < MAX_JUMP_HOLD_TICKS) {
-        mario.vy += JUMP_HOLD_BOOST;
-        mario.jumpHoldTicks++;
-    }
+    if (in.jumpPressed) mario.jumpBufferTicks = JUMP_BUFFER_TICKS;
+    else if (mario.jumpBufferTicks > 0) mario.jumpBufferTicks--;
 
-    mario.vy += GRAVITY;
-    if (mario.vy > MAX_FALL_VY) mario.vy = MAX_FALL_VY;
+    if (mario.onGround) mario.coyoteTicks = COYOTE_TICKS;
+    else if (mario.coyoteTicks > 0) mario.coyoteTicks--;
+
+    if (mario.jumpBufferTicks > 0 && (mario.onGround || mario.coyoteTicks > 0)) startJump();
+
+    applyMarioGravity(in.jumpHeld);
     movePlayerX(mario.vx);
     movePlayerY(mario.vy);
+    if (!resolvePlayerEmbedding()) {
+        respawnFromCheckpoint();
+        return;
+    }
 
     collectCoins();
     collectItems();
     updateCamera();
+    updateCheckpoint();
     updateEnemies();
     updateFireballs();
     checkEnemyCollisions();
+    if (mode != MARIO_PLAYING) return;
 
-    if (pixelY(mario.y) >= SCREEN_H) damageMario();
+    if (pixelY(mario.y) >= SCREEN_H) {
+        loseLifeAndRespawn();
+        return;
+    }
     if (pixelX(mario.x) >= FLAG_X) {
         marioScore += 1000;
         mode = MARIO_WIN;
@@ -588,6 +760,12 @@ void renderWorld() {
     for (size_t i = 0; i < sizeof(levelCoins) / sizeof(levelCoins[0]); i++) {
         if (coinCollected[i]) continue;
         drawWorldPixel(packedX(levelCoins[i]), packedY(levelCoins[i]), CRGB::Yellow);
+    }
+
+    for (size_t i = 1; i < sizeof(checkpointMarks) / sizeof(checkpointMarks[0]); i++) {
+        CRGB col = (i <= checkpointIndex) ? CRGB::Green : CRGB(40, 80, 160);
+        drawWorldPixel(checkpointMarks[i], 14, col);
+        drawWorldPixel(checkpointMarks[i], 13, col);
     }
 
     for (uint8_t i = 0; i < 4; i++) {
@@ -685,6 +863,7 @@ String marioStateJson() {
     json += ",\"power\":\"" + power + "\"";
     json += ",\"x\":" + String(pixelX(mario.x));
     json += ",\"camera\":" + String(cameraX);
+    json += ",\"checkpoint\":" + String(checkpointX());
     json += "}";
     return json;
 }
