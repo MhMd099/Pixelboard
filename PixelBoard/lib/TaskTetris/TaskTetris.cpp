@@ -14,9 +14,15 @@ namespace {
 const int LOGICAL_W = 16;
 const int LOGICAL_H = 32;
 const int FIELD_W = 10;
-const int FIELD_H = 28;
+const int FIELD_H = 20;
 const int FIELD_X = 3;
-const int FIELD_Y = 4;
+const int FIELD_Y = 9;
+const int HOLD_X = 0;
+const int HOLD_Y = 0;
+const int SCORE_X = 4;
+const int SCORE_Y = 0;
+const int NEXT_X = 12;
+const int NEXT_Y = 5;
 const int INPUT_DEADZONE = 62;
 const unsigned long MOVE_REPEAT_MS = 125;
 const unsigned long NORMAL_FALL_MS = 620;
@@ -40,6 +46,7 @@ TetrisState state = TETRIS_MENU;
 uint8_t board[FIELD_H][FIELD_W];
 Piece current;
 int8_t holdType = -1;
+int8_t nextType = 0;
 bool holdUsed = false;
 uint32_t score = 0;
 uint16_t linesCleared = 0;
@@ -147,6 +154,7 @@ void resetGame() {
     score = 0;
     linesCleared = 0;
     holdType = -1;
+    nextType = randomPiece();
     holdUsed = false;
     lastFallMs = millis();
     lastMoveMs = 0;
@@ -195,7 +203,9 @@ void clearLines() {
 void bakeAndSpawn() {
     lockPiece();
     clearLines();
-    spawnPiece(randomPiece());
+    int8_t spawnType = nextType;
+    nextType = randomPiece();
+    spawnPiece(spawnType);
     lastFallMs = millis();
 }
 
@@ -227,7 +237,11 @@ void holdPiece() {
     int8_t old = holdType;
     holdType = current.type;
     holdUsed = true;
-    if (old < 0) spawnPiece(randomPiece());
+    if (old < 0) {
+        int8_t spawnType = nextType;
+        nextType = randomPiece();
+        spawnPiece(spawnType);
+    }
     else spawnPiece(old);
     holdUsed = true;
     playSound(SND_BUFF);
@@ -312,22 +326,55 @@ void drawPieceAt(const Piece& p, CRGB color) {
     }
 }
 
+Piece landingPiece() {
+    Piece ghost = current;
+    while (true) {
+        Piece next = ghost;
+        next.y++;
+        if (!validPiece(next)) break;
+        ghost = next;
+    }
+    return ghost;
+}
+
+void drawGhostPiece(unsigned long now) {
+    Piece ghost = landingPiece();
+    if (ghost.y == current.y) return;
+    CRGB ghostColor = pieceColors[current.type];
+    ghostColor.nscale8_video(((now / 260) & 1) ? 82 : 45);
+    drawPieceAt(ghost, ghostColor);
+}
+
+void drawPreviewPiece(int8_t type, int ox, int oy, bool dim) {
+    if (type < 0 || type >= 7) return;
+    CRGB color = pieceColors[type];
+    if (dim) color.nscale8_video(95);
+    Piece p = {type, 0, 0, 0};
+    for (int i = 0; i < 4; i++) {
+        int x, y;
+        pieceCell(p, i, x, y);
+        setRotatedPixel(ox + x, oy + y, color);
+    }
+}
+
 void drawHold() {
     for (int y = 0; y < 4; y++)
         for (int x = 0; x < 4; x++)
-            setRotatedPixel(x, y, CRGB(8, 14, 26));
-    if (holdType < 0) return;
-    Piece h = {holdType, 0, 0, 0};
-    for (int i = 0; i < 4; i++) {
-        int x, y;
-        pieceCell(h, i, x, y);
-        setRotatedPixel(x, y, pieceColors[holdType]);
-    }
+            setRotatedPixel(HOLD_X + x, HOLD_Y + y, CRGB(8, 14, 26));
+    drawPreviewPiece(holdType, HOLD_X, HOLD_Y, false);
+}
+
+void drawNext() {
+    for (int y = 0; y < 4; y++)
+        for (int x = 0; x < 4; x++)
+            setRotatedPixel(NEXT_X + x, NEXT_Y + y, CRGB(8, 14, 26));
+    drawPreviewPiece(nextType, NEXT_X, NEXT_Y, false);
 }
 
 void renderPlaying() {
     FastLED.clear();
     drawHold();
+    drawNext();
 
     for (int y = 0; y < FIELD_H; y++) {
         for (int x = 0; x < FIELD_W; x++) {
@@ -340,24 +387,45 @@ void renderPlaying() {
         setRotatedPixel(FIELD_X + FIELD_W, FIELD_Y + y, CRGB(20, 45, 70));
     }
 
+    drawGhostPiece(millis());
     drawPieceAt(current, pieceColors[current.type]);
-    drawNumberSmall(score / 10, 6, 0, CRGB(120, 180, 255));
+    drawNumberSmall(score / 10, SCORE_X, SCORE_Y, CRGB(120, 180, 255));
     FastLED.show();
 }
 
 void renderMenu() {
     FastLED.clear();
-    drawHold();
     unsigned long now = millis();
-    int fallingY = 5 + (now / 180) % 10;
-    for (int i = 0; i < 4; i++) setRotatedPixel(7, fallingY + i, CRGB::Cyan);
-    for (int i = 0; i < 4; i++) {
-        setRotatedPixel(6 + i, 15, pieceColors[i]);
-        setRotatedPixel(9 + i, 16, pieceColors[i + 3]);
+
+    for (int y = 0; y < 4; y++) {
+        for (int x = 0; x < 4; x++) {
+            setRotatedPixel(HOLD_X + x, HOLD_Y + y, CRGB(8, 14, 26));
+            setRotatedPixel(NEXT_X + x, NEXT_Y + y, CRGB(8, 14, 26));
+        }
     }
-    for (int x = 4; x < 13; x++) {
-        if (((x + now / 220) % 3) != 0) setRotatedPixel(x, 27, CRGB(30, 55, 90));
+    drawPreviewPiece((now / 900) % 7, HOLD_X, HOLD_Y, true);
+    drawPreviewPiece((now / 700 + 3) % 7, NEXT_X, NEXT_Y, false);
+
+    for (int y = 0; y < FIELD_H; y++) {
+        for (int x = 0; x < FIELD_W; x++) {
+            if (((x + y) & 3) == 0) drawCell(x, y, CRGB(4, 7, 14));
+        }
+        setRotatedPixel(FIELD_X - 1, FIELD_Y + y, CRGB(15, 38, 65));
+        setRotatedPixel(FIELD_X + FIELD_W, FIELD_Y + y, CRGB(15, 38, 65));
     }
+
+    const uint8_t stack[][3] = {
+        {0,19,1},{1,19,1},{2,19,4},{3,19,4},{4,19,5},{5,19,5},{6,19,6},{7,19,6},{8,19,2},{9,19,2},
+        {0,18,3},{1,18,3},{4,18,5},{5,18,0},{6,18,0},{9,18,2},
+        {2,17,4},{3,17,4},{7,17,6},{8,17,6},{9,17,6},
+        {0,16,2},{1,16,2},{2,16,2},{5,16,3},{6,16,3}
+    };
+    for (size_t i = 0; i < sizeof(stack) / sizeof(stack[0]); i++) {
+        drawCell(stack[i][0], stack[i][1], pieceColors[stack[i][2] % 7]);
+    }
+
+    Piece falling = {(int8_t)((now / 1100) % 7), 0, 3, (int8_t)(1 + (now / 180) % 10)};
+    drawPieceAt(falling, pieceColors[falling.type]);
     FastLED.show();
 }
 

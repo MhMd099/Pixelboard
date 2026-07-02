@@ -17,6 +17,10 @@ extern bool pacmanGhostManual;
 extern uint8_t snakeObstacleTarget;
 extern uint8_t snakeFoodTarget;
 extern uint8_t snakePowerupTarget;
+extern volatile uint32_t tetrisCurrentScore;
+extern volatile uint32_t tetrisBoardScore;
+extern volatile uint32_t tetrisLastScore;
+extern volatile bool tetrisPlaying;
 
 // --- WLAN / Captive Portal ---
 extern String wifiSsid;
@@ -55,11 +59,14 @@ void savePongHighScore(String user, int score);
 int getPongHighScore(String user);
 void savePacmanHighScore(String user, int score);
 int getPacmanHighScore(String user);
+void saveTetrisHighScore(String user, int score);
+int getTetrisHighScore(String user);
 
 struct PlayerData { String name; int score; };
 void getTopScores(PlayerData* list, int& count);
 void getTopSnakeScores(PlayerData* list, int& count);
 void getTopPongScores(PlayerData* list, int& count);
 void getTopPacmanScores(PlayerData* list, int& count);
+void getTopTetrisScores(PlayerData* list, int& count);
 
 #endif
