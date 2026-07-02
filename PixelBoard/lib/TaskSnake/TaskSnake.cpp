@@ -14,7 +14,6 @@ extern Joystick joystick3;
 
 // Global verfügbar machen
 extern void drawDigitW(int x, int y, int n, CRGB c);
-extern void drawChar3x5(int x, int y, char c, CRGB color);
 
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
@@ -111,11 +110,10 @@ void taskSnakeHandler(void *pvParameters) {
                 setPixel(29, 6, foodCol);
                 setPixel(30, 6, CRGB(120, 20, 20));
                 if ((now / 500) % 2 == 0) {
-                    CRGB textCol = themeCol(now / 35 + 130, 210);
-                    drawChar3x5(6, 11, 'P', textCol);
-                    drawChar3x5(11, 11, 'L', textCol);
-                    drawChar3x5(16, 11, 'A', textCol);
-                    drawChar3x5(21, 11, 'Y', textCol);
+                    CRGB cueCol = themeCol(now / 35 + 130, 210);
+                    for (int x = 8; x <= 23; x += 3) setPixel(x, 13, cueCol);
+                    setPixel(24, 12, cueCol);
+                    setPixel(25, 11, cueCol);
                 }
                 FastLED.show();
                 if (btnPress) { currentState = STATE_SHOW_HIGHSCORES; stateTimer = millis(); }
@@ -133,14 +131,8 @@ void taskSnakeHandler(void *pvParameters) {
 
                 FastLED.clear();
                 if(count > 0) {
-                    CRGB nameCol = themeCol(millis() / 35, 255);
                     CRGB scoreCol = themeCol(millis() / 35 + 96, 235);
-                    // Zeige Name (max 3 Buchstaben)
-                    String name = top[highScoreIdx].name;
-                    for(int i=0; i<min((int)name.length(), 3); i++) {
-                        drawChar3x5(4 + (i*7), 2, name.charAt(i), nameCol);
-                    }
-                    // Zeige Score
+                    for (int i = 0; i <= highScoreIdx; i++) setPixel(8 + i * 3, 4, CRGB::Orange);
                     drawDigitW(10, 9, top[highScoreIdx].score / 10, scoreCol);
                     drawDigitW(16, 9, top[highScoreIdx].score % 10, scoreCol);
                 }
@@ -187,7 +179,6 @@ void taskSnakeHandler(void *pvParameters) {
 
             case STATE_GAMEOVER: {
                 FastLED.clear();
-                // Zeige "END" und Score
                 CRGB scoreCol = themeCol(millis() / 35, 255);
                 drawDigitW(12, 8, currentScore / 10, scoreCol);
                 drawDigitW(18, 8, currentScore % 10, scoreCol);

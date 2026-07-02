@@ -348,11 +348,15 @@ void renderPlaying() {
 void renderMenu() {
     FastLED.clear();
     drawHold();
-    drawLogicalChar(6, 8, '2', CRGB::Cyan);
-    drawLogicalChar(10, 8, '0', CRGB::Cyan);
+    unsigned long now = millis();
+    int fallingY = 5 + (now / 180) % 10;
+    for (int i = 0; i < 4; i++) setRotatedPixel(7, fallingY + i, CRGB::Cyan);
     for (int i = 0; i < 4; i++) {
         setRotatedPixel(6 + i, 15, pieceColors[i]);
         setRotatedPixel(9 + i, 16, pieceColors[i + 3]);
+    }
+    for (int x = 4; x < 13; x++) {
+        if (((x + now / 220) % 3) != 0) setRotatedPixel(x, 27, CRGB(30, 55, 90));
     }
     FastLED.show();
 }

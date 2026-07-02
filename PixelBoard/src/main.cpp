@@ -129,76 +129,26 @@ void printMenu()
 
     if (fokusModus == 0)
     {
-        static const uint8_t glyphs[6][7] = {
-            {0x1F, 0x11, 0x11, 0x1F, 0x10, 0x10, 0x10}, // P
-            {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1F}, // I
-            {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}, // X
-            {0x1F, 0x10, 0x10, 0x1F, 0x10, 0x10, 0x1F}, // E
-            {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1F}, // L
-            {0x11, 0x1B, 0x15, 0x11, 0x11, 0x11, 0x11}  // M
-        };
-
-        struct Coord
+        int center = 16 + (int)(sin(jetzt / 520.0) * 2.0);
+        for (int i = 0; i < APP_COUNT; i++)
         {
-            int8_t x;
-            int8_t y;
-        };
-        static Coord path[150];
-        static int pathLength = 0;
-        static bool pathInitialized = false;
-
-        if (!pathInitialized)
-        {
-            int pIdx = 0;
-            int xOffsets[5] = {2, 8, 14, 20, 26};
-            for (char b = 0; b < 5; b++)
-            {
-                int xOff = xOffsets[b];
-                bool upward = (b % 2 == 0);
-                if (upward)
-                {
-                    for (int y = 6; y >= 0; y--)
-                        for (int x = 0; x < 5; x++)
-                            if ((glyphs[b][y] >> (4 - x)) & 1)
-                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
-                }
-                else
-                {
-                    for (int y = 0; y <= 6; y++)
-                        for (int x = 0; x < 5; x++)
-                            if ((glyphs[b][y] >> (4 - x)) & 1)
-                                path[pIdx++] = {(int8_t)(xOff + x), (int8_t)y};
-                }
-            }
-
-            int xOffsetsUnten[4] = {4, 10, 16, 22};
-            for (int y = 6; y >= 0; y--)
-                for (int x = 0; x < 5; x++)
-                    if ((glyphs[5][y] >> (4 - x)) & 1)
-                        path[pIdx++] = {(int8_t)(xOffsetsUnten[0] + x), (int8_t)(y + 9)};
-            for (int y = 0; y <= 6; y++)
-                for (int x = 0; x < 5; x++)
-                    if ((glyphs[3][y] >> (4 - x)) & 1)
-                        path[pIdx++] = {(int8_t)(xOffsetsUnten[1] + x), (int8_t)(y + 9)};
-            for (int y = 6; y >= 0; y--)
-                for (int x = 0; x < 5; x++)
-                    if (x == 0 || x == 4 || x == y - 1)
-                        path[pIdx++] = {(int8_t)(xOffsetsUnten[2] + x), (int8_t)(y + 9)};
-            for (int y = 0; y <= 6; y++)
-                for (int x = 0; x < 5; x++)
-                    if (x == 0 || x == 4 || y == 6)
-                        path[pIdx++] = {(int8_t)(xOffsetsUnten[3] + x), (int8_t)(y + 9)};
-
-            pathLength = pIdx;
-            pathInitialized = true;
+            int x = center + (i - 4) * 4;
+            int y = 8 + (int)(sin(jetzt / 280.0 + i * 0.8) * 3.0);
+            if (x < 1 || x > 30 || y < 1 || y > 14)
+                continue;
+            CRGB col = themeCol(jetzt / 18 + i * 24, i == fokusModus ? 255 : 150);
+            setPixel(x, y, col);
+            setPixel(x - 1, y, col);
+            setPixel(x + 1, y, col);
+            if (i == 6 || i == 9)
+                setPixel(x, y - 1, col);
+            if (i == 7 || i == 8)
+                setPixel(x, y + 1, col);
         }
-
-        uint8_t currentHue = jetzt / 3;
-        for (int i = 0; i < pathLength; i++)
-        {
-            setPixel(path[i].x, path[i].y, themeCol(currentHue, 255));
-            currentHue += 5;
-        }
+        uint8_t pulse = 90 + sin8(jetzt / 6) / 2;
+        for (int x = 2; x < 30; x++)
+            if (((x + jetzt / 90) % 5) == 0)
+                setPixel(x, 14, themeCol(jetzt / 25 + x * 6, pulse));
 
         FastLED.show();
         unlockDisplay();
@@ -340,55 +290,42 @@ void printMenu()
 
     case 6:
     {
-        // DHT
-
-        drawChar3x5(5, 2, 'D',
-                    themeCol(jetzt / 20, 255));
-
-        drawChar3x5(13, 2, 'H',
-                    themeCol(jetzt / 20 + 70, 255));
-
-        drawChar3x5(21, 2, 'T',
-                    themeCol(jetzt / 20 + 140, 255));
-
+        int fill = 4 + (int)(sin(jetzt / 420.0) * 3.0);
+        for (int y = 3; y <= 11; y++) setPixel(13, y, CRGB(45, 70, 110));
+        for (int y = 11; y >= 11 - fill; y--) setPixel(13, y, CRGB(255, 80, 50));
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dy = -2; dy <= 2; dy++)
+                if (dx * dx + dy * dy <= 4) setPixel(13 + dx, 12 + dy, CRGB(255, 80, 50));
+        int dropY = 5 + (jetzt / 180) % 5;
+        setPixel(23, dropY, CRGB(60, 170, 255));
+        setPixel(22, dropY + 1, CRGB(60, 170, 255));
+        setPixel(23, dropY + 1, CRGB(120, 210, 255));
         break;
     }
 
     case 7:
     {
-        // Raumschiff
-
-        drawChar3x5(3, 2, 'R',
-                    themeCol(jetzt / 20, 255));
-
-        drawChar3x5(11, 2, 'A',
-                    themeCol(jetzt / 20 + 40, 255));
-
-        drawChar3x5(19, 2, 'U',
-                    themeCol(jetzt / 20 + 80, 255));
-
-        // kleines Schiff
-
-        setPixel(16, 11, themeCol(jetzt / 20 + 120, 255));
-        setPixel(15, 12, themeCol(jetzt / 20 + 120, 255));
-        setPixel(16, 12, themeCol(jetzt / 20 + 120, 255));
-        setPixel(17, 12, themeCol(jetzt / 20 + 120, 255));
-        setPixel(14, 13, themeCol(jetzt / 20 + 180, 180));
-        setPixel(15, 13, themeCol(jetzt / 20 + 180, 180));
-        setPixel(16, 13, themeCol(jetzt / 20 + 180, 180));
-        setPixel(17, 13, themeCol(jetzt / 20 + 180, 180));
-        setPixel(18, 13, themeCol(jetzt / 20 + 180, 180));
-
+        int shipX = 7 + (int)(sin(jetzt / 260.0) * 2.0);
+        int shipY = 8;
+        CRGB ship = themeCol(jetzt / 18 + 120, 255);
+        setPixel(shipX, shipY, ship);
+        setPixel(shipX + 1, shipY - 1, ship);
+        setPixel(shipX + 1, shipY, ship);
+        setPixel(shipX + 1, shipY + 1, ship);
+        setPixel(shipX + 2, shipY, CRGB::White);
+        setPixel(shipX - 1, shipY - 1, CRGB::OrangeRed);
+        setPixel(shipX - 2, shipY, CRGB::Orange);
+        for (int i = 0; i < 4; i++) {
+            int ax = 18 + i * 3 - (jetzt / 160 + i) % 3;
+            int ay = 4 + ((i * 3 + jetzt / 240) % 9);
+            setPixel(ax, ay, CRGB(180, 40, 30));
+            setPixel(ax + 1, ay, CRGB(120, 20, 20));
+        }
         break;
     }
 
     case 8:
     {
-        // Pong
-        drawChar3x5(3, 2, 'P', themeCol(jetzt / 20, 255));
-        drawChar3x5(11, 2, 'O', themeCol(jetzt / 20 + 50, 255));
-        drawChar3x5(19, 2, 'N', themeCol(jetzt / 20 + 100, 255));
-
         int by = 11 + (int)(sin(jetzt / 170.0) * 3.0);
         for (int y = 5; y < 10; y++) {
             setPixel(2, y, CRGB::Cyan);
@@ -400,36 +337,36 @@ void printMenu()
 
     case 9:
     {
-        // Pacman
-        drawChar3x5(2, 2, 'P', themeCol(jetzt / 20, 255));
-        drawChar3x5(10, 2, 'A', themeCol(jetzt / 20 + 50, 255));
-        drawChar3x5(18, 2, 'C', themeCol(jetzt / 20 + 100, 255));
-
-        setPixel(8, 11, CRGB::Yellow);
-        setPixel(9, 11, CRGB(150, 90, 0));
-        setPixel(21, 10, CRGB::Red);
-        setPixel(22, 10, CRGB::Red);
-        setPixel(21, 11, CRGB::Red);
-        setPixel(22, 11, CRGB::Red);
-        for (int x = 12; x < 19; x += 2) setPixel(x, 11, CRGB(60, 48, 20));
+        int mouth = (jetzt / 160) % 2;
+        setPixel(8, 8, CRGB::Yellow);
+        setPixel(9, 7, CRGB::Yellow);
+        setPixel(9, 8, CRGB::Yellow);
+        setPixel(9, 9, CRGB::Yellow);
+        setPixel(10, mouth ? 8 : 7, CRGB::Yellow);
+        setPixel(10, mouth ? 8 : 9, CRGB::Yellow);
+        for (int x = 13; x < 21; x += 2) setPixel(x, 8, CRGB(85, 70, 28));
+        CRGB ghost = ((jetzt / 240) % 2) ? CRGB::Red : CRGB::HotPink;
+        setPixel(24, 7, ghost);
+        setPixel(25, 7, ghost);
+        setPixel(24, 8, ghost);
+        setPixel(25, 8, ghost);
+        setPixel(24, 9, ghost);
+        setPixel(25, 9, ghost);
         break;
     }
 
     case 10:
     {
-        // Tetris
-        drawChar3x5(2, 2, 'T', themeCol(jetzt / 20, 255));
-        drawChar3x5(10, 2, 'E', themeCol(jetzt / 20 + 45, 255));
-        drawChar3x5(18, 2, 'T', themeCol(jetzt / 20 + 90, 255));
-        int px = 7 + (int)((jetzt / 220) % 6);
-        setPixel(24, px, CRGB::Cyan);
-        setPixel(24, px + 1, CRGB::Cyan);
-        setPixel(24, px + 2, CRGB::Cyan);
-        setPixel(24, px + 3, CRGB::Cyan);
+        int px = 4 + (int)((jetzt / 180) % 9);
+        for (int i = 0; i < 4; i++) setPixel(24, px + i, CRGB::Cyan);
         setPixel(17, 11, CRGB::Red);
         setPixel(18, 11, CRGB::Red);
         setPixel(18, 12, CRGB::Red);
         setPixel(19, 12, CRGB::Red);
+        setPixel(12, 4, CRGB::Yellow);
+        setPixel(13, 4, CRGB::Yellow);
+        setPixel(12, 5, CRGB::Yellow);
+        setPixel(13, 5, CRGB::Yellow);
         break;
     }
     }

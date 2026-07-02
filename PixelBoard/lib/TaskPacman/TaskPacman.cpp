@@ -19,6 +19,7 @@ const int WIDTH = 32;
 const int HEIGHT = 16;
 const int PLAYER_COUNT = 2;
 const int GHOST_COUNT = 4;
+const int PLAYER_MAX_HP = 3;
 const int DEADZONE = 60;
 const unsigned long PLAYER_STEP_MS = 145;
 const unsigned long GHOST_STEP_MS = 220;
@@ -52,11 +53,15 @@ struct Vec {
 struct Player {
     int8_t x;
     int8_t y;
+    int8_t startX;
+    int8_t startY;
     Vec dir;
     Vec wanted;
     bool active;
     bool alive;
+    int8_t hp;
     int score;
+    unsigned long invulnerableUntilMs;
     CRGB color;
 };
 
@@ -195,20 +200,28 @@ void moveEntity(int8_t& x, int8_t& y, Vec dir) {
 void initPlayers() {
     players[0].x = 2;
     players[0].y = 1;
+    players[0].startX = 2;
+    players[0].startY = 1;
     players[0].dir = makeVec(1, 0);
     players[0].wanted = makeVec(1, 0);
     players[0].active = pacmanP1User != "";
     players[0].alive = players[0].active;
+    players[0].hp = players[0].active ? PLAYER_MAX_HP : 0;
     players[0].score = 0;
+    players[0].invulnerableUntilMs = 0;
     players[0].color = CRGB::Yellow;
 
     players[1].x = 29;
     players[1].y = 14;
+    players[1].startX = 29;
+    players[1].startY = 14;
     players[1].dir = makeVec(-1, 0);
     players[1].wanted = makeVec(-1, 0);
     players[1].active = pacmanP2User != "";
     players[1].alive = players[1].active;
+    players[1].hp = players[1].active ? PLAYER_MAX_HP : 0;
     players[1].score = 0;
+    players[1].invulnerableUntilMs = 0;
     players[1].color = CRGB(80, 255, 80);
 }
 
@@ -230,6 +243,11 @@ void initGhosts() {
 
 bool hasAnyPlayer() {
     return pacmanP1User != "" || pacmanP2User != "";
+}
+
+void ensureDefaultPlayers() {
+    if (pacmanP1User == "") pacmanP1User = "P1";
+    if (pacmanP2User == "") pacmanP2User = "P2";
 }
 
 bool anyPlayerAlive() {
@@ -431,6 +449,23 @@ void respawnGhost(uint8_t idx, unsigned long now) {
     ghosts[idx].respawnUntilMs = now + 1500UL;
 }
 
+void damagePlayer(Player& p, unsigned long now) {
+    if (now < p.invulnerableUntilMs) return;
+    p.hp--;
+    if (p.hp <= 0) {
+        p.hp = 0;
+        p.alive = false;
+        playSound(SND_DIE);
+        return;
+    }
+
+    p.x = p.startX;
+    p.y = p.startY;
+    p.dir = p.wanted;
+    p.invulnerableUntilMs = now + 1400UL;
+    playSound(SND_HIT);
+}
+
 void checkCollisions(unsigned long now) {
     for (uint8_t gIdx = 0; gIdx < GHOST_COUNT; gIdx++) {
         Ghost& g = ghosts[gIdx];
@@ -446,8 +481,7 @@ void checkCollisions(unsigned long now) {
                 respawnGhost(gIdx, now);
                 playSound(SND_EXPLOSION);
             } else {
-                p.alive = false;
-                playSound(SND_DIE);
+                damagePlayer(p, now);
             }
         }
     }
@@ -481,10 +515,6 @@ void drawNumber(int value, int x, int y, CRGB color) {
     }
 }
 
-void renderWord(const char* word, int x, int y, CRGB color) {
-    for (int i = 0; word[i] != '\0'; i++) drawChar3x5(x + i * 4, y, word[i], color);
-}
-
 void renderMap() {
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
@@ -507,6 +537,7 @@ void renderGame(unsigned long now) {
         Player& p = players[i];
         if (!p.active) continue;
         CRGB c = p.alive ? p.color : CRGB(45, 45, 45);
+        if (p.alive && now < p.invulnerableUntilMs && (now / 120) % 2) c.nscale8_video(70);
         setPixel(p.x, p.y, c);
     }
 
@@ -520,16 +551,39 @@ void renderGame(unsigned long now) {
         setPixel(g.x, g.y, col);
     }
 
-    drawNumber(players[0].score / 10, 1, 10, CRGB::Yellow);
-    if (players[1].active) drawNumber(players[1].score / 10, 20, 10, CRGB(80, 255, 80));
+    for (uint8_t i = 0; i < PLAYER_COUNT; i++) {
+        if (!players[i].active) continue;
+        int y = (i == 0) ? 0 : 15;
+        int startX = (i == 0) ? 1 : 28;
+        int dir = (i == 0) ? 1 : -1;
+        for (int h = 0; h < PLAYER_MAX_HP; h++) {
+            CRGB hpCol = players[i].color;
+            if (h >= players[i].hp) hpCol.nscale8_video(35);
+            setPixel(startX + h * dir, y, hpCol);
+        }
+    }
 }
 
 void renderLobby(unsigned long now) {
     FastLED.clear();
-    renderWord("PAC", 2, 2, themeCol(now / 18, 255));
-    renderWord(pacmanGhostManual ? "MAN" : "AUT", 17, 2, pacmanGhostManual ? CRGB::Red : CRGB::Cyan);
+    int mouth = (now / 180) % 2;
+    setPixel(5, 7, CRGB::Yellow);
+    setPixel(6, 6, CRGB::Yellow);
+    setPixel(6, 7, CRGB::Yellow);
+    setPixel(6, 8, CRGB::Yellow);
+    setPixel(7, mouth ? 7 : 6, CRGB::Yellow);
+    setPixel(7, mouth ? 7 : 8, CRGB::Yellow);
+    CRGB ghostMode = pacmanGhostManual ? CRGB::Red : CRGB::Cyan;
+    for (int gx = 21; gx <= 23; gx++)
+        for (int gy = 6; gy <= 9; gy++)
+            if (!(gy == 9 && gx == 22)) setPixel(gx, gy, ghostMode);
+    for (int x = 10; x < 19; x += 2) setPixel(x, 7, CRGB(70, 58, 22));
     if (!hasAnyPlayer()) {
-        renderWord("WEB", 2, 10, CRGB::Orange);
+        if ((now / 300) % 2 == 0) {
+            for (int y = 11; y <= 13; y++) setPixel(15, y, CRGB::Orange);
+            setPixel(14, 12, CRGB::Orange);
+            setPixel(16, 12, CRGB::Orange);
+        }
     } else {
         drawNumber(cachedBestScore / 10, 10, 10, CRGB(80, 160, 255));
     }
@@ -544,13 +598,19 @@ void renderCountdown(unsigned long now) {
 
 void renderGameOver() {
     FastLED.clear();
-    renderWord("END", 2, 1, CRGB::Red);
+    for (int i = 0; i < 6; i++) {
+        setPixel(8 + i, 5 + i % 2, CRGB::Red);
+        setPixel(19 + i, 5 + (i + 1) % 2, CRGB::Red);
+    }
     drawNumber(max(players[0].score, players[1].score) / 10, 10, 9, CRGB::Yellow);
 }
 
 void renderWin() {
     FastLED.clear();
-    renderWord("WIN", 2, 1, CRGB::Green);
+    for (int x = 10; x <= 22; x++) setPixel(x, 4, CRGB::Green);
+    setPixel(11, 5, CRGB::Green);
+    setPixel(21, 5, CRGB::Green);
+    setPixel(16, 6, CRGB::Green);
     drawNumber(max(players[0].score, players[1].score) / 10, 10, 9, CRGB::Yellow);
 }
 
@@ -574,6 +634,17 @@ void tickPacman() {
     switch (state) {
     case PAC_LOBBY:
         renderLobby(now);
+    {
+        bool skipAuth = joystick1.langKlickZaehler > 0 || joystick2.langKlickZaehler > 0 || joystick3.langKlickZaehler > 0;
+        if (skipAuth) {
+            joystick1.langKlickZaehler = 0;
+            joystick2.langKlickZaehler = 0;
+            joystick3.langKlickZaehler = 0;
+            ensureDefaultPlayers();
+            beginCountdown();
+            break;
+        }
+    }
         if (startEdge && hasAnyPlayer()) beginCountdown();
         break;
 

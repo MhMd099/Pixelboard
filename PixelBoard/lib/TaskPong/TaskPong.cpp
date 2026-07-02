@@ -307,31 +307,21 @@ void renderField() {
     }
 }
 
-void renderCenteredWord(const char* word, int y, CRGB color) {
-    int len = strlen(word);
-    int x = (WIDTH - len * 5) / 2;
-    for (int i = 0; i < len; i++) drawChar3x5(x + i * 5, y, word[i], color);
-}
-
-void renderName3(const String& name, int x, int y, CRGB color) {
-    const char* text = (name == "") ? "BOT" : name.c_str();
-    for (int i = 0; i < 3 && text[i] != '\0'; i++) {
-        drawChar3x5(x + i * 4, y, text[i], color);
-    }
-}
-
 void renderMenu() {
     FastLED.clear();
     unsigned long now = millis();
-    if (pongLeftUser == "" && pongRightUser == "") {
-        renderCenteredWord("LOG", 3, CRGB::Orange);
-        renderCenteredWord("WEB", 9, CRGB(60, 110, 255));
-    } else {
-        renderName3(pongLeftUser, 1, 2, CRGB::Cyan);
-        renderCenteredWord("VS", 5, themeCol(now / 18, 255));
-        renderName3(pongRightUser, 19, 2, CRGB::Orange);
-        drawNumber2(cachedBestRally, 12, 10, CRGB(120, 180, 255));
+    int leftPreview = 4 + (int)(sin(now / 260.0) * 3.0);
+    int rightPreview = 8 + (int)(sin(now / 260.0 + 1.5) * 3.0);
+    for (int y = 0; y < PADDLE_H; y++) {
+        setPixel(2, leftPreview + y, pongLeftUser == "" ? CRGB(20, 80, 90) : CRGB::Cyan);
+        setPixel(29, rightPreview + y, pongRightUser == "" ? CRGB(90, 55, 20) : CRGB::Orange);
     }
+    int bx = 15 + (int)(sin(now / 180.0) * 8.0);
+    int by = 7 + (int)(sin(now / 230.0) * 4.0);
+    setPixel(bx, by, CRGB::White);
+    setPixel(15, 14, pongLeftUser == "" ? CRGB(30, 60, 70) : CRGB::Cyan);
+    setPixel(17, 14, pongRightUser == "" ? CRGB(70, 45, 30) : CRGB::Orange);
+    if (cachedBestRally > 0) drawNumber2(min(cachedBestRally, 99), 11, 1, CRGB(70, 120, 220));
 }
 
 void renderCountdown(unsigned long now) {
@@ -343,9 +333,16 @@ void renderCountdown(unsigned long now) {
 
 void renderGameOver() {
     FastLED.clear();
-    if (leftScore > rightScore) renderName3(pongLeftUser, 9, 1, CRGB::Cyan);
-    else renderName3(pongRightUser, 9, 1, CRGB::Orange);
+    CRGB winCol = leftScore > rightScore ? CRGB::Cyan : CRGB::Orange;
+    int winX = leftScore > rightScore ? 6 : 24;
+    for (int y = 4; y < 10; y++) setPixel(winX, y, winCol);
+    for (int i = 0; i < 5; i++) setPixel(15 + i % 3, 4 + i, CRGB::White);
     drawNumber2(matchBestRally, 11, 9, CRGB::Yellow);
+}
+
+void ensureDefaultPlayers() {
+    if (pongLeftUser == "") pongLeftUser = "P1";
+    if (pongRightUser == "") pongRightUser = "P2";
 }
 
 void saveMatchHighscores() {
@@ -363,6 +360,14 @@ void tickPong() {
     switch (state) {
     case PONG_MENU:
         renderMenu();
+        if (joystick1.langKlickZaehler > 0 || joystick3.langKlickZaehler > 0) {
+            joystick1.langKlickZaehler = 0;
+            joystick3.langKlickZaehler = 0;
+            ensureDefaultPlayers();
+            resetMatch();
+            beginCountdown();
+            break;
+        }
         if (startEdge && (pongLeftUser != "" || pongRightUser != "")) {
             resetMatch();
             beginCountdown();

@@ -1688,8 +1688,15 @@ static void renderGameOver()
 
     FastLED.clear();
     CRGB col = ((now / 280) % 2 == 0) ? CRGB::Red : CRGB::OrangeRed;
-    drawChar3x5(5, 3, 'G', col);
-    drawChar3x5(11, 3, 'O', col);
+    setPixel(9, 4, col);
+    setPixel(8, 5, col);
+    setPixel(9, 5, CRGB::White);
+    setPixel(10, 5, col);
+    setPixel(7, 6, col);
+    setPixel(9, 6, col);
+    setPixel(11, 6, col);
+    setPixel(8, 7, CRGB::Orange);
+    setPixel(10, 7, CRGB::Orange);
     uint32_t shownScore = score;
     if (shownScore > 9999) shownScore = 9999;
     uint8_t thousands = shownScore / 1000;
