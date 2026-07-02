@@ -26,6 +26,7 @@
 #include "TaskPong.h"
 #include "TaskPacman.h"
 #include "TaskTetris.h"
+#include "TaskMario.h"
 #include <LittleFS.h>
 
 // ==========================================
@@ -40,7 +41,7 @@
 #define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
-static const int APP_COUNT = 10;
+static const int APP_COUNT = 11;
 
 // --- Joystick 1 (Für Snake) ---
 #define J1_PIN_X 34
@@ -78,6 +79,7 @@ TaskHandle_t handleRaumschiff = NULL; // Task 6
 TaskHandle_t handlePong = NULL;       // Task 7
 TaskHandle_t handlePacman = NULL;     // Task 8
 TaskHandle_t handleTetris = NULL;     // Task 9
+TaskHandle_t handleMario = NULL;      // Task 10
 
 SemaphoreHandle_t clickCounterMutex = NULL;
 SemaphoreHandle_t displayMutex = NULL; // MUTEX FÜR DAS DISPLAY
@@ -101,7 +103,8 @@ const uint32_t menuIcons[APP_COUNT] = {
     0x5A5A5, // 6 Raumschiff (einfach placeholder)
     0x57575, // 7 Pong
     0x7AB57, // 8 Pacman
-    0x2F2F2  // 9 Tetris
+    0x2F2F2, // 9 Tetris
+    0x4E4B5  // 10 Mario
 
 };
 
@@ -326,6 +329,12 @@ void printMenu()
         renderTetrisMenuPreview();
         break;
     }
+
+    case 11:
+    {
+        renderMarioMenuPreview();
+        break;
+    }
     }
 
     FastLED.show();
@@ -359,6 +368,8 @@ TaskHandle_t getTaskHandle(int nummer)
         return handlePacman;
     case 9:
         return handleTetris;
+    case 10:
+        return handleMario;
     default:
         return NULL;
     }
@@ -646,6 +657,7 @@ void setup()
     xTaskCreatePinnedToCore(taskPongHandler, "Pong", 4096, NULL, 1, &handlePong, 1);
     xTaskCreatePinnedToCore(taskPacmanHandler, "Pacman", 4096, NULL, 1, &handlePacman, 1);
     xTaskCreatePinnedToCore(taskTetrisHandler, "Tetris", 4096, NULL, 1, &handleTetris, 1);
+    xTaskCreatePinnedToCore(taskMarioHandler, "Mario", 6144, NULL, 1, &handleMario, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();

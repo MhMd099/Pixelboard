@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include "HardwareUtils.h"
 #include "RaumschiffGame.h"
+#include "TaskMario.h"
 
 const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
 
@@ -44,6 +45,9 @@ static const char* deviceConfigPath = "/device.json";
 static const char* deviceHostNameValue = "pixelboard";
 static unsigned long lastWifiBeginMs = 0;
 static unsigned long firstWifiAttemptMs = 0;
+
+extern volatile int aktiverTask;
+extern int fokusModus;
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
@@ -510,6 +514,7 @@ static String dashboardNav(const String& active) {
     if (active != "pong") nav += "<a href='/pong'>Pong</a>";
     if (active != "pacman") nav += "<a href='/pacman'>Pacman</a>";
     if (active != "tetris") nav += "<a href='/tetris'>Tetris</a>";
+    if (active != "mario") nav += "<a href='/mario'>Mario</a>";
     nav += "</div>";
     return nav;
 }
@@ -593,7 +598,7 @@ void handleIpInfo() {
 void handleShooterPage() {
     String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
 <style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:960px;margin:0 auto;padding:10px}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}.stickyEnergy{position:sticky;top:0;z-index:20;box-shadow:0 10px 24px #0008}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2,.grid3{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{grid-template-columns:1fr 1fr 1fr}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.energybar{height:14px;background:#0b1424;border:1px solid #334155;border-radius:8px;overflow:hidden}.energyfill{height:100%;background:#facc15;width:0%}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2,.grid3{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
-</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a><a href='/tetris'>Tetris</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a><a href='/tetris'>Tetris</a><a href='/mario'>Mario</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
 <div class='panel stickyEnergy'><h2>Web-Gamemaster</h2><div class='line' id='energyText'>Energie 0 / 0</div><div class='energybar'><div class='energyfill' id='energyFill'></div></div><div class='hint'>Spieler-Kills laden Energie wieder auf. Starke Events kosten mehr.</div></div>
 <div class='panel'><h2>Spieler</h2><div class='hint'>Schaden steigt mit eigenem Score plus Kills. Boost und Multi Shot kommen zusaetzlich oben drauf.</div><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='Spieler 1 Name'><input id='p2name' placeholder='Spieler 2 Name'></div><div class='grid2'><select id='p2mode'><option value='0'>Spieler 2 Auto</option><option value='1'>Spieler 2 ESP32 Joystick</option><option value='2'>Spieler 2 I2C Arduino</option></select><button class='soft' onclick='setP2Mode()'>Controller speichern</button></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
 <div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
@@ -853,6 +858,42 @@ void handleTetrisState() {
     server.send(200, "application/json", json);
 }
 
+void handleMarioPage() {
+    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
+    html += ".wrap{max-width:560px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.big{font-size:26px;color:#facc15;font-weight:bold}.muted{color:#94a3b8}.ok{color:#a7f3d0}button{box-sizing:border-box;width:100%;border-radius:8px;border:0;background:#2563eb;color:#fff;padding:12px;font-size:15px;font-weight:bold;margin-top:8px}@media(max-width:460px){.grid{grid-template-columns:1fr}}</style>";
+    html += "</head><body><div class='wrap'><h1>Mario Dashboard</h1>";
+    html += dashboardNav("mario");
+    html += "<div class='card'><h2>Live</h2><div class='grid'>";
+    html += "<div class='line'>Score<div class='big' id='score'>0</div></div>";
+    html += "<div class='line'>Muenzen<div class='big' id='coins'>0</div></div>";
+    html += "</div><div class='grid'>";
+    html += "<div class='line'>Leben: <b id='lives'>3</b></div>";
+    html += "<div class='line'>Power: <b id='power'>small</b></div>";
+    html += "</div><div class='line'>Status: <b id='state'>lobby</b></div>";
+    html += "<div class='line'>Position: X <b id='xpos'>0</b> | Kamera <b id='camera'>0</b></div></div>";
+    html += "<div class='card'><h2>Start</h2><div class='line muted'>Joystick 1 oder Joystick 3 startet und steuert Mario. Doppelklick auf dem Menu-Joystick bleibt global zurueck ins Menu.</div>";
+    html += "<form action='/mario/start' method='POST'><button>Mario neu starten</button></form></div>";
+    html += "<div class='card'><h2>Steuerung</h2><div class='line'>Links/Rechts: laufen | Oben: springen | Runter: ducken | Klick: Feuerball bei Fire Mario</div>";
+    html += "<div class='line muted'>Small stirbt bei Treffer. Super/Fire verlieren zuerst nur den Power-State. Pilz macht Super, Feuerblume schaltet Feuerbaelle frei.</div></div>";
+    html += "<div class='card'><h2>Level-Daten</h2><div class='line ok'>Speicherschonend: Plattform-Segmente, Blockliste, gepackte Muenzen und Spawnpunkte statt grosser Tile-Arrays.</div></div>";
+    html += "</div><script>async function load(){try{let r=await fetch('/mario/state');let j=await r.json();document.getElementById('score').textContent=j.score;document.getElementById('coins').textContent=j.coins;document.getElementById('lives').textContent=j.lives;document.getElementById('power').textContent=j.power;document.getElementById('state').textContent=j.state;document.getElementById('xpos').textContent=j.x;document.getElementById('camera').textContent=j.camera;}catch(e){}}setInterval(load,500);load();</script></body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handleMarioState() {
+    server.send(200, "application/json", marioStateJson());
+}
+
+void handleMarioStart() {
+    marioRequestRestart();
+    fokusModus = 11;
+    aktiverTask = 10;
+    server.sendHeader("Location", "/mario");
+    server.send(303);
+}
+
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
@@ -991,6 +1032,9 @@ void setupWebServer() {
     server.on("/tetris", HTTP_GET, handleTetrisPage);
     server.on("/tetris/settings", HTTP_POST, handleTetrisSettings);
     server.on("/tetris/state", HTTP_GET, handleTetrisState);
+    server.on("/mario", HTTP_GET, handleMarioPage);
+    server.on("/mario/state", HTTP_GET, handleMarioState);
+    server.on("/mario/start", HTTP_POST, handleMarioStart);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
     server.on("/shooter/input", HTTP_GET, handleShooterInput);
