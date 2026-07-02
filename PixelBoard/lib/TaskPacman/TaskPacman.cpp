@@ -40,6 +40,7 @@ enum PacmanState {
     PAC_LOBBY,
     PAC_COUNTDOWN,
     PAC_PLAYING,
+    PAC_WIN,
     PAC_GAMEOVER
 };
 
@@ -85,6 +86,11 @@ unsigned long lastGhostSwitchMs = 0;
 unsigned long frightenedUntilMs = 0;
 unsigned long sprintUntilMs = 0;
 unsigned long sprintCooldownUntilMs = 0;
+unsigned long ghostAbilityUntilMs[GHOST_COUNT];
+unsigned long playerInvertUntilMs = 0;
+int8_t tempWallX = -1;
+int8_t tempWallY = -1;
+unsigned long tempWallUntilMs = 0;
 
 Vec makeVec(int8_t x, int8_t y) {
     Vec v = {x, y};
@@ -101,6 +107,7 @@ bool inBounds(int x, int y) {
 
 bool isWall(int x, int y) {
     if (!inBounds(x, y)) return true;
+    if (tempWallX == x && tempWallY == y && (long)(millis() - tempWallUntilMs) < 0) return true;
     return mapTiles[y][x] == TILE_WALL;
 }
 
@@ -154,9 +161,11 @@ void buildMap() {
     }
 }
 
-Vec readGridDir(Joystick& stick) {
-    int xPerc = -stick.readXPercent();
-    int yPerc = -stick.readYPercent();
+Vec readGridDir(Joystick& stick, bool invertX, bool invertY) {
+    int xPerc = stick.readXPercent();
+    int yPerc = stick.readYPercent();
+    if (invertX) xPerc = -xPerc;
+    if (invertY) yPerc = -yPerc;
 
     if (abs(yPerc) > abs(xPerc)) {
         if (yPerc > DEADZONE) return makeVec(1, 0);
@@ -254,6 +263,11 @@ void resetGame() {
     frightenedUntilMs = 0;
     sprintUntilMs = 0;
     sprintCooldownUntilMs = 0;
+    playerInvertUntilMs = 0;
+    tempWallX = -1;
+    tempWallY = -1;
+    tempWallUntilMs = 0;
+    for (uint8_t i = 0; i < GHOST_COUNT; i++) ghostAbilityUntilMs[i] = 0;
     lastPlayerMoveMs = 0;
     lastGhostSwitchMs = 0;
 }
@@ -274,10 +288,15 @@ void consumeTile(Player& player, unsigned long now) {
     }
 }
 
-void updateOnePlayer(Player& player, Joystick& stick, unsigned long now) {
+void updateOnePlayer(Player& player, Joystick& stick, unsigned long now, bool invertX, bool invertY) {
     if (!player.active || !player.alive) return;
 
-    Vec input = readGridDir(stick);
+    if ((long)(now - playerInvertUntilMs) < 0) {
+        invertX = !invertX;
+        invertY = !invertY;
+    }
+
+    Vec input = readGridDir(stick, invertX, invertY);
     if (input.x != 0 || input.y != 0) player.wanted = input;
 
     if (canMove(player.x, player.y, player.wanted)) player.dir = player.wanted;
@@ -288,8 +307,8 @@ void updateOnePlayer(Player& player, Joystick& stick, unsigned long now) {
 void updatePlayers(unsigned long now) {
     if (now - lastPlayerMoveMs < PLAYER_STEP_MS) return;
     lastPlayerMoveMs = now;
-    updateOnePlayer(players[0], joystick1, now);
-    updateOnePlayer(players[1], joystick3, now);
+    updateOnePlayer(players[0], joystick1, now, false, false);
+    updateOnePlayer(players[1], joystick3, now, false, false);
 }
 
 Vec targetForGhost(uint8_t idx) {
@@ -351,7 +370,24 @@ void readGhostClicks(unsigned long now) {
 
     if (clicks > 0) cycleGhost(now);
     if (holds > 0 && now >= sprintCooldownUntilMs) {
-        sprintUntilMs = now + GHOST_SPRINT_MS;
+        if (activeGhostIndex == 0) {
+            sprintUntilMs = now + GHOST_SPRINT_MS;
+            ghostAbilityUntilMs[0] = sprintUntilMs;
+        } else if (activeGhostIndex == 1) {
+            ghostAbilityUntilMs[1] = now + 3000UL;
+        } else if (activeGhostIndex == 2) {
+            playerInvertUntilMs = now + 3500UL;
+            ghostAbilityUntilMs[2] = now + 3500UL;
+        } else {
+            int bx = ghosts[3].x - ghosts[3].dir.x;
+            int by = ghosts[3].y - ghosts[3].dir.y;
+            if (inBounds(bx, by) && mapTiles[by][bx] != TILE_WALL) {
+                tempWallX = bx;
+                tempWallY = by;
+                tempWallUntilMs = now + 4500UL;
+            }
+            ghostAbilityUntilMs[3] = now + 4500UL;
+        }
         sprintCooldownUntilMs = now + GHOST_SPRINT_COOLDOWN_MS;
         playSound(SND_SHOOT);
     }
@@ -361,11 +397,12 @@ void updateControlledGhost(unsigned long now) {
     Ghost& g = ghosts[activeGhostIndex];
     if (now < g.respawnUntilMs) return;
 
-    unsigned long interval = (now < sprintUntilMs) ? GHOST_SPRINT_STEP_MS : GHOST_STEP_MS;
+    unsigned long interval = (now < sprintUntilMs || now < ghostAbilityUntilMs[1]) ? GHOST_SPRINT_STEP_MS : GHOST_STEP_MS;
     if (now - g.lastMoveMs < interval) return;
 
-    Vec input = readGridDir(joystick2);
+    Vec input = readGridDir(joystick2, true, true);
     if (input.x != 0 || input.y != 0) g.dir = input;
+    else if (activeGhostIndex == 1 && now < ghostAbilityUntilMs[1]) g.dir = chooseAutoDir(activeGhostIndex);
     moveEntity(g.x, g.y, g.dir);
     g.lastMoveMs = now;
 }
@@ -457,6 +494,9 @@ void renderMap() {
             else if (tile == TILE_POWER) setPixel(x, y, CRGB::White);
         }
     }
+    if ((long)(millis() - tempWallUntilMs) < 0 && inBounds(tempWallX, tempWallY)) {
+        setPixel(tempWallX, tempWallY, CRGB(120, 50, 180));
+    }
 }
 
 void renderGame(unsigned long now) {
@@ -467,7 +507,6 @@ void renderGame(unsigned long now) {
         Player& p = players[i];
         if (!p.active) continue;
         CRGB c = p.alive ? p.color : CRGB(45, 45, 45);
-        if (i == 0 && (now / 140) % 2) c = CRGB(255, 180, 0);
         setPixel(p.x, p.y, c);
     }
 
@@ -475,8 +514,9 @@ void renderGame(unsigned long now) {
         Ghost& g = ghosts[i];
         if (now < g.respawnUntilMs && (now / 160) % 2) continue;
 
-        CRGB col = (now < frightenedUntilMs) ? CRGB(40, 70, 255) : g.color;
-        if (pacmanGhostManual && i == activeGhostIndex && (now / 180) % 2 == 0) col = CRGB::White;
+        CRGB col = g.color;
+        if (now < frightenedUntilMs) col.nscale8_video(95);
+        if (now < ghostAbilityUntilMs[i]) col.nscale8_video(180);
         setPixel(g.x, g.y, col);
     }
 
@@ -508,6 +548,12 @@ void renderGameOver() {
     drawNumber(max(players[0].score, players[1].score) / 10, 10, 9, CRGB::Yellow);
 }
 
+void renderWin() {
+    FastLED.clear();
+    renderWord("WIN", 2, 1, CRGB::Green);
+    drawNumber(max(players[0].score, players[1].score) / 10, 10, 9, CRGB::Yellow);
+}
+
 void beginCountdown() {
     resetGame();
     state = PAC_COUNTDOWN;
@@ -517,10 +563,8 @@ void beginCountdown() {
 
 void tickPacman() {
     //ich musste es hier selber einfügenb, weil der joystick i2c invertiert war
-    joystick3.setInverted(true,true);
         //ich musste es hier selber einfügenb, weil der joystick invertiert war
 
-    joystick1.setInverted(true,true);
     //es geht aber nicht, i2c funktioniert,aber joystick eins ist immer ncoh invertiert
     unsigned long now = millis();
     bool startPressed = joystick1.isPressed() || joystick2.isPressed() || joystick3.isPressed();
@@ -550,12 +594,20 @@ void tickPacman() {
         if (dotsLeft <= 0) {
             players[0].score += players[0].active ? 250 : 0;
             players[1].score += players[1].active ? 250 : 0;
-            state = PAC_GAMEOVER;
+            state = PAC_WIN;
             stateStartedMs = now;
             playSound(SND_BUFF);
         }
-        if (state == PAC_GAMEOVER) saveScoreIfNeeded();
+        if (state == PAC_GAMEOVER || state == PAC_WIN) saveScoreIfNeeded();
         renderGame(now);
+        break;
+
+    case PAC_WIN:
+        saveScoreIfNeeded();
+        renderWin();
+        if (startEdge) {
+            state = PAC_LOBBY;
+        }
         break;
 
     case PAC_GAMEOVER:

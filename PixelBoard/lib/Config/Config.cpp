@@ -681,6 +681,7 @@ void handlePacmanPage() {
     html += "<div class='card'><h2>Spieler</h2>";
     html += "<div class='line'>P1: <b>" + (pacmanP1User == "" ? String("-") : htmlEscape(pacmanP1User)) + "</b> | P2: <b>" + (pacmanP2User == "" ? String("-") : htmlEscape(pacmanP2User)) + "</b></div>";
     html += "<div class='line muted'>P1 = ESP32 Joystick 1. P2 = I2C Joystick. Joystick 2 bleibt Menu und Ghost: Klick wechselt Geist, Langklick nutzt Ability, Doppelklick zurueck.</div>";
+    html += "<div class='line muted'>Geister: Rot jagt direkt, Pink lauert vor dem Spieler, Cyan zielt spiegelnd/chaotisch, Orange blockt und streut. Langklick: Rot Sprint, Pink Ambush, Cyan invertiert kurz Pacman, Orange setzt eine kurze Wand.</div>";
     html += "<form action='/pacman/login' method='POST'><div class='grid'><div><label>Pacman 1</label><input name='p1' placeholder='Name P1' value='" + htmlEscape(pacmanP1User) + "'></div>";
     html += "<div><label>Pacman 2</label><input name='p2' placeholder='Name P2 optional' value='" + htmlEscape(pacmanP2User) + "'></div></div>";
     html += "<label class='check'><input type='checkbox' name='ghost' value='1'";
