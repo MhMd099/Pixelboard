@@ -25,6 +25,7 @@
 #include "TaskRaumschiff.h"
 #include "TaskPong.h"
 #include "TaskPacman.h"
+#include "TaskTetris.h"
 #include <LittleFS.h>
 
 // ==========================================
@@ -39,7 +40,7 @@
 #define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
-static const int APP_COUNT = 9;
+static const int APP_COUNT = 10;
 
 // --- Joystick 1 (Für Snake) ---
 #define J1_PIN_X 34
@@ -76,6 +77,7 @@ TaskHandle_t handleDHT = NULL;    // Task 5 (NEU)
 TaskHandle_t handleRaumschiff = NULL; // Task 6
 TaskHandle_t handlePong = NULL;       // Task 7
 TaskHandle_t handlePacman = NULL;     // Task 8
+TaskHandle_t handleTetris = NULL;     // Task 9
 
 SemaphoreHandle_t clickCounterMutex = NULL;
 SemaphoreHandle_t displayMutex = NULL; // MUTEX FÜR DAS DISPLAY
@@ -98,7 +100,8 @@ const uint32_t menuIcons[APP_COUNT] = {
     0x72497, // 5: DHT
     0x5A5A5, // 6 Raumschiff (einfach placeholder)
     0x57575, // 7 Pong
-    0x7AB57  // 8 Pacman
+    0x7AB57, // 8 Pacman
+    0x2F2F2  // 9 Tetris
 
 };
 
@@ -411,6 +414,24 @@ void printMenu()
         for (int x = 12; x < 19; x += 2) setPixel(x, 11, CRGB(60, 48, 20));
         break;
     }
+
+    case 10:
+    {
+        // Tetris
+        drawChar3x5(2, 2, 'T', themeCol(jetzt / 20, 255));
+        drawChar3x5(10, 2, 'E', themeCol(jetzt / 20 + 45, 255));
+        drawChar3x5(18, 2, 'T', themeCol(jetzt / 20 + 90, 255));
+        int px = 7 + (int)((jetzt / 220) % 6);
+        setPixel(24, px, CRGB::Cyan);
+        setPixel(24, px + 1, CRGB::Cyan);
+        setPixel(24, px + 2, CRGB::Cyan);
+        setPixel(24, px + 3, CRGB::Cyan);
+        setPixel(17, 11, CRGB::Red);
+        setPixel(18, 11, CRGB::Red);
+        setPixel(18, 12, CRGB::Red);
+        setPixel(19, 12, CRGB::Red);
+        break;
+    }
     }
 
     FastLED.show();
@@ -442,6 +463,8 @@ TaskHandle_t getTaskHandle(int nummer)
         return handlePong;
     case 8:
         return handlePacman;
+    case 9:
+        return handleTetris;
     default:
         return NULL;
     }
@@ -728,6 +751,7 @@ void setup()
         1);
     xTaskCreatePinnedToCore(taskPongHandler, "Pong", 4096, NULL, 1, &handlePong, 1);
     xTaskCreatePinnedToCore(taskPacmanHandler, "Pacman", 4096, NULL, 1, &handlePacman, 1);
+    xTaskCreatePinnedToCore(taskTetrisHandler, "Tetris", 4096, NULL, 1, &handleTetris, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
