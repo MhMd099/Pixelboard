@@ -796,6 +796,10 @@ void refreshCachedBest() {
 }
 }
 
+void renderPacmanMenuPreview() {
+    renderLobby(millis());
+}
+
 void taskPacmanHandler(void *pvParameters) {
     int lastTask = -1;
 

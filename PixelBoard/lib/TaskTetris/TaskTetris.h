@@ -2,5 +2,6 @@
 #define TASK_TETRIS_H
 
 void taskTetrisHandler(void *pvParameters);
+void renderTetrisMenuPreview();
 
 #endif

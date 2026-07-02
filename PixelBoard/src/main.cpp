@@ -305,68 +305,25 @@ void printMenu()
 
     case 7:
     {
-        int shipX = 7 + (int)(sin(jetzt / 260.0) * 2.0);
-        int shipY = 8;
-        CRGB ship = themeCol(jetzt / 18 + 120, 255);
-        setPixel(shipX, shipY, ship);
-        setPixel(shipX + 1, shipY - 1, ship);
-        setPixel(shipX + 1, shipY, ship);
-        setPixel(shipX + 1, shipY + 1, ship);
-        setPixel(shipX + 2, shipY, CRGB::White);
-        setPixel(shipX - 1, shipY - 1, CRGB::OrangeRed);
-        setPixel(shipX - 2, shipY, CRGB::Orange);
-        for (int i = 0; i < 4; i++) {
-            int ax = 18 + i * 3 - (jetzt / 160 + i) % 3;
-            int ay = 4 + ((i * 3 + jetzt / 240) % 9);
-            setPixel(ax, ay, CRGB(180, 40, 30));
-            setPixel(ax + 1, ay, CRGB(120, 20, 20));
-        }
+        raumschiffRenderMenuPreview();
         break;
     }
 
     case 8:
     {
-        int by = 11 + (int)(sin(jetzt / 170.0) * 3.0);
-        for (int y = 5; y < 10; y++) {
-            setPixel(2, y, CRGB::Cyan);
-            setPixel(29, y + 2, CRGB::Orange);
-        }
-        setPixel(16, by, CRGB::White);
+        renderPongMenuPreview();
         break;
     }
 
     case 9:
     {
-        int mouth = (jetzt / 160) % 2;
-        setPixel(8, 8, CRGB::Yellow);
-        setPixel(9, 7, CRGB::Yellow);
-        setPixel(9, 8, CRGB::Yellow);
-        setPixel(9, 9, CRGB::Yellow);
-        setPixel(10, mouth ? 8 : 7, CRGB::Yellow);
-        setPixel(10, mouth ? 8 : 9, CRGB::Yellow);
-        for (int x = 13; x < 21; x += 2) setPixel(x, 8, CRGB(85, 70, 28));
-        CRGB ghost = ((jetzt / 240) % 2) ? CRGB::Red : CRGB::HotPink;
-        setPixel(24, 7, ghost);
-        setPixel(25, 7, ghost);
-        setPixel(24, 8, ghost);
-        setPixel(25, 8, ghost);
-        setPixel(24, 9, ghost);
-        setPixel(25, 9, ghost);
+        renderPacmanMenuPreview();
         break;
     }
 
     case 10:
     {
-        int px = 4 + (int)((jetzt / 180) % 9);
-        for (int i = 0; i < 4; i++) setPixel(24, px + i, CRGB::Cyan);
-        setPixel(17, 11, CRGB::Red);
-        setPixel(18, 11, CRGB::Red);
-        setPixel(18, 12, CRGB::Red);
-        setPixel(19, 12, CRGB::Red);
-        setPixel(12, 4, CRGB::Yellow);
-        setPixel(13, 4, CRGB::Yellow);
-        setPixel(12, 5, CRGB::Yellow);
-        setPixel(13, 5, CRGB::Yellow);
+        renderTetrisMenuPreview();
         break;
     }
     }

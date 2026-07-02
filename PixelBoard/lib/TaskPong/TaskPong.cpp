@@ -419,6 +419,10 @@ void tickPong() {
 }
 }
 
+void renderPongMenuPreview() {
+    renderMenu();
+}
+
 void taskPongHandler(void *pvParameters) {
     int lastTask = -1;
 

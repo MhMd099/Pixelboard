@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <FastLED.h>
 
+#include "Config.h"
 #include "HardwareUtils.h"
 #include "Joystick.h"
 #include "SoundUtils.h"
@@ -25,8 +26,6 @@ const int NEXT_X = 12;
 const int NEXT_Y = 5;
 const int INPUT_DEADZONE = 62;
 const unsigned long MOVE_REPEAT_MS = 125;
-const unsigned long NORMAL_FALL_MS = 620;
-const unsigned long SOFT_FALL_MS = 65;
 const unsigned long BUTTON_HOLD_MS = 700;
 
 enum TetrisState {
@@ -55,6 +54,7 @@ unsigned long lastMoveMs = 0;
 bool lastUpHeld = false;
 bool lastButton = false;
 bool holdTriggered = false;
+bool scoreSaved = false;
 unsigned long buttonDownMs = 0;
 
 const CRGB pieceColors[7] = {
@@ -131,6 +131,37 @@ int8_t randomPiece() {
     return (int8_t)random(0, 7);
 }
 
+uint32_t visibleScore() {
+    return score % 1000UL;
+}
+
+void syncDashboardScore() {
+    tetrisCurrentScore = score;
+    tetrisBoardScore = visibleScore();
+    tetrisPlaying = state == TETRIS_PLAYING;
+}
+
+unsigned long currentFallInterval() {
+    uint16_t normalMs = constrain((int)tetrisNormalFallMs, 120, 1500);
+    uint16_t minMs = constrain((int)tetrisMinFallMs, 80, normalMs);
+    uint16_t scoreStep = constrain((int)tetrisSpeedScoreStep, 50, 2000);
+    uint16_t speedStep = constrain((int)tetrisSpeedStepMs, 0, 250);
+    uint32_t steps = score / scoreStep;
+    unsigned long reduction = steps * (unsigned long)speedStep;
+    if (reduction >= normalMs - minMs) return minMs;
+    return normalMs - reduction;
+}
+
+void saveTetrisScoreIfNeeded() {
+    if (scoreSaved || score == 0) return;
+    String user = currentUser;
+    user.trim();
+    if (user == "") user = "Gast";
+    saveTetrisHighScore(user, (int)min(score, (uint32_t)2147483647UL));
+    tetrisLastScore = score;
+    scoreSaved = true;
+}
+
 void spawnPiece(int8_t type) {
     current.type = type;
     current.rot = 0;
@@ -161,9 +192,11 @@ void resetGame() {
     lastUpHeld = false;
     lastButton = false;
     holdTriggered = false;
+    scoreSaved = false;
     buttonDownMs = 0;
     state = TETRIS_PLAYING;
     spawnPiece(randomPiece());
+    syncDashboardScore();
 }
 
 void lockPiece() {
@@ -389,7 +422,8 @@ void renderPlaying() {
 
     drawGhostPiece(millis());
     drawPieceAt(current, pieceColors[current.type]);
-    drawNumberSmall(score / 10, SCORE_X, SCORE_Y, CRGB(120, 180, 255));
+    syncDashboardScore();
+    drawNumberSmall(visibleScore(), SCORE_X, SCORE_Y, CRGB(120, 180, 255));
     FastLED.show();
 }
 
@@ -431,7 +465,8 @@ void renderMenu() {
 
 void renderGameOver() {
     FastLED.clear();
-    drawNumberSmall(score / 10, 3, 8, CRGB::Red);
+    syncDashboardScore();
+    drawNumberSmall(visibleScore(), 3, 8, CRGB::Red);
     for (int y = 20; y < 28; y++)
         for (int x = 4; x < 12; x++)
             if (((x + y) & 1) == 0) setRotatedPixel(x, y, CRGB(60, 0, 0));
@@ -442,12 +477,15 @@ void tickTetris() {
     unsigned long now = millis();
 
     if (state == TETRIS_MENU) {
+        tetrisPlaying = false;
         renderMenu();
         if (joystick1.isPressed()) resetGame();
         return;
     }
 
     if (state == TETRIS_GAMEOVER) {
+        tetrisPlaying = false;
+        saveTetrisScoreIfNeeded();
         renderGameOver();
         if (joystick1.isPressed()) resetGame();
         return;
@@ -459,7 +497,7 @@ void tickTetris() {
     handleStick(now, softDrop, didHardDrop);
 
     if (!didHardDrop) {
-        unsigned long interval = softDrop ? SOFT_FALL_MS : NORMAL_FALL_MS;
+        unsigned long interval = softDrop ? constrain((int)tetrisSoftFallMs, 20, 500) : currentFallInterval();
         if (now - lastFallMs >= interval) {
             fallOne();
             lastFallMs = now;
@@ -471,11 +509,16 @@ void tickTetris() {
 }
 }
 
+void renderTetrisMenuPreview() {
+    renderMenu();
+}
+
 void taskTetrisHandler(void *pvParameters) {
     int lastTask = -1;
 
     for (;;) {
         if (aktiverTask != 9) {
+            tetrisPlaying = false;
             lastTask = -1;
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;

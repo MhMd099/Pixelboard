@@ -1698,6 +1698,39 @@ static void renderMenu()
     FastLED.show();
 }
 
+void raumschiffRenderMenuPreview()
+{
+    FastLED.clear();
+    uint32_t now = millis();
+
+    for (uint8_t x = 0; x < fieldWidth; x++)
+    {
+        setPixel(x, 0, CHSV(x * 8 + now / 20, 220, 80));
+        setPixel(x, fieldHeight - 1, CHSV(160 + x * 5 + now / 25, 220, 70));
+    }
+
+    auto drawPreviewShip = [](uint8_t x, uint8_t y, CRGB color)
+    {
+        setPixel(x, y, color);
+        setPixel(x + 1, y - 1, color);
+        setPixel(x + 1, y, color);
+        setPixel(x + 1, y + 1, color);
+        setPixel(x + 2, y, CRGB::White);
+        setPixel(x - 1, y - 1, CRGB::OrangeRed);
+        setPixel(x - 2, y, CRGB::Orange);
+    };
+
+    drawPreviewShip(5, 5 + ((now / 260) % 3), playerColor(0));
+    drawPreviewShip(5, 10 - ((now / 320) % 3), playerColor(1));
+
+    setPixel(18, 6 + ((now / 240) % 4), CRGB::Orange);
+    setPixel(19, 6 + ((now / 240) % 4), CRGB::OrangeRed);
+    setPixel(22, 8 + ((now / 180) % 3), CRGB::Red);
+    setPixel(23, 8 + ((now / 180) % 3), CRGB::DarkRed);
+    setPixel(27, 7 + ((now / 300) % 5), CRGB::Red);
+    setPixel(27, 8 + ((now / 300) % 5), CRGB::DarkRed);
+}
+
 static void renderGameOver()
 {
     uint32_t now = millis();

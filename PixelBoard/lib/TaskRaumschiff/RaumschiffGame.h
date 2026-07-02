@@ -166,6 +166,7 @@ struct Boss
 
 void raumschiffGameTick();
 void raumschiffResetGame();
+void raumschiffRenderMenuPreview();
 
 GameState getGameState();
 uint32_t getRaumschiffScore();

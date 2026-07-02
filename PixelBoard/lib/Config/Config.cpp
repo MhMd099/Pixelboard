@@ -19,6 +19,15 @@ bool pacmanGhostManual = false;
 uint8_t snakeObstacleTarget = 0;
 uint8_t snakeFoodTarget = 3;
 uint8_t snakePowerupTarget = 1;
+volatile uint32_t tetrisCurrentScore = 0;
+volatile uint32_t tetrisBoardScore = 0;
+volatile uint32_t tetrisLastScore = 0;
+volatile bool tetrisPlaying = false;
+volatile uint16_t tetrisNormalFallMs = 500;
+volatile uint16_t tetrisSoftFallMs = 65;
+volatile uint16_t tetrisMinFallMs = 220;
+volatile uint16_t tetrisSpeedScoreStep = 250;
+volatile uint16_t tetrisSpeedStepMs = 35;
 bool forceWeatherUpdate = false;
 
 String wifiSsid = "";
@@ -237,6 +246,12 @@ static int readPacmanHighScore(JsonVariant data) {
     return obj["pac"] | 0;
 }
 
+static int readTetrisHighScore(JsonVariant data) {
+    if (!data.is<JsonObject>()) return 0;
+    JsonObject obj = data.as<JsonObject>();
+    return obj["tetris"] | 0;
+}
+
 static String loadDefaultCity() {
     String city = "Innsbruck";
     if (!LittleFS.exists(deviceConfigPath)) return city;
@@ -297,6 +312,13 @@ static bool isPacmanScoreEntry(JsonPair kv) {
     if (key == "" || key[0] == '_') return false;
     if (!kv.value().is<JsonObject>()) return false;
     return readPacmanHighScore(kv.value()) > 0;
+}
+
+static bool isTetrisScoreEntry(JsonPair kv) {
+    String key = kv.key().c_str();
+    if (key == "" || key[0] == '_') return false;
+    if (!kv.value().is<JsonObject>()) return false;
+    return readTetrisHighScore(kv.value()) > 0;
 }
 
 static int clockIndexFromLegacy(int idx) {
@@ -487,6 +509,7 @@ static String dashboardNav(const String& active) {
     if (active != "snake") nav += "<a href='/snake'>Snake</a>";
     if (active != "pong") nav += "<a href='/pong'>Pong</a>";
     if (active != "pacman") nav += "<a href='/pacman'>Pacman</a>";
+    if (active != "tetris") nav += "<a href='/tetris'>Tetris</a>";
     nav += "</div>";
     return nav;
 }
@@ -570,7 +593,7 @@ void handleIpInfo() {
 void handleShooterPage() {
     String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
 <style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:960px;margin:0 auto;padding:10px}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}.stickyEnergy{position:sticky;top:0;z-index:20;box-shadow:0 10px 24px #0008}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2,.grid3{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{grid-template-columns:1fr 1fr 1fr}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.energybar{height:14px;background:#0b1424;border:1px solid #334155;border-radius:8px;overflow:hidden}.energyfill{height:100%;background:#facc15;width:0%}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2,.grid3{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
-</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a><a href='/tetris'>Tetris</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
 <div class='panel stickyEnergy'><h2>Web-Gamemaster</h2><div class='line' id='energyText'>Energie 0 / 0</div><div class='energybar'><div class='energyfill' id='energyFill'></div></div><div class='hint'>Spieler-Kills laden Energie wieder auf. Starke Events kosten mehr.</div></div>
 <div class='panel'><h2>Spieler</h2><div class='hint'>Schaden steigt mit eigenem Score plus Kills. Boost und Multi Shot kommen zusaetzlich oben drauf.</div><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='Spieler 1 Name'><input id='p2name' placeholder='Spieler 2 Name'></div><div class='grid2'><select id='p2mode'><option value='0'>Spieler 2 Auto</option><option value='1'>Spieler 2 ESP32 Joystick</option><option value='2'>Spieler 2 I2C Arduino</option></select><button class='soft' onclick='setP2Mode()'>Controller speichern</button></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
 <div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
@@ -781,6 +804,55 @@ void handlePacmanLogin() {
     server.send(303);
 }
 
+void handleTetrisPage() {
+    PlayerData top[3];
+    int topCount = 0;
+    getTopTetrisScores(top, topCount);
+
+    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
+    html += ".wrap{max-width:520px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.row{display:grid;grid-template-columns:145px 1fr;gap:8px;align-items:center;margin:8px 0}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.big{font-size:26px;color:#facc15;font-weight:bold}.muted{color:#94a3b8}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}button{background:#2563eb;border:0;font-weight:bold;margin-top:8px}@media(max-width:460px){.grid,.row{grid-template-columns:1fr}}</style>";
+    html += "</head><body><div class='wrap'><h1>Tetris Dashboard</h1>";
+    html += dashboardNav("tetris");
+    html += "<div class='card'><h2>Live</h2><div class='grid'><div class='line'>Total<div class='big' id='total'>0</div></div><div class='line'>Matrix<div class='big' id='board'>0</div></div></div>";
+    html += "<div class='line'>Status: <b id='state'>-</b></div><div class='line'>Letztes Spiel: <b id='last'>0</b></div><div class='line muted'>Die Matrix zeigt nur 0-999. Das Dashboard zaehlt den echten Score weiter.</div></div>";
+    html += "<div class='card'><h2>Geschwindigkeit</h2><form action='/tetris/settings' method='POST'>";
+    html += "<div class='row'><label>Fall-Tick ms</label><input type='number' name='normal' min='120' max='1500' value='" + String((uint16_t)tetrisNormalFallMs) + "'></div>";
+    html += "<div class='row'><label>Soft-Drop ms</label><input type='number' name='soft' min='20' max='500' value='" + String((uint16_t)tetrisSoftFallMs) + "'></div>";
+    html += "<div class='row'><label>Max-Speed ms</label><input type='number' name='min' min='80' max='1500' value='" + String((uint16_t)tetrisMinFallMs) + "'></div>";
+    html += "<div class='row'><label>Score pro Stufe</label><input type='number' name='scorestep' min='50' max='2000' value='" + String((uint16_t)tetrisSpeedScoreStep) + "'></div>";
+    html += "<div class='row'><label>ms pro Stufe</label><input type='number' name='speedstep' min='0' max='250' value='" + String((uint16_t)tetrisSpeedStepMs) + "'></div>";
+    html += "<button>Speed speichern</button></form><div class='line muted'>Mehr ms = langsamer. Fall-Tick 500 bedeutet 1 Pixel alle 500ms.</div></div>";
+    html += "<div class='card'><h2>Top 3 Tetris</h2>";
+    if (topCount == 0) html += "<div class='line'>Noch keine Tetris Scores.</div>";
+    for (int i = 0; i < topCount; i++)
+        html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
+    html += "</div></div><script>async function load(){try{let r=await fetch('/tetris/state');let j=await r.json();document.getElementById('total').textContent=j.score;document.getElementById('board').textContent=j.board;document.getElementById('last').textContent=j.last;document.getElementById('state').textContent=j.playing?'laeuft':'wartet';}catch(e){}}setInterval(load,700);load();</script></body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handleTetrisSettings() {
+    if (server.hasArg("normal")) tetrisNormalFallMs = constrain(server.arg("normal").toInt(), 120, 1500);
+    if (server.hasArg("soft")) tetrisSoftFallMs = constrain(server.arg("soft").toInt(), 20, 500);
+    if (server.hasArg("min")) tetrisMinFallMs = constrain(server.arg("min").toInt(), 80, 1500);
+    if (server.hasArg("scorestep")) tetrisSpeedScoreStep = constrain(server.arg("scorestep").toInt(), 50, 2000);
+    if (server.hasArg("speedstep")) tetrisSpeedStepMs = constrain(server.arg("speedstep").toInt(), 0, 250);
+    if (tetrisMinFallMs > tetrisNormalFallMs) tetrisMinFallMs = tetrisNormalFallMs;
+    server.sendHeader("Location", "/tetris");
+    server.send(303);
+}
+
+void handleTetrisState() {
+    String json = "{";
+    json += "\"score\":" + String((uint32_t)tetrisCurrentScore);
+    json += ",\"board\":" + String((uint32_t)tetrisBoardScore);
+    json += ",\"last\":" + String((uint32_t)tetrisLastScore);
+    json += ",\"playing\":" + String(tetrisPlaying ? 1 : 0);
+    json += "}";
+    server.send(200, "application/json", json);
+}
+
 void handleDoLogin() {
     if (server.hasArg("username")) {
         String u = server.arg("username");
@@ -916,6 +988,9 @@ void setupWebServer() {
     server.on("/pong/login", HTTP_POST, handlePongLogin);
     server.on("/pacman", HTTP_GET, handlePacmanPage);
     server.on("/pacman/login", HTTP_POST, handlePacmanLogin);
+    server.on("/tetris", HTTP_GET, handleTetrisPage);
+    server.on("/tetris/settings", HTTP_POST, handleTetrisSettings);
+    server.on("/tetris/state", HTTP_GET, handleTetrisState);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
     server.on("/shooter/input", HTTP_GET, handleShooterInput);
@@ -1161,6 +1236,47 @@ int getPacmanHighScore(String user) {
     return readPacmanHighScore(doc[user]);
 }
 
+void saveTetrisHighScore(String user, int score) {
+    user.trim();
+    if (user == "" || score <= 0) return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    JsonObject obj = userObject(doc, user);
+    int currentHigh = readTetrisHighScore(doc[user]);
+    if (score > currentHigh) {
+        obj["tetris"] = score;
+        removeLegacyUserKeys(obj);
+
+        File file = LittleFS.open("/config.json", "w");
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("Neuer Tetris-Highscore gespeichert: " + String(score));
+        } else {
+            Serial.println("Tetris-Highscore konnte nicht gespeichert werden.");
+        }
+    }
+}
+
+int getTetrisHighScore(String user) {
+    user.trim();
+    if (user == "" || !LittleFS.exists("/config.json")) return 0;
+
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return 0;
+
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+    return readTetrisHighScore(doc[user]);
+}
+
 void getTopScores(PlayerData* list, int& count) {
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
@@ -1292,6 +1408,44 @@ void getTopPacmanScores(PlayerData* list, int& count) {
         }
 
         int score = readPacmanHighScore(kv.value());
+        if (count < 3) {
+            int pos = count;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+            count++;
+        } else if (score > list[2].score) {
+            int pos = 2;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+        }
+    }
+}
+
+void getTopTetrisScores(PlayerData* list, int& count) {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) {
+        count = 0;
+        return;
+    }
+    deserializeJson(doc, file);
+    file.close();
+
+    count = 0;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (!isTetrisScoreEntry(kv)) {
+            continue;
+        }
+
+        int score = readTetrisHighScore(kv.value());
         if (count < 3) {
             int pos = count;
             while (pos > 0 && list[pos - 1].score < score) {

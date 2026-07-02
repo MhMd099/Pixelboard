@@ -21,6 +21,11 @@ extern volatile uint32_t tetrisCurrentScore;
 extern volatile uint32_t tetrisBoardScore;
 extern volatile uint32_t tetrisLastScore;
 extern volatile bool tetrisPlaying;
+extern volatile uint16_t tetrisNormalFallMs;
+extern volatile uint16_t tetrisSoftFallMs;
+extern volatile uint16_t tetrisMinFallMs;
+extern volatile uint16_t tetrisSpeedScoreStep;
+extern volatile uint16_t tetrisSpeedStepMs;
 
 // --- WLAN / Captive Portal ---
 extern String wifiSsid;
