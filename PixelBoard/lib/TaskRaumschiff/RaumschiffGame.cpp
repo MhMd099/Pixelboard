@@ -78,8 +78,8 @@ static const uint16_t slowFieldDurationMs = 7000;
 static const uint16_t laserDurationMs = 130;
 static const uint16_t bossScoreGapBase = 300;
 static const uint16_t bossScoreGapGrowth = 120;
-static const uint16_t webEnergyMax = 250;
-static const uint16_t webEnergyStart = 110;
+static const uint16_t webEnergyMax = 400;
+static const uint16_t webEnergyStart = 180;
 static const uint8_t p2InputAuto = 0;
 static const uint8_t p2InputEsp32 = 1;
 static const uint8_t p2InputI2c = 2;
@@ -245,7 +245,7 @@ static void updateWebEnergy()
 
     while (now - lastWebEnergyRegenMs >= 1000UL)
     {
-        addWebEnergy(6);
+        addWebEnergy(10);
         lastWebEnergyRegenMs += 1000UL;
     }
 }
@@ -362,6 +362,20 @@ static String teamName()
     return name;
 }
 
+static bool isDefaultPlayerName(const String& name, uint8_t index)
+{
+    String trimmed = name;
+    trimmed.trim();
+    trimmed.toUpperCase();
+    if (trimmed == "")
+        return true;
+    if (index == 0 && trimmed == "P1")
+        return true;
+    if (index == 1 && trimmed == "P2")
+        return true;
+    return false;
+}
+
 void raumschiffRegisterKill(uint8_t playerIndex, uint16_t points, int dropX, int dropY)
 {
     if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
@@ -372,7 +386,7 @@ void raumschiffRegisterKill(uint8_t playerIndex, uint16_t points, int dropX, int
     spieler[playerIndex].kills++;
 
     refreshDamageLevel(playerIndex);
-    addWebEnergy(points * 3 + 8);
+    addWebEnergy(points * 4 + 15);
 
     raumschiffMaybeDropPowerUp(dropX, dropY);
 }
@@ -396,12 +410,17 @@ void raumschiffGameOver()
         lastMatchDurationSec = matchStartMs == 0 ? 0 : (millis() - matchStartMs) / 1000UL;
         String team = teamName();
         team.toCharArray(lastMatchName, sizeof(lastMatchName));
-        saveHighScore(team, (int)score);
+        bool p1Default = isDefaultPlayerName(String(playerNames[0]), 0);
+        bool p2Default = isDefaultPlayerName(String(playerNames[1]), 1);
+        if (!(p1Default && p2Default))
+            saveHighScore(team, (int)score);
 
         for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++)
         {
             String name = String(playerNames[i]);
             name.trim();
+            if (isDefaultPlayerName(name, i))
+                continue;
             if (i == 0 && name == "P1" && currentUser != "")
                 name = currentUser;
             if (name != "")

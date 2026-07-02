@@ -16,6 +16,9 @@ String pongRightUser = "";
 String pacmanP1User = "";
 String pacmanP2User = "";
 bool pacmanGhostManual = false;
+uint8_t snakeObstacleTarget = 0;
+uint8_t snakeFoodTarget = 3;
+uint8_t snakePowerupTarget = 1;
 bool forceWeatherUpdate = false;
 
 String wifiSsid = "";
@@ -216,6 +219,12 @@ static int readHighScore(JsonVariant data) {
     return obj["h"] | (obj["highscore"] | 0);
 }
 
+static int readSnakeHighScore(JsonVariant data) {
+    if (!data.is<JsonObject>()) return 0;
+    JsonObject obj = data.as<JsonObject>();
+    return obj["snake"] | 0;
+}
+
 static int readPongHighScore(JsonVariant data) {
     if (!data.is<JsonObject>()) return 0;
     JsonObject obj = data.as<JsonObject>();
@@ -262,8 +271,18 @@ static void saveDefaultCity(const String& city) {
 static bool isScoreEntry(JsonPair kv) {
     String key = kv.key().c_str();
     if (key == "" || key[0] == '_') return false;
+    key.trim();
+    key.toUpperCase();
+    if (key == "P1" || key == "P2" || key == "P1+P2") return false;
     if (!kv.value().is<JsonObject>()) return false;
     return readHighScore(kv.value()) > 0;
+}
+
+static bool isSnakeScoreEntry(JsonPair kv) {
+    String key = kv.key().c_str();
+    if (key == "" || key[0] == '_') return false;
+    if (!kv.value().is<JsonObject>()) return false;
+    return readSnakeHighScore(kv.value()) > 0;
 }
 
 static bool isPongScoreEntry(JsonPair kv) {
@@ -461,6 +480,17 @@ static void appendOption(String& html, int value, int current, const String& lab
     html += ">" + label + "</option>";
 }
 
+static String dashboardNav(const String& active) {
+    String nav = "<div class='nav'>";
+    if (active != "home") nav += "<a href='/'>Home</a>";
+    if (active != "shooter") nav += "<a href='/shooter'>Shooter</a>";
+    if (active != "snake") nav += "<a href='/snake'>Snake</a>";
+    if (active != "pong") nav += "<a href='/pong'>Pong</a>";
+    if (active != "pacman") nav += "<a href='/pacman'>Pacman</a>";
+    nav += "</div>";
+    return nav;
+}
+
 void handleRoot() {
     bool wifiConnected = WiFi.status() == WL_CONNECTED;
     String savedSsid = configuredWifiSsid();
@@ -471,11 +501,11 @@ void handleRoot() {
     html += "input[type='text'],input[type='password'],input[type='number'],select{width:90%;max-width:320px;padding:12px;margin:8px 0;border-radius:8px;border:1px solid #334155;background:#0f172a;color:#fff;}";
     html += "input[type='submit']{background:#06b6d4;color:#fff;padding:11px 20px;border:none;border-radius:8px;font-weight:bold;cursor:pointer;}";
     html += ".card{background:#1f2937;padding:20px;border-radius:10px;display:inline-block;margin:10px;min-width:min(320px,90vw);box-shadow:0 10px 30px #0008;vertical-align:top;}";
-    html += ".ok{color:#22c55e}.bad{color:#f87171}hr{border:0;border-top:1px solid #374151;margin:18px 0;}a{color:#f87171;text-decoration:none;font-weight:bold;}</style></head><body>";
+    html += ".ok{color:#22c55e}.bad{color:#f87171}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:14px auto}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd}hr{border:0;border-top:1px solid #374151;margin:18px 0;}a{color:#f87171;text-decoration:none;font-weight:bold;}</style></head><body>";
 
     html += "<h1>PixelBoard</h1><h2>Captive Portal</h2>";
 
-    html += "<p><a style='color:#38bdf8' href='/shooter'>Shooter Dashboard</a> &nbsp; <a style='color:#a7f3d0' href='/pong'>Pong Dashboard</a> &nbsp; <a style='color:#facc15' href='/pacman'>Pacman Dashboard</a></p>";
+    html += dashboardNav("home");
 
     html += "<div class='card'><h3>User</h3>";
     if (currentUser == "") html += "<p>Kein User aktiv.</p>";
@@ -539,8 +569,8 @@ void handleIpInfo() {
 
 void handleShooterPage() {
     String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
-<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:960px;margin:0 auto;padding:10px}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}.stickyEnergy{position:sticky;top:0;z-index:20;box-shadow:0 10px 24px #0008}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2,.grid3{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{grid-template-columns:1fr 1fr 1fr}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.energybar{height:14px;background:#0b1424;border:1px solid #334155;border-radius:8px;overflow:hidden}.energyfill{height:100%;background:#facc15;width:0%}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2,.grid3{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
-</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
+<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:960px;margin:0 auto;padding:10px}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}.stickyEnergy{position:sticky;top:0;z-index:20;box-shadow:0 10px 24px #0008}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2,.grid3{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{grid-template-columns:1fr 1fr 1fr}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.energybar{height:14px;background:#0b1424;border:1px solid #334155;border-radius:8px;overflow:hidden}.energyfill{height:100%;background:#facc15;width:0%}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2,.grid3{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
 <div class='panel stickyEnergy'><h2>Web-Gamemaster</h2><div class='line' id='energyText'>Energie 0 / 0</div><div class='energybar'><div class='energyfill' id='energyFill'></div></div><div class='hint'>Spieler-Kills laden Energie wieder auf. Starke Events kosten mehr.</div></div>
 <div class='panel'><h2>Spieler</h2><div class='hint'>Schaden steigt mit eigenem Score plus Kills. Boost und Multi Shot kommen zusaetzlich oben drauf.</div><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='Spieler 1 Name'><input id='p2name' placeholder='Spieler 2 Name'></div><div class='grid2'><select id='p2mode'><option value='0'>Spieler 2 Auto</option><option value='1'>Spieler 2 ESP32 Joystick</option><option value='2'>Spieler 2 I2C Arduino</option></select><button class='soft' onclick='setP2Mode()'>Controller speichern</button></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
 <div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
@@ -620,6 +650,40 @@ void handleShooterNames() {
     server.send(200, "application/json", "{\"ok\":1}");
 }
 
+void handleSnakePage() {
+    PlayerData top[3];
+    int topCount = 0;
+    getTopSnakeScores(top, topCount);
+
+    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
+    html += ".wrap{max-width:520px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.row{display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:center;margin:8px 0}label{font-size:13px;color:#bfdbfe}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;font-size:15px}";
+    html += "button{background:#2563eb;border:0;font-weight:bold;margin-top:8px}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.muted{color:#94a3b8}@media(max-width:460px){.row{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
+    html += "<h1>Snake Dashboard</h1>";
+    html += dashboardNav("snake");
+    html += "<div class='card'><h2>Spielparameter</h2><div class='line muted'>Aenderungen gelten ab dem naechsten Snake-Start oder Reset. Hindernisse sind violett, Aepfel rot, Powerups cyan.</div>";
+    html += "<form action='/snake/settings' method='POST'>";
+    html += "<div class='row'><label>Aepfel</label><input type='number' name='food' min='1' max='8' value='" + String(snakeFoodTarget) + "'></div>";
+    html += "<div class='row'><label>Obstacles</label><input type='number' name='obs' min='0' max='48' value='" + String(snakeObstacleTarget) + "'></div>";
+    html += "<div class='row'><label>Powerups</label><input type='number' name='pow' min='0' max='6' value='" + String(snakePowerupTarget) + "'></div>";
+    html += "<button>Snake speichern</button></form></div>";
+    html += "<div class='card'><h2>Top 3 Snake</h2>";
+    if (topCount == 0) html += "<div class='line'>Noch keine Snake Scores.</div>";
+    for (int i = 0; i < topCount; i++)
+        html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
+    html += "</div></div></body></html>";
+    server.send(200, "text/html", html);
+}
+
+void handleSnakeSettings() {
+    if (server.hasArg("food")) snakeFoodTarget = constrain(server.arg("food").toInt(), 1, 8);
+    if (server.hasArg("obs")) snakeObstacleTarget = constrain(server.arg("obs").toInt(), 0, 48);
+    if (server.hasArg("pow")) snakePowerupTarget = constrain(server.arg("pow").toInt(), 0, 6);
+    server.sendHeader("Location", "/snake");
+    server.send(303);
+}
+
 void handlePongPage() {
     PlayerData top[3];
     int topCount = 0;
@@ -627,10 +691,11 @@ void handlePongPage() {
 
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
     html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
-    html += ".wrap{max-width:480px;margin:0 auto}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += ".wrap{max-width:480px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}label{font-size:13px;color:#bfdbfe}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;margin:6px 0;font-size:15px}";
     html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}@media(max-width:420px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
     html += "<h1>Pong Dashboard</h1>";
+    html += dashboardNav("pong");
     html += "<div class='card'><h2>Spieler</h2>";
     html += "<div class='line'>Links: <b>" + (pongLeftUser == "" ? String("Bot") : htmlEscape(pongLeftUser)) + "</b> | Rechts: <b>" + (pongRightUser == "" ? String("Bot") : htmlEscape(pongRightUser)) + "</b></div>";
     html += "<div class='line muted'>Links = I2C Joystick. Rechts = ESP32 Joystick 1. Feld leer lassen aktiviert den Bot.</div>";
@@ -674,10 +739,11 @@ void handlePacmanPage() {
 
     String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
     html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
-    html += ".wrap{max-width:520px;margin:0 auto}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
+    html += ".wrap{max-width:520px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}label{font-size:13px;color:#bfdbfe}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;margin:6px 0;font-size:15px}";
     html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}@media(max-width:460px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
     html += "<h1>Pacman Dashboard</h1>";
+    html += dashboardNav("pacman");
     html += "<div class='card'><h2>Spieler</h2>";
     html += "<div class='line'>P1: <b>" + (pacmanP1User == "" ? String("-") : htmlEscape(pacmanP1User)) + "</b> | P2: <b>" + (pacmanP2User == "" ? String("-") : htmlEscape(pacmanP2User)) + "</b></div>";
     html += "<div class='line muted'>P1 = ESP32 Joystick 1. P2 = I2C Joystick. Joystick 2 bleibt Menu und Ghost: Klick wechselt Geist, Langklick nutzt Ability, Doppelklick zurueck.</div>";
@@ -844,6 +910,8 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/ip", HTTP_GET, handleIpInfo);
+    server.on("/snake", HTTP_GET, handleSnakePage);
+    server.on("/snake/settings", HTTP_POST, handleSnakeSettings);
     server.on("/pong", HTTP_GET, handlePongPage);
     server.on("/pong/login", HTTP_POST, handlePongLogin);
     server.on("/pacman", HTTP_GET, handlePacmanPage);
@@ -888,6 +956,9 @@ void taskWebServerHandler(void * pvParameters) {
 void saveHighScore(String user, int score) {
     user.trim();
     if (user == "") return;
+    String checkName = user;
+    checkName.toUpperCase();
+    if (checkName == "P1" || checkName == "P2" || checkName == "P1+P2") return;
 
     JsonDocument doc;
     if (LittleFS.exists("/config.json")) {
@@ -965,6 +1036,47 @@ int getHighScore(String user) {
         return readHighScore(doc[user]);
     }
     return 0;
+}
+
+void saveSnakeHighScore(String user, int score) {
+    user.trim();
+    if (user == "" || score <= 0) return;
+
+    JsonDocument doc;
+    if (LittleFS.exists("/config.json")) {
+        File file = LittleFS.open("/config.json", "r");
+        deserializeJson(doc, file);
+        file.close();
+    }
+
+    JsonObject obj = userObject(doc, user);
+    int currentHigh = readSnakeHighScore(doc[user]);
+    if (score > currentHigh) {
+        obj["snake"] = score;
+        removeLegacyUserKeys(obj);
+
+        File file = LittleFS.open("/config.json", "w");
+        if (file) {
+            serializeJson(doc, file);
+            file.close();
+            Serial.println("Neuer Snake-Highscore gespeichert: " + String(score));
+        } else {
+            Serial.println("Snake-Highscore konnte nicht gespeichert werden.");
+        }
+    }
+}
+
+int getSnakeHighScore(String user) {
+    user.trim();
+    if (user == "" || !LittleFS.exists("/config.json")) return 0;
+
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) return 0;
+
+    JsonDocument doc;
+    deserializeJson(doc, file);
+    file.close();
+    return readSnakeHighScore(doc[user]);
 }
 
 void savePongHighScore(String user, int score) {
@@ -1066,6 +1178,44 @@ void getTopScores(PlayerData* list, int& count) {
         }
 
         int score = readHighScore(kv.value());
+        if (count < 3) {
+            int pos = count;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+            count++;
+        } else if (score > list[2].score) {
+            int pos = 2;
+            while (pos > 0 && list[pos - 1].score < score) {
+                list[pos] = list[pos - 1];
+                pos--;
+            }
+            list[pos].name = kv.key().c_str();
+            list[pos].score = score;
+        }
+    }
+}
+
+void getTopSnakeScores(PlayerData* list, int& count) {
+    JsonDocument doc;
+    File file = LittleFS.open("/config.json", "r");
+    if (!file) {
+        count = 0;
+        return;
+    }
+    deserializeJson(doc, file);
+    file.close();
+
+    count = 0;
+    for (JsonPair kv : doc.as<JsonObject>()) {
+        if (!isSnakeScoreEntry(kv)) {
+            continue;
+        }
+
+        int score = readSnakeHighScore(kv.value());
         if (count < 3) {
             int pos = count;
             while (pos > 0 && list[pos - 1].score < score) {

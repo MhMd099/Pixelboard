@@ -84,6 +84,7 @@ uint8_t activeGhostIndex = 0;
 int dotsLeft = 0;
 int cachedBestScore = 0;
 bool highscoreSaved = false;
+bool defaultPlayersActive = false;
 bool lastStartPressed = false;
 unsigned long stateStartedMs = 0;
 unsigned long lastPlayerMoveMs = 0;
@@ -120,6 +121,20 @@ void setWall(int x, int y) {
     if (inBounds(x, y)) mapTiles[y][x] = TILE_WALL;
 }
 
+bool isProtectedCell(int x, int y) {
+    const int8_t protectedList[][2] = {
+        {1, 1}, {2, 1}, {3, 1}, {1, 2}, {2, 2}, {3, 2},
+        {29, 14}, {30, 14}, {28, 14}, {30, 13}, {29, 13}, {28, 13},
+        {14, 7}, {15, 7}, {16, 7}, {17, 7}, {18, 7},
+        {14, 8}, {15, 8}, {16, 8}, {17, 8}, {18, 8},
+        {1, 1}, {30, 1}, {1, 14}, {30, 14}
+    };
+    for (size_t i = 0; i < sizeof(protectedList) / sizeof(protectedList[0]); i++) {
+        if (x == protectedList[i][0] && y == protectedList[i][1]) return true;
+    }
+    return false;
+}
+
 void clearSpawnTiles() {
     const int8_t clearList[][2] = {
         {1, 1}, {2, 1}, {3, 1}, {1, 2}, {2, 2},
@@ -133,7 +148,53 @@ void clearSpawnTiles() {
     }
 }
 
+bool mapIsConnected() {
+    static bool visited[HEIGHT][WIDTH];
+    static uint16_t queue[WIDTH * HEIGHT];
+    int openCount = 0;
+    int startX = -1;
+    int startY = -1;
+
+    for (int y = 0; y < HEIGHT; y++) {
+        for (int x = 0; x < WIDTH; x++) {
+            visited[y][x] = false;
+            if (mapTiles[y][x] == TILE_WALL) continue;
+            openCount++;
+            if (startX < 0) {
+                startX = x;
+                startY = y;
+            }
+        }
+    }
+    if (openCount == 0) return false;
+
+    int head = 0;
+    int tail = 0;
+    queue[tail++] = (uint16_t)(startY * WIDTH + startX);
+    visited[startY][startX] = true;
+    int seen = 0;
+
+    while (head < tail) {
+        uint16_t packed = queue[head++];
+        int x = packed % WIDTH;
+        int y = packed / WIDTH;
+        seen++;
+
+        const int8_t dirs[4][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        for (uint8_t i = 0; i < 4; i++) {
+            int nx = x + dirs[i][0];
+            int ny = y + dirs[i][1];
+            if (!inBounds(nx, ny) || visited[ny][nx] || mapTiles[ny][nx] == TILE_WALL) continue;
+            visited[ny][nx] = true;
+            queue[tail++] = (uint16_t)(ny * WIDTH + nx);
+        }
+    }
+
+    return seen == openCount;
+}
+
 void buildMap() {
+    randomSeed((uint32_t)micros() ^ (uint32_t)millis());
     dotsLeft = 0;
     for (int y = 0; y < HEIGHT; y++) {
         for (int x = 0; x < WIDTH; x++) {
@@ -142,15 +203,40 @@ void buildMap() {
         }
     }
 
-    for (int y = 2; y < 14; y++) {
-        if (y != 3 && y != 7 && y != 11) setWall(7, y);
-        if (y != 4 && y != 8 && y != 12) setWall(16, y);
-        if (y != 5 && y != 9 && y != 13) setWall(24, y);
-    }
-    for (int x = 3; x < 29; x++) {
-        if (x != 5 && x != 12 && x != 20 && x != 27) setWall(x, 4);
-        if (x != 4 && x != 10 && x != 18 && x != 26) setWall(x, 8);
-        if (x != 6 && x != 14 && x != 22 && x != 28) setWall(x, 12);
+    clearSpawnTiles();
+
+    uint8_t accepted = 0;
+    for (uint8_t attempt = 0; attempt < 95 && accepted < 38; attempt++) {
+        bool horizontal = random(0, 2) == 0;
+        uint8_t len = random(1, 5);
+        int sx = random(2, WIDTH - 3);
+        int sy = random(2, HEIGHT - 3);
+        int8_t placedX[4];
+        int8_t placedY[4];
+        uint8_t placed = 0;
+        bool ok = true;
+
+        for (uint8_t i = 0; i < len; i++) {
+            int x = sx + (horizontal ? i : 0);
+            int y = sy + (horizontal ? 0 : i);
+            if (!inBounds(x, y) || x <= 0 || x >= WIDTH - 1 || y <= 0 || y >= HEIGHT - 1 || isProtectedCell(x, y) || mapTiles[y][x] == TILE_WALL) {
+                ok = false;
+                break;
+            }
+            placedX[placed] = x;
+            placedY[placed] = y;
+            placed++;
+        }
+        if (!ok || placed == 0) continue;
+
+        for (uint8_t i = 0; i < placed; i++) mapTiles[placedY[i]][placedX[i]] = TILE_WALL;
+        clearSpawnTiles();
+        if (mapIsConnected()) {
+            accepted++;
+        } else {
+            for (uint8_t i = 0; i < placed; i++) mapTiles[placedY[i]][placedX[i]] = TILE_DOT;
+            clearSpawnTiles();
+        }
     }
 
     clearSpawnTiles();
@@ -204,7 +290,7 @@ void initPlayers() {
     players[0].startY = 1;
     players[0].dir = makeVec(1, 0);
     players[0].wanted = makeVec(1, 0);
-    players[0].active = pacmanP1User != "";
+    players[0].active = pacmanP1User != "" || defaultPlayersActive;
     players[0].alive = players[0].active;
     players[0].hp = players[0].active ? PLAYER_MAX_HP : 0;
     players[0].score = 0;
@@ -242,12 +328,15 @@ void initGhosts() {
 }
 
 bool hasAnyPlayer() {
-    return pacmanP1User != "" || pacmanP2User != "";
+    return defaultPlayersActive || pacmanP1User != "" || pacmanP2User != "";
 }
 
 void ensureDefaultPlayers() {
-    if (pacmanP1User == "") pacmanP1User = "P1";
-    if (pacmanP2User == "") pacmanP2User = "P2";
+    defaultPlayersActive = true;
+}
+
+void clearDefaultPlayersIfNeeded() {
+    defaultPlayersActive = false;
 }
 
 bool anyPlayerAlive() {
@@ -494,10 +583,12 @@ void checkCollisions(unsigned long now) {
 
 void saveScoreIfNeeded() {
     if (highscoreSaved) return;
-    if (players[0].active && pacmanP1User != "") savePacmanHighScore(pacmanP1User, players[0].score);
-    if (players[1].active && pacmanP2User != "" && pacmanP2User != pacmanP1User) savePacmanHighScore(pacmanP2User, players[1].score);
-    cachedBestScore = max(cachedBestScore, players[0].score);
-    cachedBestScore = max(cachedBestScore, players[1].score);
+    if (!defaultPlayersActive) {
+        if (players[0].active && pacmanP1User != "") savePacmanHighScore(pacmanP1User, players[0].score);
+        if (players[1].active && pacmanP2User != "" && pacmanP2User != pacmanP1User) savePacmanHighScore(pacmanP2User, players[1].score);
+        cachedBestScore = max(cachedBestScore, players[0].score);
+        cachedBestScore = max(cachedBestScore, players[1].score);
+    }
     highscoreSaved = true;
 }
 
@@ -645,7 +736,10 @@ void tickPacman() {
             break;
         }
     }
-        if (startEdge && hasAnyPlayer()) beginCountdown();
+        if (startEdge && hasAnyPlayer()) {
+            defaultPlayersActive = false;
+            beginCountdown();
+        }
         break;
 
     case PAC_COUNTDOWN:
@@ -678,6 +772,7 @@ void tickPacman() {
         renderWin();
         if (startEdge) {
             state = PAC_LOBBY;
+            clearDefaultPlayersIfNeeded();
         }
         break;
 
@@ -686,6 +781,7 @@ void tickPacman() {
         renderGameOver();
         if (startEdge) {
             state = PAC_LOBBY;
+            clearDefaultPlayersIfNeeded();
         }
         break;
     }
@@ -711,6 +807,7 @@ void taskPacmanHandler(void *pvParameters) {
         }
 
         if (lastTask != 8) {
+            clearDefaultPlayersIfNeeded();
             state = PAC_LOBBY;
             resetGame();
             refreshCachedBest();

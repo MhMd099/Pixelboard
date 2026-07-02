@@ -17,11 +17,15 @@ extern void drawDigitW(int x, int y, int n, CRGB c);
 
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
+#define MAX_SNAKE_FOOD 8
+#define MAX_SNAKE_OBSTACLES 48
+#define MAX_SNAKE_POWERUPS 6
 
 enum GameState { STATE_MENU, STATE_SHOW_HIGHSCORES, STATE_PLAYING, STATE_GAMEOVER };
 GameState currentState = STATE_MENU;
 
 struct Point { int x, y; };
+struct SnakeItem { Point p; bool active; };
 
 static bool applySnakeInput(Joystick& stick, Point& dir) {
     int xPerc = stick.readXPercent();
@@ -47,18 +51,79 @@ static bool applySnakeInput(Joystick& stick, Point& dir) {
 }
 
 void taskSnakeHandler(void *pvParameters) {
-    Point snake[100]; 
+    static Point snake[100];
     int snakeLength = 3; 
     Point dir = {1, 0}; 
-    Point food;
+    static SnakeItem foods[MAX_SNAKE_FOOD];
+    static SnakeItem obstacles[MAX_SNAKE_OBSTACLES];
+    static SnakeItem powerups[MAX_SNAKE_POWERUPS];
     int moveInterval = 150; 
     unsigned long lastMoveTime = 0;
     unsigned long stateTimer = 0;
+    unsigned long slowUntilMs = 0;
     int currentScore = 0;
     int highScoreIdx = 0;
 
-    auto spawnFood = [&]() { food.x = random(1, WIDTH - 1); food.y = random(1, HEIGHT_TOTAL - 1); };
-    auto resetGame = [&]() { snakeLength = 3; snake[0] = {15, 8}; snake[1] = {14, 8}; snake[2] = {13, 8}; dir = {1, 0}; moveInterval = 150; spawnFood(); };
+    auto pointEquals = [](Point a, Point b) { return a.x == b.x && a.y == b.y; };
+    auto onSnake = [&](Point p) {
+        for (int i = 0; i < snakeLength; i++)
+            if (pointEquals(snake[i], p)) return true;
+        return false;
+    };
+    auto onItems = [&](SnakeItem* items, int count, Point p) {
+        for (int i = 0; i < count; i++)
+            if (items[i].active && pointEquals(items[i].p, p)) return true;
+        return false;
+    };
+    auto freePoint = [&](Point p) {
+        if (p.x <= 0 || p.x >= WIDTH - 1 || p.y <= 0 || p.y >= HEIGHT_TOTAL - 1) return false;
+        if (onSnake(p)) return false;
+        if (onItems(obstacles, MAX_SNAKE_OBSTACLES, p)) return false;
+        if (onItems(foods, MAX_SNAKE_FOOD, p)) return false;
+        if (onItems(powerups, MAX_SNAKE_POWERUPS, p)) return false;
+        return true;
+    };
+    auto randomFreePoint = [&](Point& out) {
+        for (int attempt = 0; attempt < 140; attempt++) {
+            Point p = {random(1, WIDTH - 1), random(1, HEIGHT_TOTAL - 1)};
+            if (freePoint(p)) {
+                out = p;
+                return true;
+            }
+        }
+        return false;
+    };
+    auto spawnOne = [&](SnakeItem* items, int index) {
+        Point p;
+        if (randomFreePoint(p)) {
+            items[index].p = p;
+            items[index].active = true;
+        } else {
+            items[index].active = false;
+        }
+    };
+    auto configureItems = [&]() {
+        for (int i = 0; i < MAX_SNAKE_FOOD; i++) foods[i].active = false;
+        for (int i = 0; i < MAX_SNAKE_OBSTACLES; i++) obstacles[i].active = false;
+        for (int i = 0; i < MAX_SNAKE_POWERUPS; i++) powerups[i].active = false;
+
+        int obstacleCount = constrain((int)snakeObstacleTarget, 0, MAX_SNAKE_OBSTACLES);
+        int foodCount = constrain((int)snakeFoodTarget, 1, MAX_SNAKE_FOOD);
+        int powerCount = constrain((int)snakePowerupTarget, 0, MAX_SNAKE_POWERUPS);
+        for (int i = 0; i < obstacleCount; i++) spawnOne(obstacles, i);
+        for (int i = 0; i < foodCount; i++) spawnOne(foods, i);
+        for (int i = 0; i < powerCount; i++) spawnOne(powerups, i);
+    };
+    auto resetGame = [&]() {
+        snakeLength = 3;
+        snake[0] = {15, 8};
+        snake[1] = {14, 8};
+        snake[2] = {13, 8};
+        dir = {1, 0};
+        moveInterval = 150;
+        slowUntilMs = 0;
+        configureItems();
+    };
     resetGame();
 
     for(;;) {
@@ -116,27 +181,18 @@ void taskSnakeHandler(void *pvParameters) {
                     setPixel(25, 11, cueCol);
                 }
                 FastLED.show();
-                if (btnPress) { currentState = STATE_SHOW_HIGHSCORES; stateTimer = millis(); }
+                if (btnPress) {
+                    resetGame();
+                    lastMoveTime = millis();
+                    currentState = STATE_PLAYING;
+                }
                 break;
             }
 
             case STATE_SHOW_HIGHSCORES: {
-                PlayerData top[10]; int count;
-                getTopScores(top, count);
-                
-                if (millis() - stateTimer > 1500) { 
-                    highScoreIdx++; stateTimer = millis(); 
-                    if (highScoreIdx >= min(count, 3)) { currentState = STATE_PLAYING; highScoreIdx = 0; }
-                }
-
-                FastLED.clear();
-                if(count > 0) {
-                    CRGB scoreCol = themeCol(millis() / 35 + 96, 235);
-                    for (int i = 0; i <= highScoreIdx; i++) setPixel(8 + i * 3, 4, CRGB::Orange);
-                    drawDigitW(10, 9, top[highScoreIdx].score / 10, scoreCol);
-                    drawDigitW(16, 9, top[highScoreIdx].score % 10, scoreCol);
-                }
-                FastLED.show();
+                resetGame();
+                lastMoveTime = millis();
+                currentState = STATE_PLAYING;
                 break;
             }
 
@@ -145,32 +201,62 @@ void taskSnakeHandler(void *pvParameters) {
                     applySnakeInput(joystick3, dir);
                 }
 
-                if (millis() - lastMoveTime > moveInterval) {
+                unsigned long now = millis();
+                int activeInterval = now < slowUntilMs ? moveInterval + 45 : moveInterval;
+                if (now - lastMoveTime > (unsigned long)activeInterval) {
                     lastMoveTime = millis();
                     int nextX = snake[0].x + dir.x; int nextY = snake[0].y + dir.y;
                     bool dead = (nextX < 0 || nextX >= WIDTH || nextY < 0 || nextY >= HEIGHT_TOTAL);
                     for (int i = 0; i < snakeLength; i++) if (nextX == snake[i].x && nextY == snake[i].y) dead = true;
+                    for (int i = 0; i < MAX_SNAKE_OBSTACLES; i++)
+                        if (obstacles[i].active && nextX == obstacles[i].p.x && nextY == obstacles[i].p.y) dead = true;
                     
                     if (dead) { 
                         playSound(SND_DIE);
                         currentScore = snakeLength;
-                        saveHighScore(currentUser, currentScore);
+                        String snakeUser = currentUser;
+                        snakeUser.trim();
+                        if (snakeUser == "") snakeUser = "Gast";
+                        saveSnakeHighScore(snakeUser, currentScore);
                         currentState = STATE_GAMEOVER;
                     } else {
-                        if (nextX == food.x && nextY == food.y) {
+                        int eatenFoodIndex = -1;
+                        int eatenPowerIndex = -1;
+                        for (int i = 0; i < MAX_SNAKE_FOOD; i++) {
+                            if (!foods[i].active || nextX != foods[i].p.x || nextY != foods[i].p.y) continue;
                             playSound(SND_EAT);
                             if (snakeLength < 100) snakeLength++;
-                            spawnFood();
+                            foods[i].active = false;
+                            eatenFoodIndex = i;
                             if (moveInterval > 70) moveInterval -= 2;
+                            break;
+                        }
+                        for (int i = 0; i < MAX_SNAKE_POWERUPS; i++) {
+                            if (!powerups[i].active || nextX != powerups[i].p.x || nextY != powerups[i].p.y) continue;
+                            playSound(SND_BUFF);
+                            if (snakeLength < 98) snakeLength += 2;
+                            slowUntilMs = now + 4500UL;
+                            powerups[i].active = false;
+                            eatenPowerIndex = i;
+                            break;
                         }
                         for (int i = snakeLength - 1; i > 0; i--) snake[i] = snake[i - 1];
                         snake[0] = {nextX, nextY};
+                        if (eatenFoodIndex >= 0) spawnOne(foods, eatenFoodIndex);
+                        if (eatenPowerIndex >= 0) spawnOne(powerups, eatenPowerIndex);
                     }
                     FastLED.clear();
                     CRGB headCol = themeCol(millis() / 20, 255);
                     CRGB bodyCol = themeCol(millis() / 20 + 80, 170);
-                    CRGB foodCol = themeCol(millis() / 20 + 160, 255);
-                    setPixel(food.x, food.y, foodCol);
+                    CRGB foodCol = CRGB::Red;
+                    CRGB obstacleCol = CRGB(130, 70, 210);
+                    CRGB powerCol = CRGB::Cyan;
+                    for (int i = 0; i < MAX_SNAKE_OBSTACLES; i++)
+                        if (obstacles[i].active) setPixel(obstacles[i].p.x, obstacles[i].p.y, obstacleCol);
+                    for (int i = 0; i < MAX_SNAKE_FOOD; i++)
+                        if (foods[i].active) setPixel(foods[i].p.x, foods[i].p.y, foodCol);
+                    for (int i = 0; i < MAX_SNAKE_POWERUPS; i++)
+                        if (powerups[i].active) setPixel(powerups[i].p.x, powerups[i].p.y, powerCol);
                     for (int i = 0; i < snakeLength; i++) setPixel(snake[i].x, snake[i].y, (i == 0) ? headCol : bodyCol);
                     FastLED.show();
                 }

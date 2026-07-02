@@ -672,7 +672,7 @@ void setup()
     xTaskCreatePinnedToCore(taskWifiManager, "WiFi", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleUhr, 1);
     xTaskCreatePinnedToCore(taskWetter, "Wetter", 4096, NULL, 1, &handleWetter, 1);
-    xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 4096, NULL, 1, &handleSnake, 1);
+    xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 6144, NULL, 1, &handleSnake, 1);
     xTaskCreatePinnedToCore(taskMusik, "Musik", 2560, NULL, 1, &handleMusik, 1);
     xTaskCreatePinnedToCore(taskAnim, "Anim", 4096, NULL, 1, &handleAnim, 1);
     xTaskCreatePinnedToCore(taskDHTHandler, "DHT", 4096, NULL, 1, &handleDHT, 1); // <--- NEUER DHT TASK START
