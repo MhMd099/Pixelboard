@@ -88,12 +88,35 @@ void taskSnakeHandler(void *pvParameters) {
         switch (currentState) {
             case STATE_MENU: {
                 FastLED.clear();
-                // Einfacher Text "PLAY" oder Cursor
-                CRGB menuCol = themeCol(millis() / 35, 255);
-                drawChar3x5(2, 6, 'P', menuCol);
-                drawChar3x5(8, 6, 'L', menuCol);
-                drawChar3x5(14, 6, 'A', menuCol);
-                drawChar3x5(20, 6, 'Y', menuCol);
+                unsigned long now = millis();
+                CRGB headCol = themeCol(now / 18, 255);
+                CRGB bodyCol = themeCol(now / 18 + 80, 175);
+                CRGB foodCol = CRGB::Red;
+                int wave = (now / 130) % 16;
+                Point preview[12];
+                for (int i = 0; i < 12; i++) {
+                    int x = 4 + i * 2;
+                    int y = 7 + (int)sin8((uint8_t)(wave * 16 + i * 22)) / 55 - 2;
+                    preview[i] = {x, y};
+                }
+                for (int i = 11; i >= 0; i--) {
+                    CRGB c = (i == 11) ? headCol : bodyCol;
+                    if (i < 11) c.nscale8_video(90 + i * 12);
+                    setPixel(preview[i].x, preview[i].y, c);
+                    if (i == 11) {
+                        setPixel(preview[i].x + 1, preview[i].y, c);
+                        setPixel(preview[i].x + 1, preview[i].y - 1, CRGB::White);
+                    }
+                }
+                setPixel(29, 6, foodCol);
+                setPixel(30, 6, CRGB(120, 20, 20));
+                if ((now / 500) % 2 == 0) {
+                    CRGB textCol = themeCol(now / 35 + 130, 210);
+                    drawChar3x5(6, 11, 'P', textCol);
+                    drawChar3x5(11, 11, 'L', textCol);
+                    drawChar3x5(16, 11, 'A', textCol);
+                    drawChar3x5(21, 11, 'Y', textCol);
+                }
                 FastLED.show();
                 if (btnPress) { currentState = STATE_SHOW_HIGHSCORES; stateTimer = millis(); }
                 break;

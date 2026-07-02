@@ -63,6 +63,7 @@ static char lastMatchName[36] = "";
 static const uint8_t fieldWidth = 32;
 static const uint8_t fieldHeight = 16;
 static const uint8_t inputThreshold = 60;
+static const uint8_t dashInputThreshold = 72;
 static const uint16_t playerMoveIntervalMs = 95;
 static const uint16_t projectileMoveIntervalMs = 55;
 static const uint16_t powerUpMoveIntervalMs = 240;
@@ -109,6 +110,8 @@ struct InputState
 {
     int8_t dx;
     int8_t dy;
+    int16_t axisX;
+    int16_t axisY;
     bool shoot;
     bool dash;
     bool charge;
@@ -834,16 +837,35 @@ uint8_t getPowerUpCount() { return powerUpCount; }
 uint8_t getLaserBeamCount() { return laserBeamCount; }
 uint8_t getHazardCount() { return hazardCount; }
 
+static int8_t stepFromAxis(int value, uint8_t threshold, bool positiveMeansNegative)
+{
+    if (value > threshold) return positiveMeansNegative ? -1 : 1;
+    if (value < -threshold) return positiveMeansNegative ? 1 : -1;
+    return 0;
+}
+
 static int8_t stepFromAxis(int value, bool positiveMeansNegative)
 {
-    if (value > inputThreshold) return positiveMeansNegative ? -1 : 1;
-    if (value < -inputThreshold) return positiveMeansNegative ? 1 : -1;
-    return 0;
+    return stepFromAxis(value, inputThreshold, positiveMeansNegative);
+}
+
+static bool dashDirectionFromInput(const InputState& input, bool inverted, int8_t& dx, int8_t& dy)
+{
+    dy = stepFromAxis(input.axisX, dashInputThreshold, true);
+    dx = stepFromAxis(input.axisY, dashInputThreshold, false);
+    if (inverted)
+    {
+        dx = -dx;
+        dy = -dy;
+    }
+    if (dx == 0 && dy == 0)
+        return false;
+    return true;
 }
 
 static InputState emptyInput()
 {
-    InputState input = {0, 0, false, false, false, false};
+    InputState input = {0, 0, 0, 0, false, false, false, false};
     return input;
 }
 
@@ -852,6 +874,8 @@ static InputState readJoystickInput(uint8_t playerIndex, Joystick& joystick)
     InputState input = emptyInput();
     int x = joystick.readXPercent();
     int y = joystick.readYPercent();
+    input.axisX = x;
+    input.axisY = y;
 
     input.dy = stepFromAxis(x, true);
     input.dx = stepFromAxis(y, false);
@@ -966,7 +990,7 @@ static void dash(uint8_t playerIndex, int8_t dx, int8_t dy)
         return;
 
     if (dx == 0 && dy == 0)
-        dx = 1;
+        return;
 
     p.x = constrain(p.x + dx * 4, 2, fieldWidth - 8);
     p.y = constrain(p.y + dy * 4, 1, fieldHeight - 2);
@@ -990,7 +1014,8 @@ static void applyInput(uint8_t playerIndex, const InputState& input)
     uint32_t now = millis();
     int8_t moveDx = input.dx;
     int8_t moveDy = input.dy;
-    if (secondsLeft(p.invertUntil) > 0)
+    bool inverted = secondsLeft(p.invertUntil) > 0;
+    if (inverted)
     {
         moveDx = -moveDx;
         moveDy = -moveDy;
@@ -1004,7 +1029,12 @@ static void applyInput(uint8_t playerIndex, const InputState& input)
     }
 
     if (input.dash)
-        dash(playerIndex, moveDx, moveDy);
+    {
+        int8_t dashDx = 0;
+        int8_t dashDy = 0;
+        if (dashDirectionFromInput(input, inverted, dashDx, dashDy))
+            dash(playerIndex, dashDx, dashDy);
+    }
 
     if (input.charge)
         shoot(playerIndex, true);
