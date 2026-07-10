@@ -25,6 +25,10 @@ enum SoundType {
 void initAudio();
 void playSound(SoundType type);
 
+// Global fuer Musik und alle Spieleffekte. 0 = stumm, 100 = volle Lautstaerke.
+void setMasterVolume(int volume);
+uint8_t getMasterVolume();
+
 void startMusic();
 void stopMusic();
 

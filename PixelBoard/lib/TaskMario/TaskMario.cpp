@@ -143,6 +143,7 @@ uint32_t modeStartedMs = 0;
 bool lastUp1 = false;
 bool lastUp3 = false;
 volatile bool restartRequested = false;
+bool lastGameButtonPressed = false;
 
 int pixelX(int16_t fixedValue) { return fixedValue / SCALE; }
 int pixelY(int16_t fixedValue) { return fixedValue / SCALE; }
@@ -1065,6 +1066,7 @@ void taskMarioHandler(void *pvParameters) {
         if (lastTask != 10 || restartRequested) {
             restartRequested = false;
             resetLevel(true);
+            lastGameButtonPressed = joystick1.isPressed() || joystick3.isPressed();
             lastTask = 10;
             Serial.println("Mario gestartet.");
         }
@@ -1075,6 +1077,9 @@ void taskMarioHandler(void *pvParameters) {
         }
 
         uint32_t now = millis();
+        bool gameButtonPressed = joystick1.isPressed() || joystick3.isPressed();
+        bool gameButtonEdge = gameButtonPressed && !lastGameButtonPressed;
+        lastGameButtonPressed = gameButtonPressed;
         if (now - lastTickMs >= TICK_MS) {
             lastTickMs = now;
             if (mode == MARIO_PLAYING) updatePlaying();
@@ -1082,8 +1087,7 @@ void taskMarioHandler(void *pvParameters) {
 
         if (mode == MARIO_LOBBY) {
             renderLobby();
-            bool start = joystick1.isPressed() || joystick3.isPressed();
-            if (start) {
+            if (gameButtonEdge) {
                 mode = MARIO_PLAYING;
                 modeStartedMs = millis();
                 lastUp1 = false;
@@ -1099,8 +1103,15 @@ void taskMarioHandler(void *pvParameters) {
             }
         } else {
             renderEnd(CRGB::Red);
-            if (millis() - modeStartedMs > 1600UL) {
+            // Nach sichtbarem Game-over startet ein neuer Klick direkt eine
+            // neue Runde, ohne Umweg ueber Lobby oder Menue-Joystick.
+            if (now - modeStartedMs >= 400UL && gameButtonEdge) {
                 resetLevel(true);
+                mode = MARIO_PLAYING;
+                modeStartedMs = now;
+                lastUp1 = false;
+                lastUp3 = false;
+                playSound(SND_SELECT);
             }
         }
 

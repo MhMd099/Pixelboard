@@ -479,7 +479,10 @@ void tickTetris() {
     if (state == TETRIS_MENU) {
         tetrisPlaying = false;
         renderMenu();
-        if (joystick1.isPressed()) resetGame();
+        bool pressed = joystick1.isPressed();
+        bool startEdge = pressed && !lastButton;
+        lastButton = pressed;
+        if (startEdge) resetGame();
         return;
     }
 
@@ -487,7 +490,10 @@ void tickTetris() {
         tetrisPlaying = false;
         saveTetrisScoreIfNeeded();
         renderGameOver();
-        if (joystick1.isPressed()) resetGame();
+        bool pressed = joystick1.isPressed();
+        bool restartEdge = pressed && !lastButton;
+        lastButton = pressed;
+        if (restartEdge) resetGame();
         return;
     }
 

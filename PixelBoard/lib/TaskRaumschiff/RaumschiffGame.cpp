@@ -1787,6 +1787,14 @@ static void updatePlaying()
     render();
 }
 
+static void beginMatch()
+{
+    Audio::playUI();
+    matchStartMs = millis();
+    lastWebEnergyRegenMs = matchStartMs;
+    gameState = PLAYING;
+}
+
 void raumschiffGameTick()
 {
     if (gameState == MENU)
@@ -1802,12 +1810,7 @@ void raumschiffGameTick()
             spieler[1].ready = true;
 
         if (p1.dash)
-        {
-            Audio::playUI();
-            matchStartMs = millis();
-            lastWebEnergyRegenMs = matchStartMs;
-            gameState = PLAYING;
-        }
+            beginMatch();
 
         renderMenu();
         return;
@@ -1843,6 +1846,15 @@ void raumschiffGameTick()
     if (gameState == GAME_OVER)
     {
         renderGameOver();
+        InputState p1 = readJoystickInput(0, joystick1);
+        InputState p2 = readP2Input();
+        if (p1.shoot || p2.shoot)
+        {
+            bool keepSecondPlayer = spieler[1].active || p2.touched;
+            raumschiffResetGame();
+            spieler[1].active = keepSecondPlayer;
+            beginMatch();
+        }
         return;
     }
 }

@@ -13,6 +13,7 @@ volatile bool musicPlaying = false;
 volatile int musicBeat = 0;
 static volatile uint32_t soundSerial = 0;
 static volatile uint8_t activeSoundPriority = 0;
+static volatile uint8_t masterVolume = 100;
 
 struct Note {
   uint16_t freq;
@@ -111,6 +112,11 @@ static bool interrupted(uint32_t localSerial)
   return soundSerial != localSerial;
 }
 
+static int16_t scaledAmplitude(int16_t fullVolumeAmplitude)
+{
+  return (int16_t)(((int32_t)fullVolumeAmplitude * masterVolume) / 100);
+}
+
 static void playEffect(int freq,int durationMs,uint32_t localSerial)
 {
   size_t written;
@@ -132,15 +138,21 @@ static void playEffect(int freq,int durationMs,uint32_t localSerial)
   if(halfPeriod<1)
     halfPeriod=1;
 
+  int16_t amplitude = scaledAmplitude(22000);
+
   for(int i=0;i<samples;i++)
   {
-    if((i & 0x3F) == 0 && interrupted(localSerial))
-      break;
+    if((i & 0x3F) == 0)
+    {
+      if(interrupted(localSerial))
+        break;
+      amplitude = scaledAmplitude(22000);
+    }
 
     int16_t sample =
       ((i/halfPeriod)&1)
-      ?22000
-      :-22000;
+      ?amplitude
+      :-amplitude;
 
     i2s_write(
       I2S_NUM_0,
@@ -189,15 +201,21 @@ static void playMusicNote(
   if(halfPeriod<1)
     halfPeriod=1;
 
+  int16_t amplitude = scaledAmplitude(2200);
+
   for(int i=0;i<samples;i++)
   {
-    if((i & 0x3F) == 0 && interrupted(localSerial))
-      return;
+    if((i & 0x3F) == 0)
+    {
+      if(interrupted(localSerial))
+        return;
+      amplitude = scaledAmplitude(2200);
+    }
 
     int16_t sample =
       ((i/halfPeriod)&1)
-      ?2200
-      :-2200;
+      ?amplitude
+      :-amplitude;
 
     i2s_write(
       I2S_NUM_0,
@@ -325,6 +343,16 @@ void initAudio()
       2,
       NULL,
       1);
+}
+
+void setMasterVolume(int volume)
+{
+  masterVolume = (uint8_t)constrain(volume, 0, 100);
+}
+
+uint8_t getMasterVolume()
+{
+  return masterVolume;
 }
 
 void playSound(SoundType type)

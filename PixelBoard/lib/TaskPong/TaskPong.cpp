@@ -22,9 +22,11 @@ const int LEFT_X = 1;
 const int RIGHT_X = 30;
 const int INPUT_DEADZONE = 60;
 const int INPUT_STEP_MS = 55;
-const int BOT_STEP_MS = 95;
-const int INITIAL_VX = 84;
-const int MAX_VX = 240;
+const int BOT_STEP_MS = 75;
+const int INITIAL_VX = 92;
+const int SPEED_UP_EVERY_HITS = 2;
+const int SPEED_STEP = 12;
+const int MAX_VX = 188;
 const int MAX_VY = 185;
 const int WIN_SCORE = 7;
 
@@ -156,6 +158,21 @@ void beginCountdown() {
     playSound(SND_SELECT);
 }
 
+int predictImpactY(int targetX) {
+    if (ballVx == 0) return ballY / SCALE;
+
+    long projectedY = ballY +
+        (long)ballVy * ((long)targetX * SCALE - ballX) / ballVx;
+    const long maxY = (HEIGHT - 1) * SCALE;
+    const long bouncePeriod = maxY * 2;
+
+    projectedY %= bouncePeriod;
+    if (projectedY < 0) projectedY += bouncePeriod;
+    if (projectedY > maxY) projectedY = bouncePeriod - projectedY;
+
+    return clampInt((projectedY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
+}
+
 void applyInput(unsigned long now) {
     int leftMove = 0;
     int rightMove = 0;
@@ -164,7 +181,7 @@ void applyInput(unsigned long now) {
     if (pongRightUser != "") rightMove = readVertical(joystick1);
 
     if (pongLeftUser == "" && now - lastLeftBotMs >= BOT_STEP_MS) {
-        int target = (ballVx < 0) ? (ballY / SCALE) : (HEIGHT / 2);
+        int target = (ballVx < 0) ? predictImpactY(LEFT_X + 1) : (HEIGHT / 2);
         int center = leftY + PADDLE_H / 2;
         if (target < center - 1) leftMove = -1;
         else if (target > center + 1) leftMove = 1;
@@ -172,7 +189,7 @@ void applyInput(unsigned long now) {
     }
 
     if (pongRightUser == "" && now - lastRightBotMs >= BOT_STEP_MS) {
-        int target = (ballVx > 0) ? (ballY / SCALE) : (HEIGHT / 2);
+        int target = (ballVx > 0) ? predictImpactY(RIGHT_X - 1) : (HEIGHT / 2);
         int center = rightY + PADDLE_H / 2;
         if (target < center - 1) rightMove = -1;
         else if (target > center + 1) rightMove = 1;
@@ -222,15 +239,17 @@ void handlePaddleHit(bool leftPaddle, int hitY) {
     int rel2 = hitY * 2 - center2;
     int targetVy = rel2 * (move == 0 ? 26 : 34) + move * 44;
 
-    ballVxAbs = clampInt(ballVxAbs + 4, INITIAL_VX, MAX_VX);
+    rallyHits++;
+    if (rallyHits % SPEED_UP_EVERY_HITS == 0) {
+        ballVxAbs = clampInt(ballVxAbs + SPEED_STEP, INITIAL_VX, MAX_VX);
+    }
     ballVx = leftPaddle ? ballVxAbs : -ballVxAbs;
     ballVy = clampInt(targetVy, -MAX_VY, MAX_VY);
     ballX = (leftPaddle ? (LEFT_X + 2) : (RIGHT_X - 2)) * SCALE;
 
-    rallyHits++;
     if (rallyHits > matchBestRally) matchBestRally = rallyHits;
     spawnImpact(leftPaddle ? LEFT_X + 1 : RIGHT_X - 1, hitY, leftPaddle ? 1 : -1);
-    playSound(ballVxAbs > 230 ? SND_SHOOT : SND_HIT);
+    playSound(ballVxAbs >= MAX_VX - SPEED_STEP ? SND_SHOOT : SND_HIT);
 }
 
 bool paddleCovers(int paddleY, int y) {
@@ -410,7 +429,8 @@ void tickPong() {
     case PONG_GAMEOVER:
         renderGameOver();
         if (startEdge) {
-            state = PONG_MENU;
+            resetMatch();
+            beginCountdown();
         }
         break;
     }

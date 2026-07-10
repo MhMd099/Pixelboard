@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include "HardwareUtils.h"
 #include "RaumschiffGame.h"
+#include "SoundUtils.h"
 #include "TaskMario.h"
 
 const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
@@ -187,12 +188,22 @@ void loadDeviceSettings() {
     currentDhtPin = 21;
     currentDhtType = 22;
 
-    
+    int savedVolume = 100;
+    if (LittleFS.exists(deviceConfigPath)) {
+        File file = LittleFS.open(deviceConfigPath, "r");
+        JsonDocument doc;
+        if (file && !deserializeJson(doc, file)) {
+            savedVolume = doc["volume"] | 100;
+        }
+        if (file) file.close();
+    }
+    setMasterVolume(savedVolume);
 
     Serial.print("DHT geladen: GPIO ");
     Serial.print(currentDhtPin);
     Serial.print(", DHT");
     Serial.println(currentDhtType);
+    Serial.println("Sound-Lautstaerke geladen: " + String(getMasterVolume()) + "%");
 }
 
 
@@ -275,6 +286,13 @@ static String loadDefaultCity() {
 
 static void saveDefaultCity(const String& city) {
     JsonDocument doc;
+    if (LittleFS.exists(deviceConfigPath)) {
+        File existing = LittleFS.open(deviceConfigPath, "r");
+        if (existing) {
+            deserializeJson(doc, existing);
+            existing.close();
+        }
+    }
     doc["city"] = city;
 
     File file = LittleFS.open(deviceConfigPath, "w");
@@ -285,6 +303,29 @@ static void saveDefaultCity(const String& city) {
     } else {
         Serial.println("Default-Stadt konnte nicht gespeichert werden.");
     }
+}
+
+static bool saveMasterVolumeSetting(uint8_t volume) {
+    JsonDocument doc;
+    if (LittleFS.exists(deviceConfigPath)) {
+        File existing = LittleFS.open(deviceConfigPath, "r");
+        if (existing) {
+            deserializeJson(doc, existing);
+            existing.close();
+        }
+    }
+    doc["volume"] = volume;
+
+    File file = LittleFS.open(deviceConfigPath, "w");
+    if (!file) {
+        Serial.println("Sound-Lautstaerke konnte nicht gespeichert werden.");
+        return false;
+    }
+
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("Sound-Lautstaerke gespeichert: " + String(volume) + "%");
+    return true;
 }
 
 static bool isScoreEntry(JsonPair kv) {
@@ -504,6 +545,35 @@ static void appendOption(String& html, int value, int current, const String& lab
     html += "<option value='" + String(value) + "'";
     if (value == current) html += " selected";
     html += ">" + label + "</option>";
+}
+
+static const char globalSoundControl[] PROGMEM = R"HTML(
+<style>
+body{padding-top:0!important}
+#globalSoundControl{position:sticky;top:0;z-index:1000;box-sizing:border-box;display:grid;grid-template-columns:auto minmax(90px,320px) 48px auto;align-items:center;justify-content:center;gap:8px;width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);padding:9px 12px;background:#0b1220f5;border-bottom:1px solid #334155;box-shadow:0 5px 16px #0008;color:#e2e8f0;font:600 14px Arial,sans-serif;text-align:left}
+#globalSoundSlider{box-sizing:border-box;width:100%!important;height:28px;margin:0!important;padding:0!important;border:0!important;background:transparent!important;accent-color:#38bdf8}
+#globalSoundValue{box-sizing:border-box;width:48px!important;min-width:48px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;text-align:right!important}
+#globalSoundMute{box-sizing:border-box;width:auto!important;min-width:76px!important;min-height:34px!important;margin:0!important;padding:7px 10px!important;border:1px solid #475569!important;border-radius:7px!important;background:#1e293b!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;cursor:pointer}
+#globalSoundMute[aria-pressed='true']{background:#991b1b!important;border-color:#ef4444!important}
+@media(max-width:400px){#globalSoundLabel{display:none}#globalSoundControl{grid-template-columns:minmax(90px,1fr) 44px auto;gap:6px}#globalSoundValue{width:44px!important;min-width:44px!important}#globalSoundMute{min-width:68px!important;padding-left:7px!important;padding-right:7px!important}}
+</style>
+<div id="globalSoundControl" role="group" aria-label="Globale Lautstaerke">
+  <label id="globalSoundLabel" for="globalSoundSlider">Sound</label>
+  <input id="globalSoundSlider" type="range" min="0" max="100" step="5" value="100" aria-label="Globale Lautstaerke">
+  <output id="globalSoundValue" for="globalSoundSlider">100%</output>
+  <button id="globalSoundMute" type="button" aria-pressed="false">Stumm</button>
+</div>
+<script>
+(()=>{const s=document.getElementById('globalSoundSlider'),o=document.getElementById('globalSoundValue'),b=document.getElementById('globalSoundMute');let last=70;try{const v=Number(localStorage.getItem('pixelboardLastVolume'));if(v>0&&v<=100)last=v}catch(e){}const draw=v=>{v=Math.max(0,Math.min(100,Number(v)||0));s.value=v;o.textContent=v+'%';b.textContent=v===0?'Ton an':'Stumm';b.setAttribute('aria-pressed',v===0?'true':'false');if(v>0){last=v;try{localStorage.setItem('pixelboardLastVolume',v)}catch(e){}}};const load=()=>fetch('/sound/state',{cache:'no-store'}).then(r=>r.json()).then(j=>draw(j.volume)).catch(()=>{});const save=v=>{draw(v);fetch('/sound/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'volume='+encodeURIComponent(v)}).then(r=>{if(!r.ok)throw Error();return r.json()}).then(j=>draw(j.volume)).catch(load)};s.addEventListener('input',()=>draw(s.value));s.addEventListener('change',()=>save(s.value));b.addEventListener('click',()=>save(Number(s.value)===0?last:0));load()})();
+</script>
+)HTML";
+
+static void sendDashboardHtml(String& html) {
+    const String bodyTag = F("<body>");
+    String bodyWithSound = bodyTag;
+    bodyWithSound += FPSTR(globalSoundControl);
+    html.replace(bodyTag, bodyWithSound);
+    server.send(200, "text/html", html);
 }
 
 static String dashboardNav(const String& active) {

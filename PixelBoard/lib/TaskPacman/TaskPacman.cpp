@@ -718,7 +718,9 @@ void tickPacman() {
 
     //es geht aber nicht, i2c funktioniert,aber joystick eins ist immer ncoh invertiert
     unsigned long now = millis();
-    bool startPressed = joystick1.isPressed() || joystick2.isPressed() || joystick3.isPressed();
+    // Nur die Spiel-Joysticks starten bzw. wiederholen eine Runde. Joystick 2
+    // bleibt fuer Menue/Ghost-Steuerung reserviert.
+    bool startPressed = joystick1.isPressed() || joystick3.isPressed();
     bool startEdge = startPressed && !lastStartPressed;
     lastStartPressed = startPressed;
 
@@ -780,8 +782,7 @@ void tickPacman() {
         saveScoreIfNeeded();
         renderGameOver();
         if (startEdge) {
-            state = PAC_LOBBY;
-            clearDefaultPlayersIfNeeded();
+            beginCountdown();
         }
         break;
     }
@@ -815,6 +816,7 @@ void taskPacmanHandler(void *pvParameters) {
             state = PAC_LOBBY;
             resetGame();
             refreshCachedBest();
+            lastStartPressed = joystick1.isPressed() || joystick3.isPressed();
             joystick2.einfacherKlickZaehler = 0;
             joystick2.langKlickZaehler = 0;
             lastTask = 8;
