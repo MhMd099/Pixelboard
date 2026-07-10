@@ -22,7 +22,8 @@ const int LEFT_X = 1;
 const int RIGHT_X = 30;
 const int INPUT_DEADZONE = 60;
 const int INPUT_STEP_MS = 55;
-const int BOT_STEP_MS = 75;
+const int BOT_STEP_MS = 82;
+const int BOT_ERROR_REFRESH_MS = 420;
 const int INITIAL_VX = 92;
 const int SPEED_UP_EVERY_HITS = 2;
 const int SPEED_STEP = 12;
@@ -63,12 +64,15 @@ int matchBestRally = 0;
 int rallyHits = 0;
 int serveDir = 1;
 bool savedMatch = false;
-bool lastStartPressed = false;
 int cachedBestRally = 0;
+int leftBotAimError = 0;
+int rightBotAimError = 0;
 unsigned long lastLeftInputMs = 0;
 unsigned long lastRightInputMs = 0;
 unsigned long lastLeftBotMs = 0;
 unsigned long lastRightBotMs = 0;
+unsigned long lastLeftBotErrorMs = 0;
+unsigned long lastRightBotErrorMs = 0;
 unsigned long stateStartedMs = 0;
 Particle particles[8];
 
@@ -158,30 +162,21 @@ void beginCountdown() {
     playSound(SND_SELECT);
 }
 
-int predictImpactY(int targetX) {
-    if (ballVx == 0) return ballY / SCALE;
-
-    long projectedY = ballY +
-        (long)ballVy * ((long)targetX * SCALE - ballX) / ballVx;
-    const long maxY = (HEIGHT - 1) * SCALE;
-    const long bouncePeriod = maxY * 2;
-
-    projectedY %= bouncePeriod;
-    if (projectedY < 0) projectedY += bouncePeriod;
-    if (projectedY > maxY) projectedY = bouncePeriod - projectedY;
-
-    return clampInt((projectedY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
-}
-
 void applyInput(unsigned long now) {
     int leftMove = 0;
     int rightMove = 0;
+    int currentBallY = clampInt((ballY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
 
     if (pongLeftUser != "") leftMove = readVertical(joystick3);
     if (pongRightUser != "") rightMove = readVertical(joystick1);
 
     if (pongLeftUser == "" && now - lastLeftBotMs >= BOT_STEP_MS) {
-        int target = (ballVx < 0) ? predictImpactY(LEFT_X + 1) : (HEIGHT / 2);
+        if (now - lastLeftBotErrorMs >= BOT_ERROR_REFRESH_MS) {
+            leftBotAimError = (int)random(-1, 2);
+            lastLeftBotErrorMs = now;
+        }
+        int target = (ballVx < 0) ? currentBallY + leftBotAimError : (HEIGHT / 2);
+        target = clampInt(target, 0, HEIGHT - 1);
         int center = leftY + PADDLE_H / 2;
         if (target < center - 1) leftMove = -1;
         else if (target > center + 1) leftMove = 1;
@@ -189,7 +184,12 @@ void applyInput(unsigned long now) {
     }
 
     if (pongRightUser == "" && now - lastRightBotMs >= BOT_STEP_MS) {
-        int target = (ballVx > 0) ? predictImpactY(RIGHT_X - 1) : (HEIGHT / 2);
+        if (now - lastRightBotErrorMs >= BOT_ERROR_REFRESH_MS) {
+            rightBotAimError = (int)random(-1, 2);
+            lastRightBotErrorMs = now;
+        }
+        int target = (ballVx > 0) ? currentBallY + rightBotAimError : (HEIGHT / 2);
+        target = clampInt(target, 0, HEIGHT - 1);
         int center = rightY + PADDLE_H / 2;
         if (target < center - 1) rightMove = -1;
         else if (target > center + 1) rightMove = 1;
@@ -370,24 +370,28 @@ void saveMatchHighscores() {
     if (matchBestRally > cachedBestRally) cachedBestRally = matchBestRally;
 }
 
+bool consumeStartDoubleClick() {
+    bool doubleClicked = joystick1.doppelklickZaehler > 0 || joystick3.doppelklickZaehler > 0;
+
+    joystick1.einfacherKlickZaehler = 0;
+    joystick1.doppelklickZaehler = 0;
+    joystick1.langKlickZaehler = 0;
+    joystick3.einfacherKlickZaehler = 0;
+    joystick3.doppelklickZaehler = 0;
+    joystick3.langKlickZaehler = 0;
+
+    return doubleClicked;
+}
+
 void tickPong() {
     unsigned long now = millis();
-    bool startPressed = joystick1.isPressed() || joystick3.isPressed();
-    bool startEdge = startPressed && !lastStartPressed;
-    lastStartPressed = startPressed;
+    bool startDoubleClick = consumeStartDoubleClick();
 
     switch (state) {
     case PONG_MENU:
         renderMenu();
-        if (joystick1.langKlickZaehler > 0 || joystick3.langKlickZaehler > 0) {
-            joystick1.langKlickZaehler = 0;
-            joystick3.langKlickZaehler = 0;
-            ensureDefaultPlayers();
-            resetMatch();
-            beginCountdown();
-            break;
-        }
-        if (startEdge && (pongLeftUser != "" || pongRightUser != "")) {
+        if (startDoubleClick) {
+            if (pongLeftUser == "" && pongRightUser == "") ensureDefaultPlayers();
             resetMatch();
             beginCountdown();
         }
@@ -428,7 +432,7 @@ void tickPong() {
 
     case PONG_GAMEOVER:
         renderGameOver();
-        if (startEdge) {
+        if (startDoubleClick) {
             resetMatch();
             beginCountdown();
         }
@@ -455,6 +459,8 @@ void taskPongHandler(void *pvParameters) {
 
         if (lastTask != 7) {
             state = PONG_MENU;
+            joystick1.reset();
+            joystick3.reset();
             resetMatch();
             refreshCachedBest();
             lastTask = 7;

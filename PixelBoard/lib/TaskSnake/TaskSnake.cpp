@@ -237,6 +237,20 @@ void taskSnakeHandler(void *pvParameters) {
         }
         FastLED.show();
     };
+    auto consumeStartDoubleClick = [&]() {
+        bool doubleClicked = joystick1.doppelklickZaehler > 0 ||
+                             joystick3.doppelklickZaehler > 0;
+
+        // Snake owns both game joysticks while active. Consume every click type
+        // each tick so an event from play cannot become a later restart event.
+        joystick1.einfacherKlickZaehler = 0;
+        joystick1.doppelklickZaehler = 0;
+        joystick1.langKlickZaehler = 0;
+        joystick3.einfacherKlickZaehler = 0;
+        joystick3.doppelklickZaehler = 0;
+        joystick3.langKlickZaehler = 0;
+        return doubleClicked;
+    };
     auto finishGame = [&]() {
         currentScore = snakeLengths[0];
         if (playerJoined[1] && snakeLengths[1] > currentScore) currentScore = snakeLengths[1];
@@ -249,26 +263,24 @@ void taskSnakeHandler(void *pvParameters) {
     };
 
     resetGame();
-
-    static bool lastClicked1 = false;
-    static bool lastClicked2 = false;
+    bool taskWasActive = false;
 
     for (;;) {
         if (aktiverTask != 2) {
+            taskWasActive = false;
             taskWechselAnforderung = false;
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
         }
         taskWechselAnforderung = false;
 
-        bool clicked1 = joystick1.isPressed();
-        bool clicked2 = joystick3.isPressed();
-        bool btnPress1 = clicked1 && !lastClicked1;
-        bool btnPress2 = clicked2 && !lastClicked2;
-        bool btnPress = btnPress1 || btnPress2;
-        lastClicked1 = clicked1;
-        lastClicked2 = clicked2;
-        if (clicked1 || clicked2) vTaskDelay(50 / portTICK_PERIOD_MS);
+        if (!taskWasActive) {
+            taskWasActive = true;
+            joystick1.reset();
+            joystick3.reset();
+            resetGame();
+            currentState = STATE_MENU;
+        }
 
         if (!lockDisplay(20)) {
             vTaskDelay(5 / portTICK_PERIOD_MS);
@@ -278,6 +290,8 @@ void taskSnakeHandler(void *pvParameters) {
             unlockDisplay();
             continue;
         }
+
+        bool startDoubleClick = consumeStartDoubleClick();
 
         switch (currentState) {
             case STATE_MENU: {
@@ -311,7 +325,7 @@ void taskSnakeHandler(void *pvParameters) {
                     setPixel(25, 11, cueCol);
                 }
                 FastLED.show();
-                if (btnPress) {
+                if (startDoubleClick) {
                     resetGame();
                     lastMoveTime = millis();
                     currentState = STATE_PLAYING;
@@ -426,7 +440,7 @@ void taskSnakeHandler(void *pvParameters) {
                 drawDigitW(12, 8, displayedScore / 10, scoreCol);
                 drawDigitW(18, 8, displayedScore % 10, scoreCol);
                 FastLED.show();
-                if (btnPress) {
+                if (startDoubleClick) {
                     resetGame();
                     lastMoveTime = millis();
                     currentState = STATE_PLAYING;

@@ -85,7 +85,6 @@ int dotsLeft = 0;
 int cachedBestScore = 0;
 bool highscoreSaved = false;
 bool defaultPlayersActive = false;
-bool lastStartPressed = false;
 unsigned long stateStartedMs = 0;
 unsigned long lastPlayerMoveMs = 0;
 unsigned long lastGhostSwitchMs = 0;
@@ -712,34 +711,35 @@ void beginCountdown() {
     playSound(SND_SELECT);
 }
 
+bool consumeGameStartDoubleClick() {
+    bool pressed = joystick1.doppelklickZaehler > 0 ||
+                   joystick3.doppelklickZaehler > 0;
+    joystick1.doppelklickZaehler = 0;
+    joystick3.doppelklickZaehler = 0;
+    return pressed;
+}
+
 void tickPacman() {
     //ich musste es hier selber einfügenb, weil der joystick i2c invertiert war
         //ich musste es hier selber einfügenb, weil der joystick invertiert war
 
     //es geht aber nicht, i2c funktioniert,aber joystick eins ist immer ncoh invertiert
     unsigned long now = millis();
-    // Nur die Spiel-Joysticks starten bzw. wiederholen eine Runde. Joystick 2
-    // bleibt fuer Menue/Ghost-Steuerung reserviert.
-    bool startPressed = joystick1.isPressed() || joystick3.isPressed();
-    bool startEdge = startPressed && !lastStartPressed;
-    lastStartPressed = startPressed;
+    // Start/Neustart ist in allen Spielen ein Doppelklick am Spiel-Joystick.
+    // Ein Doppelklick auf Joystick 2 bleibt global "zurueck zum Menue".
+    bool startDoubleClick = consumeGameStartDoubleClick();
+    joystick1.einfacherKlickZaehler = 0;
+    joystick1.langKlickZaehler = 0;
+    joystick3.einfacherKlickZaehler = 0;
+    joystick3.langKlickZaehler = 0;
 
     switch (state) {
     case PAC_LOBBY:
         renderLobby(now);
-    {
-        bool skipAuth = joystick1.langKlickZaehler > 0 || joystick2.langKlickZaehler > 0 || joystick3.langKlickZaehler > 0;
-        if (skipAuth) {
-            joystick1.langKlickZaehler = 0;
-            joystick2.langKlickZaehler = 0;
-            joystick3.langKlickZaehler = 0;
-            ensureDefaultPlayers();
-            beginCountdown();
-            break;
-        }
-    }
-        if (startEdge && hasAnyPlayer()) {
-            defaultPlayersActive = false;
+        if (startDoubleClick) {
+            if (!hasAnyPlayer()) {
+                ensureDefaultPlayers();
+            }
             beginCountdown();
         }
         break;
@@ -772,18 +772,13 @@ void tickPacman() {
     case PAC_WIN:
         saveScoreIfNeeded();
         renderWin();
-        if (startEdge) {
-            state = PAC_LOBBY;
-            clearDefaultPlayersIfNeeded();
-        }
+        if (startDoubleClick) beginCountdown();
         break;
 
     case PAC_GAMEOVER:
         saveScoreIfNeeded();
         renderGameOver();
-        if (startEdge) {
-            beginCountdown();
-        }
+        if (startDoubleClick) beginCountdown();
         break;
     }
 
@@ -812,11 +807,12 @@ void taskPacmanHandler(void *pvParameters) {
         }
 
         if (lastTask != 8) {
+            joystick1.reset();
+            joystick3.reset();
             clearDefaultPlayersIfNeeded();
             state = PAC_LOBBY;
             resetGame();
             refreshCachedBest();
-            lastStartPressed = joystick1.isPressed() || joystick3.isPressed();
             joystick2.einfacherKlickZaehler = 0;
             joystick2.langKlickZaehler = 0;
             lastTask = 8;

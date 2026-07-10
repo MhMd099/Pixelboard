@@ -143,7 +143,6 @@ uint32_t modeStartedMs = 0;
 bool lastUp1 = false;
 bool lastUp3 = false;
 volatile bool restartRequested = false;
-bool lastGameButtonPressed = false;
 
 int pixelX(int16_t fixedValue) { return fixedValue / SCALE; }
 int pixelY(int16_t fixedValue) { return fixedValue / SCALE; }
@@ -1049,6 +1048,14 @@ String marioStateJson() {
     return json;
 }
 
+static bool consumeMarioStartDoubleClick() {
+    bool pressed = joystick1.doppelklickZaehler > 0 ||
+                   joystick3.doppelklickZaehler > 0;
+    joystick1.doppelklickZaehler = 0;
+    joystick3.doppelklickZaehler = 0;
+    return pressed;
+}
+
 void renderMarioMenuPreview() {
     renderLobby();
 }
@@ -1065,8 +1072,9 @@ void taskMarioHandler(void *pvParameters) {
 
         if (lastTask != 10 || restartRequested) {
             restartRequested = false;
+            joystick1.reset();
+            joystick3.reset();
             resetLevel(true);
-            lastGameButtonPressed = joystick1.isPressed() || joystick3.isPressed();
             lastTask = 10;
             Serial.println("Mario gestartet.");
         }
@@ -1077,9 +1085,13 @@ void taskMarioHandler(void *pvParameters) {
         }
 
         uint32_t now = millis();
-        bool gameButtonPressed = joystick1.isPressed() || joystick3.isPressed();
-        bool gameButtonEdge = gameButtonPressed && !lastGameButtonPressed;
-        lastGameButtonPressed = gameButtonPressed;
+        bool gameStartDoubleClick = consumeMarioStartDoubleClick();
+        joystick1.langKlickZaehler = 0;
+        joystick3.langKlickZaehler = 0;
+        if (mode != MARIO_PLAYING) {
+            joystick1.einfacherKlickZaehler = 0;
+            joystick3.einfacherKlickZaehler = 0;
+        }
         if (now - lastTickMs >= TICK_MS) {
             lastTickMs = now;
             if (mode == MARIO_PLAYING) updatePlaying();
@@ -1087,7 +1099,7 @@ void taskMarioHandler(void *pvParameters) {
 
         if (mode == MARIO_LOBBY) {
             renderLobby();
-            if (gameButtonEdge) {
+            if (gameStartDoubleClick) {
                 mode = MARIO_PLAYING;
                 modeStartedMs = millis();
                 lastUp1 = false;
@@ -1103,9 +1115,9 @@ void taskMarioHandler(void *pvParameters) {
             }
         } else {
             renderEnd(CRGB::Red);
-            // Nach sichtbarem Game-over startet ein neuer Klick direkt eine
+            // Nach sichtbarem Game-over startet ein neuer Doppelklick direkt eine
             // neue Runde, ohne Umweg ueber Lobby oder Menue-Joystick.
-            if (now - modeStartedMs >= 400UL && gameButtonEdge) {
+            if (now - modeStartedMs >= 400UL && gameStartDoubleClick) {
                 resetLevel(true);
                 mode = MARIO_PLAYING;
                 modeStartedMs = now;

@@ -132,6 +132,26 @@ bool Joystick::isPressed() {
   }
 }
 
+void Joystick::reset() {
+  if (!isI2C) {
+    Taster_v2::reset();
+    return;
+  }
+
+  int currentState = i2cButtonPressed ? HIGH : LOW;
+  bool activeNow = i2cButtonPressed;
+  ignoreBisLoslassen = activeNow;
+  letzterTasterZustand = currentState;
+  tasterZustand = currentState;
+  klickStartZeit = millis();
+  ersterKlickErkannt = false;
+  letzterKlickMillis = 0;
+  langKlickErkannt = activeNow;
+  einfacherKlickZaehler = 0;
+  doppelklickZaehler = 0;
+  langKlickZaehler = 0;
+}
+
 void Joystick::update() {
   if (isI2C) {
     // 1:1 Kopie deiner originalen Taster_v2::klickenErkennen() Logik!

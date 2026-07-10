@@ -903,13 +903,16 @@ static InputState readJoystickInput(uint8_t playerIndex, Joystick& joystick)
     input.shoot = pressed && !lastFireButtonState[playerIndex];
     lastFireButtonState[playerIndex] = pressed;
 
-    if (joystick.doppelklickZaehler > 0)
+    // Joystick 2 ist global der Menue-Controller. Sein Doppelklick darf hier
+    // nie als Dash/Start konsumiert werden, damit die Hauptschleife sicher
+    // zurueck zum Menue wechseln kann.
+    if (&joystick != &joystick2 && joystick.doppelklickZaehler > 0)
     {
         joystick.doppelklickZaehler--;
         input.dash = true;
     }
 
-    if (joystick.langKlickZaehler > 0)
+    if (&joystick != &joystick2 && joystick.langKlickZaehler > 0)
     {
         joystick.langKlickZaehler--;
         input.charge = true;
@@ -1799,17 +1802,21 @@ void raumschiffGameTick()
 {
     if (gameState == MENU)
     {
+        bool joystick3Start = joystick3.doppelklickZaehler > 0;
+        if (joystick3Start)
+            joystick3.doppelklickZaehler = 0;
         InputState p1 = readJoystickInput(0, joystick1);
         InputState p2 = readP2Input();
 
-        if (p2.touched)
+        if (p2.touched || joystick3Start)
             spieler[1].active = true;
         if (p1.charge)
             spieler[0].ready = true;
         if (p2.charge)
             spieler[1].ready = true;
 
-        if (p1.dash)
+        // Joystick 2 bleibt ausnahmslos der globale Menue-Controller.
+        if (p1.dash || joystick3Start)
             beginMatch();
 
         renderMenu();
@@ -1846,11 +1853,14 @@ void raumschiffGameTick()
     if (gameState == GAME_OVER)
     {
         renderGameOver();
+        bool joystick3Start = joystick3.doppelklickZaehler > 0;
+        if (joystick3Start)
+            joystick3.doppelklickZaehler = 0;
         InputState p1 = readJoystickInput(0, joystick1);
         InputState p2 = readP2Input();
-        if (p1.shoot || p2.shoot)
+        if (p1.dash || joystick3Start)
         {
-            bool keepSecondPlayer = spieler[1].active || p2.touched;
+            bool keepSecondPlayer = spieler[1].active || p2.touched || joystick3Start;
             raumschiffResetGame();
             spieler[1].active = keepSecondPlayer;
             beginMatch();

@@ -309,9 +309,16 @@ static bool saveMasterVolumeSetting(uint8_t volume) {
     JsonDocument doc;
     if (LittleFS.exists(deviceConfigPath)) {
         File existing = LittleFS.open(deviceConfigPath, "r");
-        if (existing) {
-            deserializeJson(doc, existing);
-            existing.close();
+        if (!existing) {
+            Serial.println("Geraete-Einstellungen konnten nicht zum Lesen geoeffnet werden.");
+            return false;
+        }
+
+        DeserializationError error = deserializeJson(doc, existing);
+        existing.close();
+        if (error || !doc.is<JsonObject>()) {
+            Serial.println("Geraete-Einstellungen sind ungueltig; Sound wurde nicht gespeichert.");
+            return false;
         }
     }
     doc["volume"] = volume;
@@ -570,10 +577,70 @@ body{padding-top:0!important}
 
 static void sendDashboardHtml(String& html) {
     const String bodyTag = F("<body>");
+    if (html.indexOf(bodyTag) < 0) {
+        Serial.println("HTML-Seite ohne <body>-Tag; Sound-Regler konnte nicht eingefuegt werden.");
+        server.send(500, "text/plain; charset=utf-8", "HTML-Seite ist ungueltig.");
+        return;
+    }
+
     String bodyWithSound = bodyTag;
     bodyWithSound += FPSTR(globalSoundControl);
     html.replace(bodyTag, bodyWithSound);
-    server.send(200, "text/html", html);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "text/html; charset=utf-8", html);
+}
+
+static String soundStateJson(bool ok = true) {
+    uint8_t volume = getMasterVolume();
+    String json = F("{\"ok\":");
+    json += ok ? F("true") : F("false");
+    json += F(",\"volume\":");
+    json += String(volume);
+    json += F(",\"muted\":");
+    json += volume == 0 ? F("true") : F("false");
+    json += '}';
+    return json;
+}
+
+static void sendSoundJson(int status, const String& json) {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(status, "application/json; charset=utf-8", json);
+}
+
+static bool readRequestedVolume(uint8_t& volume) {
+    if (!server.hasArg("volume")) return false;
+
+    String value = server.arg("volume");
+    value.trim();
+    if (value.length() == 0 || value.length() > 3) return false;
+    for (size_t i = 0; i < value.length(); i++) {
+        if (value[i] < '0' || value[i] > '9') return false;
+    }
+
+    int parsed = value.toInt();
+    if (parsed < 0 || parsed > 100) return false;
+    volume = (uint8_t)parsed;
+    return true;
+}
+
+static void handleSoundState() {
+    sendSoundJson(200, soundStateJson());
+}
+
+static void handleSoundSettings() {
+    uint8_t volume = 0;
+    if (!readRequestedVolume(volume)) {
+        sendSoundJson(400, F("{\"ok\":false,\"error\":\"volume must be between 0 and 100\"}"));
+        return;
+    }
+
+    if (!saveMasterVolumeSetting(volume)) {
+        sendSoundJson(500, F("{\"ok\":false,\"error\":\"volume could not be saved\"}"));
+        return;
+    }
+
+    setMasterVolume(volume);
+    sendSoundJson(200, soundStateJson());
 }
 
 static String dashboardNav(const String& active) {
@@ -587,6 +654,10 @@ static String dashboardNav(const String& active) {
     if (active != "mario") nav += "<a href='/mario'>Mario</a>";
     nav += "</div>";
     return nav;
+}
+
+static String dashboardGameControls() {
+    return F("<div style='max-width:760px;margin:10px auto;padding:9px 12px;border:1px solid #334155;border-radius:8px;background:#17243a;color:#bfdbfe;font-size:14px'>Spiel-Joystick: Doppelklick = Dashboard ueberspringen, Spiel starten oder nach Game Over direkt neu starten. Menue-Joystick: Doppelklick = zurueck zum Menue.</div>");
 }
 
 void handleRoot() {
@@ -649,10 +720,8 @@ void handleRoot() {
     }
     html += "</select><br><input type='submit' value='Uhr speichern'></form>";
 
-   
-
     html += "</div></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handleIpInfo() {
@@ -668,7 +737,7 @@ void handleIpInfo() {
 void handleShooterPage() {
     String html = R"HTML(<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no'>
 <style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;text-align:center;touch-action:manipulation}h1{font-size:24px;margin:16px 0 6px}.wrap{max-width:960px;margin:0 auto;padding:10px}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.role{color:#a7f3d0;font-size:14px;margin-bottom:10px}.score{font-size:20px;color:#facc15;margin:10px 0 14px}.panel{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}.stickyEnergy{position:sticky;top:0;z-index:20;box-shadow:0 10px 24px #0008}h2{font-size:17px;margin:0 0 10px;color:#93c5fd}.players,.grid2,.grid3{display:grid;grid-template-columns:1fr 1fr;gap:10px}.grid3{grid-template-columns:1fr 1fr 1fr}.player{border:1px solid #334155;border-radius:8px;padding:10px;background:#0b1424}.p0 b{color:#67e8f9}.p1 b{color:#a3e635}.dead{color:#f87171}.wait{color:#94a3b8}.row{display:grid;grid-template-columns:145px 1fr 78px;align-items:center;gap:8px;margin:10px 0}input,select,button,output{box-sizing:border-box;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}input[type=range]{width:100%;accent-color:#38bdf8;padding:0}output{display:block;background:#17243a;border-color:#355274;color:#fde68a;font-weight:bold;text-align:center;min-width:78px}button{background:#2563eb;border:0;font-weight:bold;min-height:42px}button.danger{background:#dc2626}button.power{background:#be185d}button.soft{background:#16a34a}button.warn{background:#9333ea}.stat{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px;font-size:14px}.stat span,.line,.hint{background:#17243a;border-radius:6px;padding:8px}.hint{color:#bfdbfe}.energybar{height:14px;background:#0b1424;border:1px solid #334155;border-radius:8px;overflow:hidden}.energyfill{height:100%;background:#facc15;width:0%}.full{width:100%;margin-top:8px}.top{display:grid;gap:6px}@media(max-width:680px){.players,.grid2,.grid3{grid-template-columns:1fr}.row{grid-template-columns:110px 1fr 64px}}</style>
-</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a><a href='/tetris'>Tetris</a><a href='/mario'>Mario</a></div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
+</head><body><div class='wrap'><h1>Pixel Shooter</h1><div class='nav'><a href='/'>Home</a><a href='/snake'>Snake</a><a href='/pong'>Pong</a><a href='/pacman'>Pacman</a><a href='/tetris'>Tetris</a><a href='/mario'>Mario</a></div><div class='role'>Spiel-Joystick: Doppelklick startet und startet nach Game Over direkt neu. Menue-Joystick: Doppelklick geht zurueck.</div><div class='role'>Web = Gegner und GameMaster. Spieler werden ueber Namen angezeigt, nicht nur als P1/P2.</div><div class='line' id='networkLine'>Netzwerk wird geladen...</div><div class='score' id='score'>Team Score 0</div>
 <div class='panel stickyEnergy'><h2>Web-Gamemaster</h2><div class='line' id='energyText'>Energie 0 / 0</div><div class='energybar'><div class='energyfill' id='energyFill'></div></div><div class='hint'>Spieler-Kills laden Energie wieder auf. Starke Events kosten mehr.</div></div>
 <div class='panel'><h2>Spieler</h2><div class='hint'>Schaden steigt mit eigenem Score plus Kills. Boost und Multi Shot kommen zusaetzlich oben drauf.</div><div class='players' id='players'></div><div class='grid2'><input id='p1name' placeholder='Spieler 1 Name'><input id='p2name' placeholder='Spieler 2 Name'></div><div class='grid2'><select id='p2mode'><option value='0'>Spieler 2 Auto</option><option value='1'>Spieler 2 ESP32 Joystick</option><option value='2'>Spieler 2 I2C Arduino</option></select><button class='soft' onclick='setP2Mode()'>Controller speichern</button></div><button class='full soft' onclick='saveNames()'>Namen speichern</button></div>
 <div class='panel'><h2>Scoreboard</h2><div id='lastMatch' class='line'>Letztes Match: -</div><div class='top' id='topScores'></div></div>
@@ -676,7 +745,7 @@ void handleShooterPage() {
 <div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='8000' step='10' value='24'><output id='spawnHpo'>24</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='16' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
 <div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='20000' step='100' value='900'><output id='bossHpo'>900</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='4'><output id='bossSizeo'>4</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='6000' step='20' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='7' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='12' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
 <script>let synced=false;const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function preset(m){let p=m==0?[5,1700,260,55,35]:m==1?[8,1150,190,40,25]:[13,520,95,20,45];by('maxA').value=p[0];by('spawnMs').value=p[1];by('moveMs').value=p[2];by('smallP').value=p[3];by('powerP').value=p[4];syncOut();applyDirector()}function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function setP2Mode(){fetch('/shooter/inputmap?'+q({p2:by('p2mode').value})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function short(n,i){n=(n||('Spieler '+(i+1))).trim();return n.length>3?n.slice(0,3):n}function playerHtml(p,i){let input=i==0?'Joystick 1':(by('p2mode').options[by('p2mode').selectedIndex].text);let status=!p.active?'wartet':(p.alive?'lebt':'tot');let cls=!p.active?'wait':(p.alive?'':'dead');return `<div class='player p${i}'><b>${p.name}</b><div>${input} - <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>+1 bei ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function loadNetwork(){try{let r=await fetch('/ip');let j=await r.json();by('networkLine').textContent=j.connected?`Netzwerk: ${j.ip} | ${j.url}`:`Netzwerk: offline | Host ${j.host}`}catch(e){}}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('energyText').textContent='Energie '+j.webEnergy+' / '+j.webEnergyMax;by('energyFill').style.width=Math.max(0,Math.min(100,j.webEnergy*100/j.webEnergyMax))+'%';by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Auto Web ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;let lm=j.lastMatch;by('lastMatch').textContent=lm.score>0?`Letztes Match: ${lm.name} - ${lm.score} | ${lm.p1Name} ${lm.p1} / ${lm.p1Kills}K, ${lm.p2Name} ${lm.p2} / ${lm.p2Kills}K | Bosse ${lm.bosses} | ${lm.duration}s`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;by('p2mode').value=j.p2InputMode;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state();loadNetwork()},700);ping();state();loadNetwork();</script></body></html>)HTML";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handleShooterState() {
@@ -760,6 +829,7 @@ void handleSnakePage() {
     html += "button{background:#2563eb;border:0;font-weight:bold;margin-top:8px}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.muted{color:#94a3b8}@media(max-width:460px){.row{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
     html += "<h1>Snake Dashboard</h1>";
     html += dashboardNav("snake");
+    html += dashboardGameControls();
     html += "<div class='card'><h2>Spielparameter</h2><div class='line muted'>Aenderungen gelten ab dem naechsten Snake-Start oder Reset. Hindernisse sind violett, Aepfel rot, Powerups cyan.</div>";
     html += "<form action='/snake/settings' method='POST'>";
     html += "<div class='row'><label>Aepfel</label><input type='number' name='food' min='1' max='8' value='" + String(snakeFoodTarget) + "'></div>";
@@ -771,7 +841,7 @@ void handleSnakePage() {
     for (int i = 0; i < topCount; i++)
         html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
     html += "</div></div></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handleSnakeSettings() {
@@ -794,6 +864,7 @@ void handlePongPage() {
     html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}@media(max-width:420px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
     html += "<h1>Pong Dashboard</h1>";
     html += dashboardNav("pong");
+    html += dashboardGameControls();
     html += "<div class='card'><h2>Spieler</h2>";
     html += "<div class='line'>Links: <b>" + (pongLeftUser == "" ? String("Bot") : htmlEscape(pongLeftUser)) + "</b> | Rechts: <b>" + (pongRightUser == "" ? String("Bot") : htmlEscape(pongRightUser)) + "</b></div>";
     html += "<div class='line muted'>Links = I2C Joystick. Rechts = ESP32 Joystick 1. Feld leer lassen aktiviert den Bot.</div>";
@@ -807,7 +878,7 @@ void handlePongPage() {
     for (int i = 0; i < topCount; i++)
         html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
     html += "</div><div class='card'><a style='color:#93c5fd' href='/'>Zurueck</a></div></div></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handlePongLogin() {
@@ -842,6 +913,7 @@ void handlePacmanPage() {
     html += "button{background:#2563eb;border:0;font-weight:bold}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.ok{color:#a7f3d0}.muted{color:#94a3b8}.check{display:flex;gap:8px;align-items:center}.check input{width:auto}@media(max-width:460px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'>";
     html += "<h1>Pacman Dashboard</h1>";
     html += dashboardNav("pacman");
+    html += dashboardGameControls();
     html += "<div class='card'><h2>Spieler</h2>";
     html += "<div class='line'>P1: <b>" + (pacmanP1User == "" ? String("-") : htmlEscape(pacmanP1User)) + "</b> | P2: <b>" + (pacmanP2User == "" ? String("-") : htmlEscape(pacmanP2User)) + "</b></div>";
     html += "<div class='line muted'>P1 = ESP32 Joystick 1. P2 = I2C Joystick. Joystick 2 bleibt Menu und Ghost: Klick wechselt Geist, Langklick nutzt Ability, Doppelklick zurueck.</div>";
@@ -858,7 +930,7 @@ void handlePacmanPage() {
     for (int i = 0; i < topCount; i++)
         html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
     html += "</div><div class='card'><a style='color:#93c5fd' href='/'>Zurueck</a></div></div></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handlePacmanLogin() {
@@ -890,6 +962,7 @@ void handleTetrisPage() {
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.row{display:grid;grid-template-columns:145px 1fr;gap:8px;align-items:center;margin:8px 0}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.big{font-size:26px;color:#facc15;font-weight:bold}.muted{color:#94a3b8}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}button{background:#2563eb;border:0;font-weight:bold;margin-top:8px}@media(max-width:460px){.grid,.row{grid-template-columns:1fr}}</style>";
     html += "</head><body><div class='wrap'><h1>Tetris Dashboard</h1>";
     html += dashboardNav("tetris");
+    html += dashboardGameControls();
     html += "<div class='card'><h2>Live</h2><div class='grid'><div class='line'>Total<div class='big' id='total'>0</div></div><div class='line'>Matrix<div class='big' id='board'>0</div></div></div>";
     html += "<div class='line'>Status: <b id='state'>-</b></div><div class='line'>Letztes Spiel: <b id='last'>0</b></div><div class='line muted'>Die Matrix zeigt nur 0-999. Das Dashboard zaehlt den echten Score weiter.</div></div>";
     html += "<div class='card'><h2>Geschwindigkeit</h2><form action='/tetris/settings' method='POST'>";
@@ -904,7 +977,7 @@ void handleTetrisPage() {
     for (int i = 0; i < topCount; i++)
         html += "<div class='line'>" + String(i + 1) + ". " + htmlEscape(top[i].name) + ": " + String(top[i].score) + "</div>";
     html += "</div></div><script>async function load(){try{let r=await fetch('/tetris/state');let j=await r.json();document.getElementById('total').textContent=j.score;document.getElementById('board').textContent=j.board;document.getElementById('last').textContent=j.last;document.getElementById('state').textContent=j.playing?'laeuft':'wartet';}catch(e){}}setInterval(load,700);load();</script></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handleTetrisSettings() {
@@ -935,6 +1008,7 @@ void handleMarioPage() {
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.big{font-size:26px;color:#facc15;font-weight:bold}.muted{color:#94a3b8}.ok{color:#a7f3d0}button{box-sizing:border-box;width:100%;border-radius:8px;border:0;background:#2563eb;color:#fff;padding:12px;font-size:15px;font-weight:bold;margin-top:8px}@media(max-width:460px){.grid{grid-template-columns:1fr}}</style>";
     html += "</head><body><div class='wrap'><h1>Mario Dashboard</h1>";
     html += dashboardNav("mario");
+    html += dashboardGameControls();
     html += "<div class='card'><h2>Live</h2><div class='grid'>";
     html += "<div class='line'>Score<div class='big' id='score'>0</div></div>";
     html += "<div class='line'>Level<div class='big' id='level'>1</div></div>";
@@ -944,13 +1018,13 @@ void handleMarioPage() {
     html += "<div class='line'>Power: <b id='power'>small</b></div>";
     html += "</div><div class='line'>Status: <b id='state'>lobby</b></div>";
     html += "<div class='line'>Position: X <b id='xpos'>0</b> | Checkpoint <b id='checkpoint'>0</b> | Kamera <b id='camera'>0</b></div></div>";
-    html += "<div class='card'><h2>Start</h2><div class='line muted'>Joystick 1 oder Joystick 3 startet und steuert Mario. Doppelklick auf dem Menu-Joystick bleibt global zurueck ins Menu.</div>";
+    html += "<div class='card'><h2>Start</h2><div class='line muted'>Joystick 1 oder Joystick 3 steuert Mario. Gestartet und neu gestartet wird einheitlich per Doppelklick.</div>";
     html += "<form action='/mario/start' method='POST'><button>Mario neu starten</button></form></div>";
     html += "<div class='card'><h2>Steuerung</h2><div class='line'>Links/Rechts: laufen | Oben: springen | Runter: ducken | Klick: Feuerball bei Fire Mario</div>";
     html += "<div class='line muted'>Small stirbt bei Treffer. Super/Fire verlieren zuerst nur den Power-State. Pilz macht Super, Feuerblume schaltet Feuerbaelle frei.</div></div>";
     html += "<div class='card'><h2>Level-Daten</h2><div class='line ok'>Speicherschonend: Plattform-Segmente, Blockliste, gepackte Muenzen und Spawnpunkte statt grosser Tile-Arrays.</div></div>";
     html += "</div><script>async function load(){try{let r=await fetch('/mario/state');let j=await r.json();document.getElementById('score').textContent=j.score;document.getElementById('level').textContent=j.level;document.getElementById('coins').textContent=j.coins;document.getElementById('lives').textContent=j.lives;document.getElementById('power').textContent=j.power;document.getElementById('state').textContent=j.state;document.getElementById('xpos').textContent=j.x;document.getElementById('checkpoint').textContent=j.checkpoint;document.getElementById('camera').textContent=j.camera;}catch(e){}}setInterval(load,500);load();</script></body></html>";
-    server.send(200, "text/html", html);
+    sendDashboardHtml(html);
 }
 
 void handleMarioState() {
@@ -1094,6 +1168,8 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/ip", HTTP_GET, handleIpInfo);
+    server.on("/sound/state", HTTP_GET, handleSoundState);
+    server.on("/sound/settings", HTTP_POST, handleSoundSettings);
     server.on("/snake", HTTP_GET, handleSnakePage);
     server.on("/snake/settings", HTTP_POST, handleSnakeSettings);
     server.on("/pong", HTTP_GET, handlePongPage);

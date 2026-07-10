@@ -43,6 +43,7 @@ public:
     void setYInputRange(int minVal, int maxVal);
     void setInverted(bool invertX, bool invertY);
     bool isPressed();
+    void reset();
     void update();
 };
 

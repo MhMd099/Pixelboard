@@ -10,6 +10,7 @@
 
 extern volatile int aktiverTask;
 extern Joystick joystick1;
+extern Joystick joystick3;
 
 namespace {
 const int LOGICAL_W = 16;
@@ -475,14 +476,19 @@ void renderGameOver() {
 
 void tickTetris() {
     unsigned long now = millis();
+    bool startDoubleClick = joystick1.doppelklickZaehler > 0 ||
+                            joystick3.doppelklickZaehler > 0;
+    joystick1.einfacherKlickZaehler = 0;
+    joystick1.doppelklickZaehler = 0;
+    joystick1.langKlickZaehler = 0;
+    joystick3.einfacherKlickZaehler = 0;
+    joystick3.doppelklickZaehler = 0;
+    joystick3.langKlickZaehler = 0;
 
     if (state == TETRIS_MENU) {
         tetrisPlaying = false;
         renderMenu();
-        bool pressed = joystick1.isPressed();
-        bool startEdge = pressed && !lastButton;
-        lastButton = pressed;
-        if (startEdge) resetGame();
+        if (startDoubleClick) resetGame();
         return;
     }
 
@@ -490,10 +496,7 @@ void tickTetris() {
         tetrisPlaying = false;
         saveTetrisScoreIfNeeded();
         renderGameOver();
-        bool pressed = joystick1.isPressed();
-        bool restartEdge = pressed && !lastButton;
-        lastButton = pressed;
-        if (restartEdge) resetGame();
+        if (startDoubleClick) resetGame();
         return;
     }
 
@@ -533,6 +536,7 @@ void taskTetrisHandler(void *pvParameters) {
         if (lastTask != 9) {
             state = TETRIS_MENU;
             joystick1.reset();
+            joystick3.reset();
             lastTask = 9;
             Serial.println("Tetris gestartet.");
         }
