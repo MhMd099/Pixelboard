@@ -867,8 +867,9 @@ void handleMarioPage() {
     html += dashboardNav("mario");
     html += "<div class='card'><h2>Live</h2><div class='grid'>";
     html += "<div class='line'>Score<div class='big' id='score'>0</div></div>";
-    html += "<div class='line'>Muenzen<div class='big' id='coins'>0</div></div>";
+    html += "<div class='line'>Level<div class='big' id='level'>1</div></div>";
     html += "</div><div class='grid'>";
+    html += "<div class='line'>Muenzen: <b id='coins'>0</b></div>";
     html += "<div class='line'>Leben: <b id='lives'>3</b></div>";
     html += "<div class='line'>Power: <b id='power'>small</b></div>";
     html += "</div><div class='line'>Status: <b id='state'>lobby</b></div>";
@@ -878,7 +879,7 @@ void handleMarioPage() {
     html += "<div class='card'><h2>Steuerung</h2><div class='line'>Links/Rechts: laufen | Oben: springen | Runter: ducken | Klick: Feuerball bei Fire Mario</div>";
     html += "<div class='line muted'>Small stirbt bei Treffer. Super/Fire verlieren zuerst nur den Power-State. Pilz macht Super, Feuerblume schaltet Feuerbaelle frei.</div></div>";
     html += "<div class='card'><h2>Level-Daten</h2><div class='line ok'>Speicherschonend: Plattform-Segmente, Blockliste, gepackte Muenzen und Spawnpunkte statt grosser Tile-Arrays.</div></div>";
-    html += "</div><script>async function load(){try{let r=await fetch('/mario/state');let j=await r.json();document.getElementById('score').textContent=j.score;document.getElementById('coins').textContent=j.coins;document.getElementById('lives').textContent=j.lives;document.getElementById('power').textContent=j.power;document.getElementById('state').textContent=j.state;document.getElementById('xpos').textContent=j.x;document.getElementById('checkpoint').textContent=j.checkpoint;document.getElementById('camera').textContent=j.camera;}catch(e){}}setInterval(load,500);load();</script></body></html>";
+    html += "</div><script>async function load(){try{let r=await fetch('/mario/state');let j=await r.json();document.getElementById('score').textContent=j.score;document.getElementById('level').textContent=j.level;document.getElementById('coins').textContent=j.coins;document.getElementById('lives').textContent=j.lives;document.getElementById('power').textContent=j.power;document.getElementById('state').textContent=j.state;document.getElementById('xpos').textContent=j.x;document.getElementById('checkpoint').textContent=j.checkpoint;document.getElementById('camera').textContent=j.camera;}catch(e){}}setInterval(load,500);load();</script></body></html>";
     server.send(200, "text/html", html);
 }
 

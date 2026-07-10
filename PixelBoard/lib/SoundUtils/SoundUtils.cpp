@@ -40,8 +40,8 @@ static uint8_t soundPriority(SoundType type)
 {
   if(type == SND_BOSS) return 5;
   if(type == SND_EXPLOSION || type == SND_DIE) return 4;
-  if(type == SND_HIT || type == SND_EAT) return 3;
-  if(type == SND_SHOOT) return 2;
+  if(type == SND_HIT || type == SND_EAT || type == SND_COIN || type == SND_POWERUP || type == SND_LEVELUP) return 3;
+  if(type == SND_SHOOT || type == SND_JUMP || type == SND_CHECKPOINT) return 2;
   if(type == SND_BUFF || type == SND_UI || type == SND_SELECT || type == SND_SWIPE) return 1;
   return 0;
 }
@@ -229,6 +229,31 @@ static void audioTask(void *pvParameters)
       {
         freq = 1200;
         dur  = 30;
+      }
+      else if(current == SND_JUMP)
+      {
+        freq = 1320;
+        dur  = 32;
+      }
+      else if(current == SND_COIN)
+      {
+        freq = 2050;
+        dur  = 28;
+      }
+      else if(current == SND_POWERUP)
+      {
+        freq = 980;
+        dur  = 70;
+      }
+      else if(current == SND_CHECKPOINT)
+      {
+        freq = 1760;
+        dur  = 40;
+      }
+      else if(current == SND_LEVELUP)
+      {
+        freq = 620;
+        dur  = 95;
       }
       else if(current == SND_SELECT || current == SND_BUFF)
       {

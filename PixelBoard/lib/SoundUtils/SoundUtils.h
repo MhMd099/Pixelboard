@@ -14,7 +14,12 @@ enum SoundType {
   SND_EXPLOSION,
   SND_BOSS,
   SND_BUFF,
-  SND_UI
+  SND_UI,
+  SND_JUMP,
+  SND_COIN,
+  SND_POWERUP,
+  SND_CHECKPOINT,
+  SND_LEVELUP
 };
 
 void initAudio();

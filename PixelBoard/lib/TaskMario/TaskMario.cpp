@@ -23,6 +23,10 @@ const int WORLD_W = 176;
 const int FLAG_X = 168;
 const int INPUT_DEADZONE = 58;
 const uint32_t TICK_MS = 33;
+const uint8_t MAX_SEGMENTS = 26;
+const uint8_t MAX_BLOCKS = 20;
+const uint8_t MAX_COINS = 48;
+const uint8_t MAX_ENEMY_SPAWNS = 12;
 
 const int16_t WALK_VX = 12;
 const int16_t DUCK_VX = 7;
@@ -110,36 +114,19 @@ struct InputState {
     bool action;
 };
 
-const Segment levelSegments[] = {
-    {0, 15, 34, SEG_GROUND}, {38, 15, 24, SEG_GROUND}, {66, 15, 28, SEG_GROUND},
-    {98, 15, 28, SEG_GROUND}, {131, 15, 45, SEG_GROUND},
-    {12, 11, 8, SEG_PLATFORM}, {25, 9, 5, SEG_PLATFORM}, {46, 12, 8, SEG_PLATFORM},
-    {72, 10, 9, SEG_PLATFORM}, {108, 11, 10, SEG_PLATFORM}, {136, 8, 7, SEG_PLATFORM},
-    {151, 12, 9, SEG_PLATFORM}
-};
-
-const BlockDef levelBlocks[] = {
-    {18, 10, BLOCK_QUESTION}, {19, 10, BLOCK_BRICK}, {20, 10, BLOCK_BRICK},
-    {52, 9, BLOCK_QUESTION}, {53, 9, BLOCK_BRICK}, {54, 9, BLOCK_BRICK},
-    {76, 7, BLOCK_BRICK}, {77, 7, BLOCK_QUESTION}, {78, 7, BLOCK_BRICK},
-    {112, 9, BLOCK_QUESTION}, {113, 9, BLOCK_BRICK}, {140, 6, BLOCK_QUESTION}
-};
-
-const uint16_t levelCoins[] = {
-    0x0E0A, 0x0F0A, 0x100A, 0x1A08, 0x1B08, 0x2F0B, 0x300B, 0x4A09,
-    0x4B09, 0x4C09, 0x6E0A, 0x6F0A, 0x700A, 0x8907, 0x8A07, 0x990B,
-    0x9A0B, 0x9B0B, 0xA20D, 0xA30D
-};
-
-const EnemySpawn enemySpawns[] = {
-    {30, 14, ENEMY_GOOMBA}, {58, 14, ENEMY_KOOPA}, {84, 14, ENEMY_GOOMBA},
-    {116, 14, ENEMY_KOOPA}, {145, 7, ENEMY_CROW}, {158, 10, ENEMY_CROW}
-};
-
 const uint8_t checkpointMarks[] = {2, 42, 72, 104, 134};
 
-bool blockAlive[sizeof(levelBlocks) / sizeof(levelBlocks[0])];
-bool coinCollected[sizeof(levelCoins) / sizeof(levelCoins[0])];
+Segment levelSegments[MAX_SEGMENTS];
+BlockDef levelBlocks[MAX_BLOCKS];
+uint16_t levelCoins[MAX_COINS];
+EnemySpawn enemySpawns[MAX_ENEMY_SPAWNS];
+uint8_t segmentCount = 0;
+uint8_t blockCount = 0;
+uint8_t coinCount = 0;
+uint8_t enemySpawnCount = 0;
+
+bool blockAlive[MAX_BLOCKS];
+bool coinCollected[MAX_COINS];
 Enemy enemies[8];
 Item items[4];
 Fireball fireballs[4];
@@ -148,6 +135,7 @@ MarioMode mode = MARIO_LOBBY;
 Player mario;
 uint16_t marioScore = 0;
 uint8_t marioCoins = 0;
+uint8_t marioLevel = 1;
 int16_t cameraX = 0;
 uint8_t checkpointIndex = 0;
 uint32_t lastTickMs = 0;
@@ -174,8 +162,177 @@ bool inWorldY(int y) {
     return y >= 0 && y < SCREEN_H;
 }
 
+uint8_t difficultyCap() {
+    return marioLevel > 8 ? 8 : marioLevel;
+}
+
+bool protectedGroundX(int x) {
+    if (x < 14 || x > FLAG_X + 3) return true;
+    if (x >= FLAG_X - 5) return true;
+    for (size_t i = 0; i < sizeof(checkpointMarks) / sizeof(checkpointMarks[0]); i++) {
+        if (abs(x - checkpointMarks[i]) <= 3) return true;
+    }
+    return false;
+}
+
+void addSegment(uint8_t x, uint8_t y, uint8_t w, uint8_t type) {
+    if (segmentCount >= MAX_SEGMENTS || w == 0) return;
+    levelSegments[segmentCount++] = {x, y, w, type};
+}
+
+void addBlock(uint8_t x, uint8_t y, uint8_t type) {
+    if (blockCount >= MAX_BLOCKS || x >= WORLD_W || y >= SCREEN_H) return;
+    for (uint8_t i = 0; i < blockCount; i++) {
+        if (levelBlocks[i].x == x && levelBlocks[i].y == y) return;
+    }
+    levelBlocks[blockCount] = {x, y, type};
+    blockAlive[blockCount] = true;
+    blockCount++;
+}
+
+void addCoin(uint8_t x, uint8_t y) {
+    if (coinCount >= MAX_COINS || x >= WORLD_W || y >= SCREEN_H) return;
+    for (uint8_t i = 0; i < coinCount; i++) {
+        if (packedX(levelCoins[i]) == x && packedY(levelCoins[i]) == y) return;
+    }
+    levelCoins[coinCount] = ((uint16_t)x << 4) | (uint16_t)(y & 0x0F);
+    coinCollected[coinCount] = false;
+    coinCount++;
+}
+
+void addEnemySpawn(uint8_t x, uint8_t y, uint8_t type) {
+    if (enemySpawnCount >= MAX_ENEMY_SPAWNS || x >= WORLD_W || y >= SCREEN_H) return;
+    enemySpawns[enemySpawnCount++] = {x, y, type};
+}
+
+void forceGroundSafeZones(bool ground[]) {
+    for (int x = 0; x < WORLD_W; x++) {
+        if (protectedGroundX(x)) ground[x] = true;
+    }
+}
+
+void buildGroundSegments(bool ground[]) {
+    int x = 0;
+    while (x < WORLD_W) {
+        while (x < WORLD_W && !ground[x]) x++;
+        if (x >= WORLD_W) break;
+        int start = x;
+        while (x < WORLD_W && ground[x]) x++;
+        int w = x - start;
+        while (w > 0) {
+            uint8_t chunk = (uint8_t)min(w, 255);
+            addSegment((uint8_t)start, 15, chunk, SEG_GROUND);
+            start += chunk;
+            w -= chunk;
+        }
+    }
+}
+
+bool hasGroundBelow(bool ground[], int x) {
+    return x >= 0 && x < WORLD_W && ground[x];
+}
+
+void generateLevel() {
+    randomSeed((uint32_t)micros() ^ ((uint32_t)millis() << 7) ^ ((uint32_t)marioLevel * 2654435761UL));
+
+    segmentCount = 0;
+    blockCount = 0;
+    coinCount = 0;
+    enemySpawnCount = 0;
+    for (uint8_t i = 0; i < MAX_BLOCKS; i++) blockAlive[i] = false;
+    for (uint8_t i = 0; i < MAX_COINS; i++) coinCollected[i] = false;
+
+    bool ground[WORLD_W];
+    for (int x = 0; x < WORLD_W; x++) ground[x] = true;
+
+    uint8_t diff = difficultyCap();
+    uint8_t targetGaps = 3 + diff / 2;
+    uint8_t maxGap = 3 + min((int)diff / 3, 2);
+    uint8_t carved = 0;
+
+    for (uint8_t attempt = 0; attempt < 70 && carved < targetGaps; attempt++) {
+        int gapW = random(2, maxGap + 2);
+        int sx = random(22, FLAG_X - 12);
+        bool ok = true;
+        for (int x = sx - 2; x < sx + gapW + 2; x++) {
+            if (x <= 0 || x >= WORLD_W || protectedGroundX(x) || !ground[x]) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) continue;
+        for (int x = sx; x < sx + gapW; x++) ground[x] = false;
+        carved++;
+    }
+    forceGroundSafeZones(ground);
+    buildGroundSegments(ground);
+
+    uint8_t targetPlatforms = 6 + min((int)diff, 6);
+    uint8_t platforms = 0;
+    for (uint8_t attempt = 0; attempt < 90 && platforms < targetPlatforms; attempt++) {
+        uint8_t w = (uint8_t)random(4, 9);
+        uint8_t x = (uint8_t)random(13, FLAG_X - w - 6);
+        uint8_t y = (uint8_t)random(8, 13);
+        bool ok = true;
+        for (uint8_t i = 0; i < segmentCount; i++) {
+            const Segment& s = levelSegments[i];
+            if (s.type != SEG_PLATFORM || s.y != y) continue;
+            if (x < s.x + s.w + 3 && x + w + 3 > s.x) {
+                ok = false;
+                break;
+            }
+        }
+        if (!ok) continue;
+        addSegment(x, y, w, SEG_PLATFORM);
+        platforms++;
+
+        uint8_t coinY = y > 1 ? y - 1 : y;
+        for (uint8_t c = 1; c + 1 < w && c < 5; c += 2) addCoin(x + c, coinY);
+    }
+
+    uint8_t targetBlocks = 7 + min((int)diff * 2, 10);
+    uint8_t blocks = 0;
+    for (uint8_t attempt = 0; attempt < 80 && blocks < targetBlocks; attempt++) {
+        uint8_t x = (uint8_t)random(16, FLAG_X - 14);
+        uint8_t y = (uint8_t)random(7, 11);
+        if (protectedGroundX(x)) continue;
+        uint8_t type = ((blocks + marioLevel) % 4 == 0) ? BLOCK_QUESTION : BLOCK_BRICK;
+        addBlock(x, y, type);
+        blocks++;
+    }
+
+    uint8_t groundCoins = 14 + min((int)diff * 3, 18);
+    for (uint8_t attempt = 0; attempt < 100 && coinCount < MAX_COINS && groundCoins > 0; attempt++) {
+        uint8_t x = (uint8_t)random(8, FLAG_X - 6);
+        if (!hasGroundBelow(ground, x) || protectedGroundX(x)) continue;
+        addCoin(x, 13);
+        groundCoins--;
+    }
+
+    uint8_t targetEnemies = 4 + min((int)diff, 6);
+    for (uint8_t attempt = 0; attempt < 90 && targetEnemies > 0; attempt++) {
+        uint8_t x = (uint8_t)random(24, FLAG_X - 10);
+        if (!hasGroundBelow(ground, x) || protectedGroundX(x)) continue;
+        uint8_t type = (random(0, 100) < 35 + diff * 5) ? ENEMY_KOOPA : ENEMY_GOOMBA;
+        addEnemySpawn(x, 14, type);
+        targetEnemies--;
+    }
+
+    uint8_t crows = 1 + diff / 3;
+    for (uint8_t i = 0; i < crows && enemySpawnCount < MAX_ENEMY_SPAWNS; i++) {
+        uint8_t x = (uint8_t)random(70, FLAG_X - 5);
+        uint8_t y = (uint8_t)random(5, 10);
+        addEnemySpawn(x, y, ENEMY_CROW);
+    }
+
+    addBlock(18, 10, BLOCK_QUESTION);
+    addBlock(19, 10, BLOCK_BRICK);
+    addCoin(14, 10);
+    addCoin(15, 10);
+}
+
 bool segmentSolidAt(int x, int y) {
-    for (size_t i = 0; i < sizeof(levelSegments) / sizeof(levelSegments[0]); i++) {
+    for (uint8_t i = 0; i < segmentCount; i++) {
         const Segment& s = levelSegments[i];
         if (y == s.y && x >= s.x && x < s.x + s.w) return true;
     }
@@ -183,7 +340,7 @@ bool segmentSolidAt(int x, int y) {
 }
 
 int blockIndexAt(int x, int y) {
-    for (size_t i = 0; i < sizeof(levelBlocks) / sizeof(levelBlocks[0]); i++) {
+    for (uint8_t i = 0; i < blockCount; i++) {
         if (blockAlive[i] && levelBlocks[i].x == x && levelBlocks[i].y == y) return (int)i;
     }
     return -1;
@@ -305,7 +462,7 @@ void hitBlockAbove() {
         blockAlive[idx] = false;
         spawnItem(mario.power == MARIO_SMALL ? ITEM_MUSHROOM : ITEM_FLOWER, b.x, b.y - 1);
         marioScore += 10;
-        playSound(SND_BUFF);
+        playSound(SND_UI);
     } else {
         playSound(SND_HIT);
     }
@@ -342,16 +499,22 @@ void movePlayerY(int16_t delta) {
     }
 }
 
+int16_t initialEnemySpeed(uint8_t type) {
+    uint8_t diff = difficultyCap();
+    if (type == ENEMY_CROW) return -(8 + diff);
+    return -(5 + diff / 2);
+}
+
 void initEnemies() {
     for (uint8_t i = 0; i < 8; i++) enemies[i].active = false;
-    for (size_t i = 0; i < sizeof(enemySpawns) / sizeof(enemySpawns[0]) && i < 8; i++) {
+    for (uint8_t i = 0; i < enemySpawnCount && i < 8; i++) {
         const EnemySpawn& s = enemySpawns[i];
         enemies[i].active = true;
         enemies[i].type = s.type;
         enemies[i].state = 0;
         enemies[i].x = s.x * SCALE;
         enemies[i].y = s.y * SCALE;
-        enemies[i].vx = (s.type == ENEMY_CROW) ? -8 : -5;
+        enemies[i].vx = initialEnemySpeed(s.type);
         enemies[i].vy = 0;
         enemies[i].fixedY = s.y;
     }
@@ -398,19 +561,35 @@ void placeMarioAtCheckpoint() {
 
 void resetLevel(bool fullReset) {
     if (fullReset) {
+        marioLevel = 1;
         marioLives = 3;
         marioScore = 0;
         marioCoins = 0;
         checkpointIndex = 0;
-        for (size_t i = 0; i < sizeof(blockAlive) / sizeof(blockAlive[0]); i++) blockAlive[i] = true;
-        for (size_t i = 0; i < sizeof(coinCollected) / sizeof(coinCollected[0]); i++) coinCollected[i] = false;
+        generateLevel();
     }
+    for (uint8_t i = 0; i < blockCount; i++) blockAlive[i] = true;
+    for (uint8_t i = 0; i < coinCount; i++) coinCollected[i] = false;
     clearTransientObjects();
     initEnemies();
     placeMarioAtCheckpoint();
     if (fullReset) mario.invulnerableUntil = 0;
     mode = MARIO_LOBBY;
     modeStartedMs = millis();
+}
+
+void startNextLevel() {
+    if (marioLevel < 99) marioLevel++;
+    checkpointIndex = 0;
+    generateLevel();
+    for (uint8_t i = 0; i < blockCount; i++) blockAlive[i] = true;
+    for (uint8_t i = 0; i < coinCount; i++) coinCollected[i] = false;
+    clearTransientObjects();
+    initEnemies();
+    placeMarioAtCheckpoint();
+    mode = MARIO_PLAYING;
+    modeStartedMs = millis();
+    playSound(SND_LEVELUP);
 }
 
 void respawnFromCheckpoint() {
@@ -483,7 +662,7 @@ void collectCoins() {
     int px = pixelX(mario.x);
     int py = pixelY(mario.y);
     uint8_t ph = playerHeight();
-    for (size_t i = 0; i < sizeof(levelCoins) / sizeof(levelCoins[0]); i++) {
+    for (uint8_t i = 0; i < coinCount; i++) {
         if (coinCollected[i]) continue;
         int cx = packedX(levelCoins[i]);
         int cy = packedY(levelCoins[i]);
@@ -495,7 +674,7 @@ void collectCoins() {
             marioCoins = 0;
             marioLives++;
         }
-        playSound(SND_EAT);
+        playSound(SND_COIN);
     }
 }
 
@@ -510,7 +689,7 @@ void collectItems() {
         else setPowerKeepingFeet(MARIO_FIRE);
         items[i].active = false;
         marioScore += 200;
-        playSound(SND_BUFF);
+        playSound(SND_POWERUP);
     }
 }
 
@@ -659,7 +838,7 @@ void updateCheckpoint() {
     while (checkpointIndex + 1 < sizeof(checkpointMarks) / sizeof(checkpointMarks[0]) &&
            px >= checkpointMarks[checkpointIndex + 1]) {
         checkpointIndex++;
-        playSound(SND_BUFF);
+        playSound(SND_CHECKPOINT);
     }
 }
 
@@ -669,7 +848,7 @@ void startJump() {
     mario.jumpBufferTicks = 0;
     mario.coyoteTicks = 0;
     mario.onGround = false;
-    playSound(SND_SELECT);
+    playSound(SND_JUMP);
 }
 
 void applyMarioGravity(bool jumpHeld) {
@@ -730,7 +909,7 @@ void updatePlaying() {
         marioScore += 1000;
         mode = MARIO_WIN;
         modeStartedMs = millis();
-        playSound(SND_BUFF);
+        playSound(SND_LEVELUP);
     }
 }
 
@@ -745,19 +924,19 @@ void renderWorld() {
         if (((x + cameraX) & 7) == 0) setPixel(x, 1, CRGB(8, 10, 22));
     }
 
-    for (size_t i = 0; i < sizeof(levelSegments) / sizeof(levelSegments[0]); i++) {
+    for (uint8_t i = 0; i < segmentCount; i++) {
         const Segment& s = levelSegments[i];
         CRGB col = s.type == SEG_GROUND ? CRGB(90, 52, 22) : CRGB(70, 95, 45);
         for (uint8_t x = 0; x < s.w; x++) drawWorldPixel(s.x + x, s.y, col);
     }
 
-    for (size_t i = 0; i < sizeof(levelBlocks) / sizeof(levelBlocks[0]); i++) {
+    for (uint8_t i = 0; i < blockCount; i++) {
         if (!blockAlive[i]) continue;
         CRGB col = levelBlocks[i].type == BLOCK_QUESTION ? CRGB::Orange : CRGB(145, 70, 32);
         drawWorldPixel(levelBlocks[i].x, levelBlocks[i].y, col);
     }
 
-    for (size_t i = 0; i < sizeof(levelCoins) / sizeof(levelCoins[0]); i++) {
+    for (uint8_t i = 0; i < coinCount; i++) {
         if (coinCollected[i]) continue;
         drawWorldPixel(packedX(levelCoins[i]), packedY(levelCoins[i]), CRGB::Yellow);
     }
@@ -857,6 +1036,7 @@ String marioStateJson() {
 
     String json = "{";
     json += "\"state\":\"" + state + "\"";
+    json += ",\"level\":" + String(marioLevel);
     json += ",\"lives\":" + String(marioLives);
     json += ",\"score\":" + String(marioScore);
     json += ",\"coins\":" + String(marioCoins);
@@ -915,13 +1095,12 @@ void taskMarioHandler(void *pvParameters) {
         } else if (mode == MARIO_WIN) {
             renderEnd(CRGB::Green);
             if (millis() - modeStartedMs > 1800UL) {
-                resetLevel(true);
+                startNextLevel();
             }
         } else {
             renderEnd(CRGB::Red);
             if (millis() - modeStartedMs > 1600UL) {
-                aktiverTask = -1;
-                fokusModus = 0;
+                resetLevel(true);
             }
         }
 
