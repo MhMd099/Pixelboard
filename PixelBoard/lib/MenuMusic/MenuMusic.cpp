@@ -56,18 +56,26 @@ void taskMenuMusic(void *pvParameters) {
     AudioGeneratorMP3 decoder;
     AudioOutputMixer output;
     bool running = false;
+    bool pausedForTask = false;
     bool missingLogged = false;
 
     for (;;) {
         if (aktiverTask != -1) {
-            if (running) {
-                decoder.stop();
-                file.close();
-                running = false;
+            if (running && !pausedForTask) {
+                // Keep decoder, file position and PCM buffer intact. This makes
+                // the menu track continue at the audible position after the app.
+                setMenuMusicEnabled(false);
+                pausedForTask = true;
+                Serial.println("Menue-Musik pausiert.");
             }
-            setMenuMusicEnabled(false);
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
+        }
+
+        if (running && pausedForTask) {
+            setMenuMusicEnabled(true);
+            pausedForTask = false;
+            Serial.println("Menue-Musik fortgesetzt.");
         }
 
         if (!running) {
@@ -89,6 +97,7 @@ void taskMenuMusic(void *pvParameters) {
             if (!running) {
                 file.close();
                 setMenuMusicEnabled(false);
+                clearMenuMusicBuffer();
                 Serial.println("MP3-Decoder konnte Menue-Musik nicht starten.");
                 vTaskDelay(pdMS_TO_TICKS(500));
                 continue;
@@ -100,6 +109,7 @@ void taskMenuMusic(void *pvParameters) {
             decoder.stop();
             file.close();
             running = false;
+            pausedForTask = false;
             clearMenuMusicBuffer();
             vTaskDelay(pdMS_TO_TICKS(30));
         } else {

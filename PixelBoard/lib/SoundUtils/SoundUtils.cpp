@@ -315,7 +315,6 @@ void clearMenuMusicBuffer()
 void setMenuMusicEnabled(bool enabled)
 {
   menuMusicEnabled = enabled;
-  if(!enabled) clearMenuMusicBuffer();
 }
 
 void playSound(SoundType type)

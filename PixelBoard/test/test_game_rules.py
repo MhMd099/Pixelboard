@@ -79,6 +79,23 @@ class GameRuleTests(unittest.TestCase):
         self.assertIn("doppelklickZaehler", runtime)
         self.assertIn("PAUSE_HOLD_MS = 5000UL", runtime)
 
+    def test_menu_music_is_paused_while_an_app_is_open(self):
+        menu_music = (ROOT / "lib/MenuMusic/MenuMusic.cpp").read_text(encoding="utf-8")
+        sound_utils = (ROOT / "lib/SoundUtils/SoundUtils.cpp").read_text(encoding="utf-8")
+
+        app_pause = menu_music.split("if (aktiverTask != -1)", 1)[1].split(
+            "if (running && pausedForTask)", 1
+        )[0]
+        self.assertIn("setMenuMusicEnabled(false)", app_pause)
+        self.assertNotIn("decoder.stop()", app_pause)
+        self.assertNotIn("file.close()", app_pause)
+        self.assertIn("setMenuMusicEnabled(true)", menu_music)
+
+        enable_function = sound_utils.split(
+            "void setMenuMusicEnabled(bool enabled)", 1
+        )[1].split("void playSound", 1)[0]
+        self.assertNotIn("clearMenuMusicBuffer()", enable_function)
+
 
 if __name__ == "__main__":
     unittest.main()
