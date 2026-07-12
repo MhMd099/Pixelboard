@@ -2,7 +2,6 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
-//optimize
 #include "time.h"
 #include "HardwareUtils.h"
 #include "SoundUtils.h"
@@ -20,7 +19,7 @@
 #include "TaskWetter.h"
 #include "TaskSnake.h"
 #include "TaskAnim.h"
-#include "TaskDHT.h" // <--- NEUER DHT TASK
+#include "TaskDHT.h"
 #include "RaumschiffGame.h"
 #include "TaskRaumschiff.h"
 #include "TaskPong.h"
@@ -42,6 +41,19 @@
 #define WIDTH 32
 #define HEIGHT_TOTAL 16
 static const int APP_COUNT = 11;
+static const SoundType APP_ENTRY_SOUNDS[APP_COUNT] = {
+    SND_CHECKPOINT, // Uhr
+    SND_BUFF,       // Wetter
+    SND_EAT,        // Snake
+    SND_UI,         // Musik
+    SND_POWERUP,    // Animationen
+    SND_SELECT,     // DHT
+    SND_BOSS,       // Raumschiff
+    SND_HIT,        // Pong
+    SND_COIN,       // Pacman
+    SND_EXPLOSION,  // Tetris
+    SND_JUMP        // Mario
+};
 
 // --- Joystick 1 (Für Snake) ---
 #define J1_PIN_X 34
@@ -89,6 +101,8 @@ volatile bool taskWechselAnforderung = false;
 int fokusModus = 0; // Navigation im Menü
 bool navigationsSperre = false;
 unsigned long eventSperreBis = 0;
+volatile uint32_t i2cJoystickReadsOk = 0;
+volatile uint32_t i2cJoystickReadErrors = 0;
 
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
@@ -406,6 +420,8 @@ void wechsleZuTask(int zielTask)
     joystick2.reset();
     joystick3.reset();
 
+    playSound(APP_ENTRY_SOUNDS[zielTask]);
+
     if (zielTask == 3)
         startMusic();
 
@@ -580,6 +596,7 @@ void taskI2CJoystickHandler(void *pv)
 
         if (received >= 5 && Wire.available() >= 5)
         {
+            i2cJoystickReadsOk++;
             int rawX = (Wire.read() << 8) | Wire.read();
             int rawY = (Wire.read() << 8) | Wire.read();
             bool pressed = (Wire.read() == 1);
@@ -589,6 +606,7 @@ void taskI2CJoystickHandler(void *pv)
         }
         else
         {
+            i2cJoystickReadErrors++;
             while (Wire.available() > 0)
                 Wire.read();
             joystick3.setI2CData(512, 512, false);

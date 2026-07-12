@@ -132,7 +132,10 @@ static void damagePlayer(Spieler& player)
     }
 
     player.hp--;
-    Audio::playHit();
+    if (player.hp <= 0)
+        playSound(SND_DIE);
+    else
+        Audio::playHit();
 }
 
 static void applyBlackHoleNerf(Spieler& player)

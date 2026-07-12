@@ -8,6 +8,8 @@ Joystick::Joystick(int pinX, int pinY, int pinTaster, int tasterModus)
   this->isI2C = false;
   this->i2cInvertX = false;
   this->i2cInvertY = false;
+  this->lastDriftXMs = 0;
+  this->lastDriftYMs = 0;
 
   xAchse.setInputRange(0, 4095);
   yAchse.setInputRange(0, 4095);
@@ -15,7 +17,7 @@ Joystick::Joystick(int pinX, int pinY, int pinTaster, int tasterModus)
   yAchse.setScaleRange(-100, 100);
 
   kalibrieren();
-  deadZone = 50;
+  setDeadZonePercent(1);
 }
 
 // 2. NEU: Der einfache I2C-Erweiterungs-Konstruktor
@@ -29,6 +31,8 @@ Joystick::Joystick()
   this->i2cButtonPressed = false;
   this->i2cInvertX = false;
   this->i2cInvertY = false;
+  this->lastDriftXMs = 0;
+  this->lastDriftYMs = 0;
 
   // Ein Arduino Nano arbeitet mit 10-Bit ADC (0 - 1023)
   xAchse.setInputRange(0, 1023);
@@ -38,7 +42,7 @@ Joystick::Joystick()
 
   xMitte = 512;
   yMitte = 512;
-  deadZone = 40; // Leicht angepasste Deadzone für Nano Hardware
+  setDeadZonePercent(4); // Nano-Joysticks brauchen meist etwas mehr Ruhezone.
 }
 
 // NEU: Setzt die im I2C-Task empfangenen Werte direkt in die Klasse
@@ -58,6 +62,21 @@ void Joystick::kalibrieren() {
     xMitte = xAchse.readRaw();
     yMitte = yAchse.readRaw();
   }
+  lastDriftXMs = millis();
+  lastDriftYMs = lastDriftXMs;
+}
+
+void Joystick::updateCenterDrift(int rawValue, bool xAxis) {
+  int& center = xAxis ? xMitte : yMitte;
+  unsigned long& lastUpdate = xAxis ? lastDriftXMs : lastDriftYMs;
+  unsigned long now = millis();
+  if (now - lastUpdate < 250UL) return;
+  lastUpdate = now;
+
+  int delta = rawValue - center;
+  if (abs(delta) > deadZone) return;
+  if (delta > 0) center++;
+  else if (delta < 0) center--;
 }
 
 int Joystick::readXRaw() {
@@ -85,7 +104,9 @@ int Joystick::readYRaw() {
 }
 
 int Joystick::readXPercent() {
-  int raw = readXRaw() - xMitte;
+  int rawValue = readXRaw();
+  updateCenterDrift(rawValue, true);
+  int raw = rawValue - xMitte;
   if (abs(raw) < deadZone) raw = 0;
   
   // Im I2C-Modus mappen wir dynamisch bis max. 1023, sonst deine originalen 4095
@@ -94,7 +115,9 @@ int Joystick::readXPercent() {
 }
 
 int Joystick::readYPercent() {
-  int raw = readYRaw() - yMitte;
+  int rawValue = readYRaw();
+  updateCenterDrift(rawValue, false);
+  int raw = rawValue - yMitte;
   if (abs(raw) < deadZone) raw = 0;
   
   int maxRaw = isI2C ? 1023 : 4095;
@@ -130,6 +153,16 @@ bool Joystick::isPressed() {
   } else {
     return (tasterModus == INPUT_PULLUP) ? (digitalRead(tasterPin) == LOW) : (digitalRead(tasterPin) == HIGH);
   }
+}
+
+void Joystick::setDeadZonePercent(int percent) {
+  deadZonePercent = (uint8_t)constrain(percent, 1, 20);
+  int maxRaw = isI2C ? 1023 : 4095;
+  deadZone = max(1, maxRaw * (int)deadZonePercent / 100);
+}
+
+uint8_t Joystick::getDeadZonePercent() const {
+  return deadZonePercent;
 }
 
 void Joystick::reset() {

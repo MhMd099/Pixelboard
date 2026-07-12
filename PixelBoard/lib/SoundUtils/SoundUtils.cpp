@@ -14,6 +14,8 @@ volatile int musicBeat = 0;
 static volatile uint32_t soundSerial = 0;
 static volatile uint8_t activeSoundPriority = 0;
 static volatile uint8_t masterVolume = 100;
+static volatile uint8_t effectsVolume = 100;
+static volatile uint8_t musicVolume = 100;
 
 struct Note {
   uint16_t freq;
@@ -112,9 +114,34 @@ static bool interrupted(uint32_t localSerial)
   return soundSerial != localSerial;
 }
 
-static int16_t scaledAmplitude(int16_t fullVolumeAmplitude)
+static uint16_t perceptualGain(uint8_t volume)
 {
-  return (int16_t)(((int32_t)fullVolumeAmplitude * masterVolume) / 100);
+  return (uint16_t)(((uint32_t)volume * volume + 50U) / 100U);
+}
+
+static int16_t scaledAmplitude(int16_t fullVolumeAmplitude, uint8_t channelVolume)
+{
+  uint32_t masterGain = perceptualGain(masterVolume);
+  uint32_t channelGain = perceptualGain(channelVolume);
+  return (int16_t)(((int64_t)fullVolumeAmplitude * masterGain * channelGain) / 10000LL);
+}
+
+static int16_t applyEnvelope(int16_t amplitude, int sampleIndex, int totalSamples,
+                             int attackMs, int releaseMs)
+{
+  int attackSamples = max(1, SAMPLE_RATE * attackMs / 1000);
+  int releaseSamples = max(1, SAMPLE_RATE * releaseMs / 1000);
+  int32_t level = 32767;
+  if(sampleIndex < attackSamples)
+    level = (int32_t)sampleIndex * 32767 / attackSamples;
+
+  int remaining = totalSamples - sampleIndex - 1;
+  if(remaining < releaseSamples)
+  {
+    int32_t releaseLevel = max(0, remaining) * 32767L / releaseSamples;
+    if(releaseLevel < level) level = releaseLevel;
+  }
+  return (int16_t)(((int32_t)amplitude * level) / 32767L);
 }
 
 static void playEffect(int freq,int durationMs,uint32_t localSerial)
@@ -138,7 +165,8 @@ static void playEffect(int freq,int durationMs,uint32_t localSerial)
   if(halfPeriod<1)
     halfPeriod=1;
 
-  int16_t amplitude = scaledAmplitude(22000);
+  // Effects need enough headroom to remain audible on small matrix speakers.
+  int16_t baseAmplitude = scaledAmplitude(29000, effectsVolume);
 
   for(int i=0;i<samples;i++)
   {
@@ -146,8 +174,10 @@ static void playEffect(int freq,int durationMs,uint32_t localSerial)
     {
       if(interrupted(localSerial))
         break;
-      amplitude = scaledAmplitude(22000);
+      baseAmplitude = scaledAmplitude(29000, effectsVolume);
     }
+
+    int16_t amplitude = applyEnvelope(baseAmplitude, i, samples, 2, 7);
 
     int16_t sample =
       ((i/halfPeriod)&1)
@@ -163,6 +193,34 @@ static void playEffect(int freq,int durationMs,uint32_t localSerial)
   }
 
   playSilence();
+}
+
+static void playEffectPattern(SoundType type, uint32_t localSerial)
+{
+  auto tone = [&](int frequency, int durationMs) {
+    if(!interrupted(localSerial))
+      playEffect(frequency, durationMs, localSerial);
+  };
+
+  switch(type)
+  {
+    case SND_SWIPE:      tone(850, 22);  tone(1450, 30); break;
+    case SND_SELECT:     tone(1150, 35); tone(1850, 48); break;
+    case SND_EAT:        tone(1750, 25); tone(2350, 35); break;
+    case SND_DIE:        tone(620, 55);  tone(390, 65); tone(190, 105); break;
+    case SND_SHOOT:      tone(2550, 22); tone(1550, 30); break;
+    case SND_HIT:        tone(880, 34);  tone(540, 48); break;
+    case SND_EXPLOSION:  tone(520, 48);  tone(310, 65); tone(145, 105); break;
+    case SND_BOSS:       tone(180, 70);  tone(260, 55); tone(150, 85); break;
+    case SND_BUFF:       tone(720, 34);  tone(1080, 38); tone(1620, 52); break;
+    case SND_UI:         tone(1250, 38); break;
+    case SND_JUMP:       tone(720, 28);  tone(1120, 30); tone(1680, 38); break;
+    case SND_COIN:       tone(2100, 30); tone(2850, 48); break;
+    case SND_POWERUP:    tone(620, 42);  tone(980, 42); tone(1480, 45); tone(2100, 60); break;
+    case SND_CHECKPOINT: tone(1350, 42); tone(1750, 42); tone(2250, 65); break;
+    case SND_LEVELUP:    tone(520, 38);  tone(780, 38); tone(1100, 42); tone(1650, 70); break;
+    default:             tone(1000, 45); break;
+  }
 }
 
 static void playMusicNote(
@@ -201,7 +259,7 @@ static void playMusicNote(
   if(halfPeriod<1)
     halfPeriod=1;
 
-  int16_t amplitude = scaledAmplitude(2200);
+  int16_t baseAmplitude = scaledAmplitude(2200, musicVolume);
 
   for(int i=0;i<samples;i++)
   {
@@ -209,8 +267,10 @@ static void playMusicNote(
     {
       if(interrupted(localSerial))
         return;
-      amplitude = scaledAmplitude(2200);
+      baseAmplitude = scaledAmplitude(2200, musicVolume);
     }
+
+    int16_t amplitude = applyEnvelope(baseAmplitude, i, samples, 4, 10);
 
     int16_t sample =
       ((i/halfPeriod)&1)
@@ -240,68 +300,9 @@ static void audioTask(void *pvParameters)
     {
       musicIndex = 0;
 
-      int freq = 1000;
-      int dur  = 30;
-
-      if(current == SND_SWIPE || current == SND_UI)
-      {
-        freq = 1200;
-        dur  = 30;
-      }
-      else if(current == SND_JUMP)
-      {
-        freq = 1320;
-        dur  = 32;
-      }
-      else if(current == SND_COIN)
-      {
-        freq = 2050;
-        dur  = 28;
-      }
-      else if(current == SND_POWERUP)
-      {
-        freq = 980;
-        dur  = 70;
-      }
-      else if(current == SND_CHECKPOINT)
-      {
-        freq = 1760;
-        dur  = 40;
-      }
-      else if(current == SND_LEVELUP)
-      {
-        freq = 620;
-        dur  = 95;
-      }
-      else if(current == SND_SELECT || current == SND_BUFF)
-      {
-        freq = 1500;
-        dur  = 45;
-      }
-      else if(current == SND_EAT || current == SND_SHOOT)
-      {
-        freq = 1850;
-        dur  = 36;
-      }
-      else if(current == SND_HIT)
-      {
-        freq = 760;
-        dur  = 55;
-      }
-      else if(current == SND_DIE || current == SND_EXPLOSION)
-      {
-        freq = 330;
-        dur  = 95;
-      }
-      else if(current == SND_BOSS)
-      {
-        freq = 180;
-        dur  = 100;
-      }
-
       activeSoundPriority = soundPriority(current);
       uint32_t localSerial = soundSerial;
-      playEffect(freq, dur, localSerial);
+      playEffectPattern(current, localSerial);
       activeSoundPriority = 0;
     }
     else if(musicPlaying)
@@ -353,6 +354,26 @@ void setMasterVolume(int volume)
 uint8_t getMasterVolume()
 {
   return masterVolume;
+}
+
+void setEffectsVolume(int volume)
+{
+  effectsVolume = (uint8_t)constrain(volume, 0, 100);
+}
+
+uint8_t getEffectsVolume()
+{
+  return effectsVolume;
+}
+
+void setMusicVolume(int volume)
+{
+  musicVolume = (uint8_t)constrain(volume, 0, 100);
+}
+
+uint8_t getMusicVolume()
+{
+  return musicVolume;
 }
 
 void playSound(SoundType type)

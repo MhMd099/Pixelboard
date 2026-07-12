@@ -1,16 +1,8 @@
 #include "TaskRaumschiff.h"
 
 #include <Arduino.h>
-#include <FastLED.h>
 
-#include "RaumschiffGame.h"
 #include "HardwareUtils.h"
-extern volatile int aktiverTask;
-
-static int lastTaskState = -1;
-#include "TaskRaumschiff.h"
-
-#include <Arduino.h>
 #include "RaumschiffGame.h"
 
 extern volatile int aktiverTask;
@@ -21,7 +13,7 @@ void taskRaumschiffHandler(void *pvParameters)
 
     for (;;)
     {
-        // ❌ nicht aktiv → schlafen + reset trigger vorbereiten
+        // Inactive tasks sleep and prepare a clean entry on the next launch.
         if (aktiverTask != 6)
         {
             lastTask = -1;
@@ -29,27 +21,21 @@ void taskRaumschiffHandler(void *pvParameters)
             continue;
         }
 
-        // 🔥 TASK ENTRY DETECTION
         if (lastTask != 6)
         {
             raumschiffResetGame();
             lastTask = 6;
-
-            Serial.println("Raumschiff gestartet + Reset ausgeführt");
+            Serial.println("Raumschiff gestartet und zurueckgesetzt.");
         }
 
-        // 🔒 Display lock
         if (!lockDisplay(20))
         {
             vTaskDelay(5 / portTICK_PERIOD_MS);
             continue;
         }
 
-        // 🚀 EINZIGER GAME CALL
         raumschiffGameTick();
-
         unlockDisplay();
-
         vTaskDelay(pdMS_TO_TICKS(16));
     }
 }

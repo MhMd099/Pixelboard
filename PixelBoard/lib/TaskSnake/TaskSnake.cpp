@@ -20,7 +20,7 @@ extern void drawDigitW(int x, int y, int n, CRGB c);
 #define MAX_SNAKE_OBSTACLES 48
 #define MAX_SNAKE_POWERUPS 6
 
-enum GameState { STATE_MENU, STATE_SHOW_HIGHSCORES, STATE_PLAYING, STATE_GAMEOVER };
+enum GameState { STATE_MENU, STATE_PLAYING, STATE_GAMEOVER };
 static GameState currentState = STATE_MENU;
 
 struct Point { int x, y; };
@@ -66,6 +66,9 @@ void taskSnakeHandler(void *pvParameters) {
     bool playerJoined[2] = {true, false};
     bool playerAlive[2] = {true, false};
     bool secondPlayerNeedsInitialMove = false;
+    unsigned long playerJoinMs[2] = {0, 0};
+    unsigned long playerDeathMs[2] = {0, 0};
+    unsigned long allLostSinceMs = 0;
 
     static SnakeItem foods[MAX_SNAKE_FOOD];
     static SnakeItem obstacles[MAX_SNAKE_OBSTACLES];
@@ -146,6 +149,11 @@ void taskSnakeHandler(void *pvParameters) {
         playerAlive[0] = true;
         playerAlive[1] = false;
         secondPlayerNeedsInitialMove = false;
+        playerJoinMs[0] = millis();
+        playerJoinMs[1] = 0;
+        playerDeathMs[0] = 0;
+        playerDeathMs[1] = 0;
+        allLostSinceMs = 0;
         moveInterval = 150;
         slowUntilMs = 0;
         currentScore = 0;
@@ -202,6 +210,8 @@ void taskSnakeHandler(void *pvParameters) {
         playerJoined[1] = true;
         playerAlive[1] = true;
         secondPlayerNeedsInitialMove = true;
+        playerJoinMs[1] = millis();
+        playSound(SND_POWERUP);
         return true;
     };
     auto renderGame = [&]() {
@@ -229,10 +239,30 @@ void taskSnakeHandler(void *pvParameters) {
             if (powerups[i].active) setPixel(powerups[i].p.x, powerups[i].p.y, powerCol);
         }
         for (int player = 0; player < 2; player++) {
-            if (!playerAlive[player]) continue;
+            if (!playerJoined[player]) continue;
+
+            uint8_t visibility = 255;
+            if (!playerAlive[player]) {
+                unsigned long elapsed = now - playerDeathMs[player];
+                if (elapsed >= 900) continue;
+                visibility = 255 - (elapsed * 255UL / 900UL);
+            }
             for (int i = 0; i < snakeLengths[player]; i++) {
-                setPixel(snakes[player][i].x, snakes[player][i].y,
-                         i == 0 ? headCols[player] : bodyCols[player]);
+                CRGB color = i == 0 ? headCols[player] : bodyCols[player];
+                color.nscale8_video(visibility);
+                setPixel(snakes[player][i].x, snakes[player][i].y, color);
+            }
+
+            // A short pulse makes it obvious when player two joins mid-game.
+            if (playerAlive[player] && now - playerJoinMs[player] < 750 &&
+                ((now / 120) % 2 == 0)) {
+                Point head = snakes[player][0];
+                CRGB pulse = headCols[player];
+                pulse.nscale8_video(145);
+                setPixel(wrapCoordinate(head.x - 1, WIDTH), head.y, pulse);
+                setPixel(wrapCoordinate(head.x + 1, WIDTH), head.y, pulse);
+                setPixel(head.x, wrapCoordinate(head.y - 1, HEIGHT_TOTAL), pulse);
+                setPixel(head.x, wrapCoordinate(head.y + 1, HEIGHT_TOTAL), pulse);
             }
         }
         FastLED.show();
@@ -329,14 +359,8 @@ void taskSnakeHandler(void *pvParameters) {
                     resetGame();
                     lastMoveTime = millis();
                     currentState = STATE_PLAYING;
+                    playSound(SND_SELECT);
                 }
-                break;
-            }
-
-            case STATE_SHOW_HIGHSCORES: {
-                resetGame();
-                lastMoveTime = millis();
-                currentState = STATE_PLAYING;
                 break;
             }
 
@@ -377,6 +401,7 @@ void taskSnakeHandler(void *pvParameters) {
                     for (int player = 0; player < 2; player++) {
                         if (!dead[player]) continue;
                         playerAlive[player] = false;
+                        playerDeathMs[player] = now;
                         somebodyDied = true;
                     }
                     if (somebodyDied) playSound(SND_DIE);
@@ -428,22 +453,37 @@ void taskSnakeHandler(void *pvParameters) {
 
                     bool allPlayersLost = !playerAlive[0] &&
                                           (!playerJoined[1] || !playerAlive[1]);
-                    if (allPlayersLost) finishGame();
+                    if (allPlayersLost) {
+                        if (allLostSinceMs == 0) allLostSinceMs = now;
+                        if (now - allLostSinceMs >= 900) finishGame();
+                    } else {
+                        allLostSinceMs = 0;
+                    }
                 }
                 break;
             }
 
             case STATE_GAMEOVER: {
                 FastLED.clear();
-                CRGB scoreCol = themeCol(millis() / 35, 255);
-                int displayedScore = min(currentScore, 99);
-                drawDigitW(12, 8, displayedScore / 10, scoreCol);
-                drawDigitW(18, 8, displayedScore % 10, scoreCol);
+                unsigned long now = millis();
+                CRGB playerCols[2] = {
+                    themeCol(now / 35, 255),
+                    themeCol(now / 35 + 128, playerJoined[1] ? 255 : 55)
+                };
+                int scores[2] = {
+                    min(snakeLengths[0], 99),
+                    playerJoined[1] ? min(snakeLengths[1], 99) : 0
+                };
+                drawDigitW(2, 8, scores[0] / 10, playerCols[0]);
+                drawDigitW(8, 8, scores[0] % 10, playerCols[0]);
+                drawDigitW(20, 8, scores[1] / 10, playerCols[1]);
+                drawDigitW(26, 8, scores[1] % 10, playerCols[1]);
                 FastLED.show();
                 if (startDoubleClick) {
                     resetGame();
                     lastMoveTime = millis();
                     currentState = STATE_PLAYING;
+                    playSound(SND_SELECT);
                 }
                 break;
             }

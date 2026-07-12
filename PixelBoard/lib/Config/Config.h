@@ -3,6 +3,9 @@
 
 #include <Arduino.h>
 
+String jsonEscape(const String& value);
+String htmlEscape(const String& value);
+
 // --- API Keys ---
 extern const char* weatherApiKey;
 
@@ -17,6 +20,10 @@ extern bool pacmanGhostManual;
 extern uint8_t snakeObstacleTarget;
 extern uint8_t snakeFoodTarget;
 extern uint8_t snakePowerupTarget;
+extern uint8_t joystick1DeadzonePercent;
+extern uint8_t joystick2DeadzonePercent;
+extern uint8_t joystick3DeadzonePercent;
+extern uint8_t pongBotDifficulty;
 extern volatile uint32_t tetrisCurrentScore;
 extern volatile uint32_t tetrisBoardScore;
 extern volatile uint32_t tetrisLastScore;

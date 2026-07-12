@@ -22,7 +22,6 @@ const int LEFT_X = 1;
 const int RIGHT_X = 30;
 const int INPUT_DEADZONE = 60;
 const int INPUT_STEP_MS = 55;
-const int BOT_STEP_MS = 82;
 const int BOT_ERROR_REFRESH_MS = 420;
 const int INITIAL_VX = 92;
 const int SPEED_UP_EVERY_HITS = 2;
@@ -58,6 +57,7 @@ int lastBallY = 8 * SCALE;
 int ballVx = INITIAL_VX;
 int ballVy = 80;
 int ballVxAbs = INITIAL_VX;
+int nextServeVxAbs = INITIAL_VX;
 int lastLeftMove = 0;
 int lastRightMove = 0;
 int matchBestRally = 0;
@@ -130,7 +130,7 @@ void serveBall(int dir) {
     ballY = 8 * SCALE;
     lastBallX = ballX;
     lastBallY = ballY;
-    ballVxAbs = INITIAL_VX;
+    ballVxAbs = clampInt(nextServeVxAbs, INITIAL_VX, INITIAL_VX + 48);
     ballVx = ballVxAbs * serveDir;
     int vy = 32 + (int)random(0, 34);
     if (random(0, 2) == 0) vy = -vy;
@@ -144,6 +144,7 @@ void resetMatch() {
     rightScore = 0;
     matchBestRally = 0;
     savedMatch = false;
+    nextServeVxAbs = INITIAL_VX;
     resetPaddles();
     serveBall(random(0, 2) == 0 ? -1 : 1);
 }
@@ -170,29 +171,35 @@ void applyInput(unsigned long now) {
     if (pongLeftUser != "") leftMove = readVertical(joystick3);
     if (pongRightUser != "") rightMove = readVertical(joystick1);
 
-    if (pongLeftUser == "" && now - lastLeftBotMs >= BOT_STEP_MS) {
+    const int botStepMs[3] = {125, 96, 76};
+    const int botError[3] = {3, 2, 1};
+    int difficulty = clampInt(pongBotDifficulty, 0, 2);
+
+    if (pongLeftUser == "" && now - lastLeftBotMs >= (unsigned long)botStepMs[difficulty]) {
         if (now - lastLeftBotErrorMs >= BOT_ERROR_REFRESH_MS) {
-            leftBotAimError = (int)random(-1, 2);
+            leftBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
             lastLeftBotErrorMs = now;
         }
         int target = (ballVx < 0) ? currentBallY + leftBotAimError : (HEIGHT / 2);
         target = clampInt(target, 0, HEIGHT - 1);
         int center = leftY + PADDLE_H / 2;
-        if (target < center - 1) leftMove = -1;
-        else if (target > center + 1) leftMove = 1;
+        int tolerance = difficulty == 0 ? 2 : 1;
+        if (target < center - tolerance) leftMove = -1;
+        else if (target > center + tolerance) leftMove = 1;
         lastLeftBotMs = now;
     }
 
-    if (pongRightUser == "" && now - lastRightBotMs >= BOT_STEP_MS) {
+    if (pongRightUser == "" && now - lastRightBotMs >= (unsigned long)botStepMs[difficulty]) {
         if (now - lastRightBotErrorMs >= BOT_ERROR_REFRESH_MS) {
-            rightBotAimError = (int)random(-1, 2);
+            rightBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
             lastRightBotErrorMs = now;
         }
         int target = (ballVx > 0) ? currentBallY + rightBotAimError : (HEIGHT / 2);
         target = clampInt(target, 0, HEIGHT - 1);
         int center = rightY + PADDLE_H / 2;
-        if (target < center - 1) rightMove = -1;
-        else if (target > center + 1) rightMove = 1;
+        int tolerance = difficulty == 0 ? 2 : 1;
+        if (target < center - tolerance) rightMove = -1;
+        else if (target > center + tolerance) rightMove = 1;
         lastRightBotMs = now;
     }
 
@@ -285,12 +292,14 @@ void updateBall() {
     }
 
     if (ballX < -SCALE) {
+        nextServeVxAbs = clampInt(ballVxAbs - SPEED_STEP * 2, INITIAL_VX, INITIAL_VX + 48);
         rightScore++;
         serveDir = -1;
         state = PONG_SCORE;
         stateStartedMs = millis();
         playSound(SND_DIE);
     } else if (ballX > WIDTH * SCALE) {
+        nextServeVxAbs = clampInt(ballVxAbs - SPEED_STEP * 2, INITIAL_VX, INITIAL_VX + 48);
         leftScore++;
         serveDir = 1;
         state = PONG_SCORE;

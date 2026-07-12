@@ -12,6 +12,9 @@ private:
     int xMitte;
     int yMitte;
     int deadZone;
+    uint8_t deadZonePercent;
+    unsigned long lastDriftXMs;
+    unsigned long lastDriftYMs;
     bool isI2C; // Flag für I2C-Modus
 
     // Interne Speicher für die empfangenen Nano-Rohwerte
@@ -42,9 +45,14 @@ public:
     void setXInputRange(int minVal, int maxVal);
     void setYInputRange(int minVal, int maxVal);
     void setInverted(bool invertX, bool invertY);
+    void setDeadZonePercent(int percent);
+    uint8_t getDeadZonePercent() const;
     bool isPressed();
     void reset();
     void update();
+
+private:
+    void updateCenterDrift(int rawValue, bool xAxis);
 };
 
 #endif

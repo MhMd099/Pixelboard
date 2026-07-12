@@ -7,7 +7,12 @@
 #include "HardwareUtils.h"
 #include "RaumschiffGame.h"
 #include "SoundUtils.h"
+#include "Joystick.h"
 #include "TaskMario.h"
+
+extern Joystick joystick1;
+extern Joystick joystick2;
+extern Joystick joystick3;
 
 const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
 
@@ -21,6 +26,10 @@ bool pacmanGhostManual = false;
 uint8_t snakeObstacleTarget = 0;
 uint8_t snakeFoodTarget = 3;
 uint8_t snakePowerupTarget = 1;
+uint8_t joystick1DeadzonePercent = 1;
+uint8_t joystick2DeadzonePercent = 1;
+uint8_t joystick3DeadzonePercent = 4;
+uint8_t pongBotDifficulty = 0;
 volatile uint32_t tetrisCurrentScore = 0;
 volatile uint32_t tetrisBoardScore = 0;
 volatile uint32_t tetrisLastScore = 0;
@@ -42,6 +51,7 @@ DNSServer dnsServer;
 bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
 static const char* captiveSsid = "PixelBoard";
+static const char* captivePassword = "NothinBL";
 static const char* deviceConfigPath = "/device.json";
 static const char* deviceHostNameValue = "pixelboard";
 static unsigned long lastWifiBeginMs = 0;
@@ -49,6 +59,8 @@ static unsigned long firstWifiAttemptMs = 0;
 
 extern volatile int aktiverTask;
 extern int fokusModus;
+extern volatile uint32_t i2cJoystickReadsOk;
+extern volatile uint32_t i2cJoystickReadErrors;
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
@@ -58,7 +70,7 @@ void initLittleFS() {
     Serial.println("LittleFS erfolgreich gemountet.");
 }
 
-static String htmlEscape(const String& value) {
+String htmlEscape(const String& value) {
     String out;
     out.reserve(value.length());
     for (size_t i = 0; i < value.length(); i++) {
@@ -71,6 +83,35 @@ static String htmlEscape(const String& value) {
         else out += c;
     }
     return out;
+}
+
+String jsonEscape(const String& value) {
+    String escaped;
+    escaped.reserve(value.length() + 8);
+    for (size_t i = 0; i < value.length(); i++) {
+        char c = value[i];
+        if (c == '\\' || c == '"') {
+            escaped += '\\';
+            escaped += c;
+        } else if (c == '\n') escaped += F("\\n");
+        else if (c == '\r') escaped += F("\\r");
+        else if (c == '\t') escaped += F("\\t");
+        else if ((uint8_t)c >= 0x20) escaped += c;
+    }
+    return escaped;
+}
+
+static String sanitizePlayerName(const String& value) {
+    String clean;
+    clean.reserve(min((size_t)16, value.length()));
+    for (size_t i = 0; i < value.length() && clean.length() < 16; i++) {
+        char c = value[i];
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' || c == ' ')
+            clean += c;
+    }
+    clean.trim();
+    return clean;
 }
 
 static bool validDhtPin(int pin) {
@@ -189,21 +230,38 @@ void loadDeviceSettings() {
     currentDhtType = 22;
 
     int savedVolume = 100;
+    int savedEffectsVolume = 100;
+    int savedMusicVolume = 100;
     if (LittleFS.exists(deviceConfigPath)) {
         File file = LittleFS.open(deviceConfigPath, "r");
         JsonDocument doc;
         if (file && !deserializeJson(doc, file)) {
             savedVolume = doc["volume"] | 100;
+            savedEffectsVolume = doc["effectsVolume"] | 100;
+            savedMusicVolume = doc["musicVolume"] | 100;
+            joystick1DeadzonePercent = constrain((int)(doc["deadzone1"] | 1), 1, 20);
+            joystick2DeadzonePercent = constrain((int)(doc["deadzone2"] | 1), 1, 20);
+            joystick3DeadzonePercent = constrain((int)(doc["deadzone3"] | 4), 1, 20);
+            pongBotDifficulty = constrain((int)(doc["pongBotDifficulty"] | 0), 0, 2);
         }
         if (file) file.close();
     }
     setMasterVolume(savedVolume);
+    setEffectsVolume(savedEffectsVolume);
+    setMusicVolume(savedMusicVolume);
+    joystick1.setDeadZonePercent(joystick1DeadzonePercent);
+    joystick2.setDeadZonePercent(joystick2DeadzonePercent);
+    joystick3.setDeadZonePercent(joystick3DeadzonePercent);
 
     Serial.print("DHT geladen: GPIO ");
     Serial.print(currentDhtPin);
     Serial.print(", DHT");
     Serial.println(currentDhtType);
     Serial.println("Sound-Lautstaerke geladen: " + String(getMasterVolume()) + "%");
+    Serial.println("Sound-Mix geladen: Effekte " + String(getEffectsVolume()) +
+                   "%, Musik " + String(getMusicVolume()) + "%");
+    Serial.println("Joystick-Deadzones: " + String(joystick1DeadzonePercent) + "/" +
+                   String(joystick2DeadzonePercent) + "/" + String(joystick3DeadzonePercent) + "%");
 }
 
 
@@ -305,7 +363,7 @@ static void saveDefaultCity(const String& city) {
     }
 }
 
-static bool saveMasterVolumeSetting(uint8_t volume) {
+static bool saveSoundVolumeSettings(uint8_t volume, uint8_t effects, uint8_t music) {
     JsonDocument doc;
     if (LittleFS.exists(deviceConfigPath)) {
         File existing = LittleFS.open(deviceConfigPath, "r");
@@ -322,6 +380,8 @@ static bool saveMasterVolumeSetting(uint8_t volume) {
         }
     }
     doc["volume"] = volume;
+    doc["effectsVolume"] = effects;
+    doc["musicVolume"] = music;
 
     File file = LittleFS.open(deviceConfigPath, "w");
     if (!file) {
@@ -331,7 +391,46 @@ static bool saveMasterVolumeSetting(uint8_t volume) {
 
     serializeJson(doc, file);
     file.close();
-    Serial.println("Sound-Lautstaerke gespeichert: " + String(volume) + "%");
+    Serial.println("Sound gespeichert: Gesamt " + String(volume) + "%, Effekte " +
+                   String(effects) + "%, Musik " + String(music) + "%");
+    return true;
+}
+
+static bool saveJoystickDeadzoneSettings() {
+    JsonDocument doc;
+    if (LittleFS.exists(deviceConfigPath)) {
+        File existing = LittleFS.open(deviceConfigPath, "r");
+        if (!existing) return false;
+        DeserializationError error = deserializeJson(doc, existing);
+        existing.close();
+        if (error || !doc.is<JsonObject>()) return false;
+    }
+    doc["deadzone1"] = joystick1DeadzonePercent;
+    doc["deadzone2"] = joystick2DeadzonePercent;
+    doc["deadzone3"] = joystick3DeadzonePercent;
+
+    File file = LittleFS.open(deviceConfigPath, "w");
+    if (!file) return false;
+    serializeJson(doc, file);
+    file.close();
+    return true;
+}
+
+static bool savePongBotSettings() {
+    JsonDocument doc;
+    if (LittleFS.exists(deviceConfigPath)) {
+        File existing = LittleFS.open(deviceConfigPath, "r");
+        if (!existing) return false;
+        DeserializationError error = deserializeJson(doc, existing);
+        existing.close();
+        if (error || !doc.is<JsonObject>()) return false;
+    }
+    doc["pongBotDifficulty"] = pongBotDifficulty;
+
+    File file = LittleFS.open(deviceConfigPath, "w");
+    if (!file) return false;
+    serializeJson(doc, file);
+    file.close();
     return true;
 }
 
@@ -557,37 +656,56 @@ static void appendOption(String& html, int value, int current, const String& lab
 static const char globalSoundControl[] PROGMEM = R"HTML(
 <style>
 body{padding-top:0!important}
-#globalSoundControl{position:sticky;top:0;z-index:1000;box-sizing:border-box;display:grid;grid-template-columns:auto minmax(90px,320px) 48px auto;align-items:center;justify-content:center;gap:8px;width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);padding:9px 12px;background:#0b1220f5;border-bottom:1px solid #334155;box-shadow:0 5px 16px #0008;color:#e2e8f0;font:600 14px Arial,sans-serif;text-align:left}
-#globalSoundSlider{box-sizing:border-box;width:100%!important;height:28px;margin:0!important;padding:0!important;border:0!important;background:transparent!important;accent-color:#38bdf8}
-#globalSoundValue{box-sizing:border-box;width:48px!important;min-width:48px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;text-align:right!important}
-#globalSoundMute{box-sizing:border-box;width:auto!important;min-width:76px!important;min-height:34px!important;margin:0!important;padding:7px 10px!important;border:1px solid #475569!important;border-radius:7px!important;background:#1e293b!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;cursor:pointer}
+#globalSoundControl{position:sticky;top:0;z-index:1000;box-sizing:border-box;width:100vw;max-width:100vw;margin-left:calc(50% - 50vw);padding:7px 12px;background:#0b1220f5;border-bottom:1px solid #334155;box-shadow:0 5px 16px #0008;color:#e2e8f0;font:600 14px Arial,sans-serif;text-align:left}
+#globalSoundMain{display:grid;grid-template-columns:auto minmax(90px,320px) 48px auto auto auto;align-items:center;justify-content:center;gap:8px}
+#globalSoundControl input[type=range]{box-sizing:border-box;width:100%!important;height:28px;margin:0!important;padding:0!important;border:0!important;background:transparent!important;accent-color:#38bdf8}
+#globalSoundControl output{box-sizing:border-box;width:48px!important;min-width:48px!important;margin:0!important;padding:0!important;border:0!important;background:transparent!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;text-align:right!important}
+#globalSoundControl button{box-sizing:border-box;width:auto!important;min-height:34px!important;margin:0!important;padding:7px 10px!important;border:1px solid #475569!important;border-radius:7px!important;background:#1e293b!important;color:#f8fafc!important;font:700 13px Arial,sans-serif!important;cursor:pointer}
 #globalSoundMute[aria-pressed='true']{background:#991b1b!important;border-color:#ef4444!important}
-@media(max-width:400px){#globalSoundLabel{display:none}#globalSoundControl{grid-template-columns:minmax(90px,1fr) 44px auto;gap:6px}#globalSoundValue{width:44px!important;min-width:44px!important}#globalSoundMute{min-width:68px!important;padding-left:7px!important;padding-right:7px!important}}
+#globalSoundMix{display:none;grid-template-columns:auto minmax(80px,220px) 46px auto minmax(80px,220px) 46px;align-items:center;justify-content:center;gap:7px;padding-top:7px}
+#globalSoundControl[data-mix='open'] #globalSoundMix{display:grid}
+@media(max-width:520px){#globalSoundLabel{display:none}#globalSoundMain{grid-template-columns:minmax(70px,1fr) 42px auto auto auto;gap:4px}#globalSoundMix{grid-template-columns:auto minmax(70px,1fr) 42px;gap:5px}#globalMusicLabel{grid-column:1}#globalSoundControl output{width:42px!important;min-width:42px!important}#globalSoundControl button{padding-left:6px!important;padding-right:6px!important}}
 </style>
-<div id="globalSoundControl" role="group" aria-label="Globale Lautstaerke">
-  <label id="globalSoundLabel" for="globalSoundSlider">Sound</label>
-  <input id="globalSoundSlider" type="range" min="0" max="100" step="5" value="100" aria-label="Globale Lautstaerke">
-  <output id="globalSoundValue" for="globalSoundSlider">100%</output>
-  <button id="globalSoundMute" type="button" aria-pressed="false">Stumm</button>
+<div id="globalSoundControl" role="group" aria-label="Globale Lautstaerke" data-mix="closed">
+  <div id="globalSoundMain">
+    <label id="globalSoundLabel" for="globalSoundSlider">Sound</label>
+    <input id="globalSoundSlider" type="range" min="0" max="100" step="5" value="100" aria-label="Globale Lautstaerke">
+    <output id="globalSoundValue" for="globalSoundSlider">100%</output>
+    <button id="globalSoundMute" type="button" aria-pressed="false">Stumm</button>
+    <button id="globalSoundMixButton" type="button" aria-expanded="false">Mix</button>
+    <button id="globalSoundTest" type="button">Test</button>
+  </div>
+  <div id="globalSoundMix">
+    <label for="globalEffectsSlider">Effekte</label><input id="globalEffectsSlider" type="range" min="0" max="100" step="5" value="100"><output id="globalEffectsValue">100%</output>
+    <label id="globalMusicLabel" for="globalMusicSlider">Musik</label><input id="globalMusicSlider" type="range" min="0" max="100" step="5" value="100"><output id="globalMusicValue">100%</output>
+  </div>
 </div>
 <script>
-(()=>{const s=document.getElementById('globalSoundSlider'),o=document.getElementById('globalSoundValue'),b=document.getElementById('globalSoundMute');let last=70;try{const v=Number(localStorage.getItem('pixelboardLastVolume'));if(v>0&&v<=100)last=v}catch(e){}const draw=v=>{v=Math.max(0,Math.min(100,Number(v)||0));s.value=v;o.textContent=v+'%';b.textContent=v===0?'Ton an':'Stumm';b.setAttribute('aria-pressed',v===0?'true':'false');if(v>0){last=v;try{localStorage.setItem('pixelboardLastVolume',v)}catch(e){}}};const load=()=>fetch('/sound/state',{cache:'no-store'}).then(r=>r.json()).then(j=>draw(j.volume)).catch(()=>{});const save=v=>{draw(v);fetch('/sound/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'volume='+encodeURIComponent(v)}).then(r=>{if(!r.ok)throw Error();return r.json()}).then(j=>draw(j.volume)).catch(load)};s.addEventListener('input',()=>draw(s.value));s.addEventListener('change',()=>save(s.value));b.addEventListener('click',()=>save(Number(s.value)===0?last:0));load()})();
+(()=>{const c=document.getElementById('globalSoundControl'),s=document.getElementById('globalSoundSlider'),e=document.getElementById('globalEffectsSlider'),m=document.getElementById('globalMusicSlider'),so=document.getElementById('globalSoundValue'),eo=document.getElementById('globalEffectsValue'),mo=document.getElementById('globalMusicValue'),mute=document.getElementById('globalSoundMute'),mix=document.getElementById('globalSoundMixButton'),test=document.getElementById('globalSoundTest');let last=70;try{const v=Number(localStorage.getItem('pixelboardLastVolume'));if(v>0&&v<=100)last=v}catch(x){}const clamp=v=>Math.max(0,Math.min(100,Number(v)||0));const draw=j=>{const v=clamp(j.volume),ev=clamp(j.effects),mv=clamp(j.music);s.value=v;e.value=ev;m.value=mv;so.textContent=v+'%';eo.textContent=ev+'%';mo.textContent=mv+'%';mute.textContent=v===0?'Ton an':'Stumm';mute.setAttribute('aria-pressed',v===0?'true':'false');if(v>0){last=v;try{localStorage.setItem('pixelboardLastVolume',v)}catch(x){}}};const local=()=>draw({volume:s.value,effects:e.value,music:m.value});const load=()=>fetch('/sound/state',{cache:'no-store'}).then(r=>r.json()).then(draw).catch(()=>{});const save=data=>fetch('/sound/settings',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(data)}).then(r=>{if(!r.ok)throw Error();return r.json()}).then(draw).catch(load);[s,e,m].forEach(x=>x.addEventListener('input',local));s.addEventListener('change',()=>save({volume:s.value}));e.addEventListener('change',()=>save({effects:e.value}));m.addEventListener('change',()=>save({music:m.value}));mute.addEventListener('click',()=>save({volume:Number(s.value)===0?last:0}));mix.addEventListener('click',()=>{const open=c.dataset.mix!=='open';c.dataset.mix=open?'open':'closed';mix.setAttribute('aria-expanded',open?'true':'false')});test.addEventListener('click',()=>fetch('/sound/test',{method:'POST'}).catch(()=>{}));load()})();
+</script>
+<script>
+(()=>{const originalFetch=window.fetch.bind(window),postPaths=['/shooter/input','/shooter/spawn','/shooter/boss','/shooter/hazard','/shooter/powerup','/shooter/director','/shooter/inputmap','/shooter/names'];window.fetch=(input,options={})=>{if(typeof input==='string'&&!options.method){const q=input.indexOf('?'),path=q>=0?input.slice(0,q):input;if(postPaths.includes(path)){const body=q>=0?input.slice(q+1):'';return originalFetch(path,{...options,method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded',...(options.headers||{})},body})}}return originalFetch(input,options)}})();
 </script>
 )HTML";
 
 static void sendDashboardHtml(String& html) {
     const String bodyTag = F("<body>");
-    if (html.indexOf(bodyTag) < 0) {
+    int bodyPos = html.indexOf(bodyTag);
+    if (bodyPos < 0) {
         Serial.println("HTML-Seite ohne <body>-Tag; Sound-Regler konnte nicht eingefuegt werden.");
         server.send(500, "text/plain; charset=utf-8", "HTML-Seite ist ungueltig.");
         return;
     }
 
-    String bodyWithSound = bodyTag;
-    bodyWithSound += FPSTR(globalSoundControl);
-    html.replace(bodyTag, bodyWithSound);
+    // Stream the shared control from flash instead of duplicating every page.
+    int insertPos = bodyPos + bodyTag.length();
     server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "text/html; charset=utf-8", html);
+    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
+    server.send(200, "text/html; charset=utf-8", "");
+    server.sendContent(html.substring(0, insertPos));
+    server.sendContent_P(globalSoundControl);
+    server.sendContent(html.substring(insertPos));
+    server.sendContent("");
 }
 
 static String soundStateJson(bool ok = true) {
@@ -598,6 +716,10 @@ static String soundStateJson(bool ok = true) {
     json += String(volume);
     json += F(",\"muted\":");
     json += volume == 0 ? F("true") : F("false");
+    json += F(",\"effects\":");
+    json += String(getEffectsVolume());
+    json += F(",\"music\":");
+    json += String(getMusicVolume());
     json += '}';
     return json;
 }
@@ -607,10 +729,13 @@ static void sendSoundJson(int status, const String& json) {
     server.send(status, "application/json; charset=utf-8", json);
 }
 
-static bool readRequestedVolume(uint8_t& volume) {
-    if (!server.hasArg("volume")) return false;
+static bool readRequestedVolume(const char* argument, uint8_t current, uint8_t& volume) {
+    if (!server.hasArg(argument)) {
+        volume = current;
+        return true;
+    }
 
-    String value = server.arg("volume");
+    String value = server.arg(argument);
     value.trim();
     if (value.length() == 0 || value.length() > 3) return false;
     for (size_t i = 0; i < value.length(); i++) {
@@ -627,19 +752,40 @@ static void handleSoundState() {
     sendSoundJson(200, soundStateJson());
 }
 
+static void handleSoundTest() {
+    playSound(SND_LEVELUP);
+    sendSoundJson(200, F("{\"ok\":true}"));
+}
+
 static void handleSoundSettings() {
-    uint8_t volume = 0;
-    if (!readRequestedVolume(volume)) {
-        sendSoundJson(400, F("{\"ok\":false,\"error\":\"volume must be between 0 and 100\"}"));
+    if (!server.hasArg("volume") && !server.hasArg("effects") && !server.hasArg("music")) {
+        sendSoundJson(400, F("{\"ok\":false,\"error\":\"missing sound setting\"}"));
         return;
     }
 
-    if (!saveMasterVolumeSetting(volume)) {
+    uint8_t volume = getMasterVolume();
+    uint8_t effects = getEffectsVolume();
+    uint8_t music = getMusicVolume();
+    if (!readRequestedVolume("volume", volume, volume) ||
+        !readRequestedVolume("effects", effects, effects) ||
+        !readRequestedVolume("music", music, music)) {
+        sendSoundJson(400, F("{\"ok\":false,\"error\":\"sound values must be between 0 and 100\"}"));
+        return;
+    }
+
+    if (volume == getMasterVolume() && effects == getEffectsVolume() && music == getMusicVolume()) {
+        sendSoundJson(200, soundStateJson());
+        return;
+    }
+
+    if (!saveSoundVolumeSettings(volume, effects, music)) {
         sendSoundJson(500, F("{\"ok\":false,\"error\":\"volume could not be saved\"}"));
         return;
     }
 
     setMasterVolume(volume);
+    setEffectsVolume(effects);
+    setMusicVolume(music);
     sendSoundJson(200, soundStateJson());
 }
 
@@ -652,6 +798,7 @@ static String dashboardNav(const String& active) {
     if (active != "pacman") nav += "<a href='/pacman'>Pacman</a>";
     if (active != "tetris") nav += "<a href='/tetris'>Tetris</a>";
     if (active != "mario") nav += "<a href='/mario'>Mario</a>";
+    if (active != "diagnostics") nav += "<a href='/diagnostics'>Diagnose</a>";
     nav += "</div>";
     return nav;
 }
@@ -720,6 +867,12 @@ void handleRoot() {
     }
     html += "</select><br><input type='submit' value='Uhr speichern'></form>";
 
+    html += "<hr><h4>Joystick-Ruhezone</h4><form action='/updateJoysticks' method='POST'>";
+    html += "<label>Joystick 1 (%)</label><br><input type='number' name='j1' min='1' max='20' value='" + String(joystick1DeadzonePercent) + "'><br>";
+    html += "<label>Menue-Joystick (%)</label><br><input type='number' name='j2' min='1' max='20' value='" + String(joystick2DeadzonePercent) + "'><br>";
+    html += "<label>I2C-Joystick (%)</label><br><input type='number' name='j3' min='1' max='20' value='" + String(joystick3DeadzonePercent) + "'><br>";
+    html += "<input type='submit' value='Joysticks speichern'></form>";
+
     html += "</div></body></html>";
     sendDashboardHtml(html);
 }
@@ -745,6 +898,37 @@ void handleShooterPage() {
 <div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='8000' step='10' value='24'><output id='spawnHpo'>24</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='16' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
 <div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='20000' step='100' value='900'><output id='bossHpo'>900</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='4'><output id='bossSizeo'>4</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='6000' step='20' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='7' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='12' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
 <script>let synced=false;const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function preset(m){let p=m==0?[5,1700,260,55,35]:m==1?[8,1150,190,40,25]:[13,520,95,20,45];by('maxA').value=p[0];by('spawnMs').value=p[1];by('moveMs').value=p[2];by('smallP').value=p[3];by('powerP').value=p[4];syncOut();applyDirector()}function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function setP2Mode(){fetch('/shooter/inputmap?'+q({p2:by('p2mode').value})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function short(n,i){n=(n||('Spieler '+(i+1))).trim();return n.length>3?n.slice(0,3):n}function playerHtml(p,i){let input=i==0?'Joystick 1':(by('p2mode').options[by('p2mode').selectedIndex].text);let status=!p.active?'wartet':(p.alive?'lebt':'tot');let cls=!p.active?'wait':(p.alive?'':'dead');return `<div class='player p${i}'><b>${p.name}</b><div>${input} - <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>+1 bei ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function loadNetwork(){try{let r=await fetch('/ip');let j=await r.json();by('networkLine').textContent=j.connected?`Netzwerk: ${j.ip} | ${j.url}`:`Netzwerk: offline | Host ${j.host}`}catch(e){}}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('energyText').textContent='Energie '+j.webEnergy+' / '+j.webEnergyMax;by('energyFill').style.width=Math.max(0,Math.min(100,j.webEnergy*100/j.webEnergyMax))+'%';by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Auto Web ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;let lm=j.lastMatch;by('lastMatch').textContent=lm.score>0?`Letztes Match: ${lm.name} - ${lm.score} | ${lm.p1Name} ${lm.p1} / ${lm.p1Kills}K, ${lm.p2Name} ${lm.p2} / ${lm.p2Kills}K | Bosse ${lm.bosses} | ${lm.duration}s`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;by('p2mode').value=j.p2InputMode;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state();loadNetwork()},700);ping();state();loadNetwork();</script></body></html>)HTML";
+    sendDashboardHtml(html);
+}
+
+static String diagnosticsJson() {
+    String json = F("{");
+    json += F("\"uptime\":"); json += String(millis() / 1000UL);
+    json += F(",\"heap\":"); json += String(ESP.getFreeHeap());
+    json += F(",\"minHeap\":"); json += String(ESP.getMinFreeHeap());
+    json += F(",\"maxBlock\":"); json += String(ESP.getMaxAllocHeap());
+    json += F(",\"activeTask\":"); json += String(aktiverTask);
+    json += F(",\"i2cOk\":"); json += String((uint32_t)i2cJoystickReadsOk);
+    json += F(",\"i2cErrors\":"); json += String((uint32_t)i2cJoystickReadErrors);
+    json += F(",\"sound\":"); json += String(getMasterVolume());
+    json += F(",\"effects\":"); json += String(getEffectsVolume());
+    json += F(",\"music\":"); json += String(getMusicVolume());
+    json += F(",\"deadzone1\":"); json += String(joystick1DeadzonePercent);
+    json += F(",\"deadzone2\":"); json += String(joystick2DeadzonePercent);
+    json += F(",\"deadzone3\":"); json += String(joystick3DeadzonePercent);
+    json += '}';
+    return json;
+}
+
+void handleDiagnosticsState() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json; charset=utf-8", diagnosticsJson());
+}
+
+void handleDiagnosticsPage() {
+    String html = F("<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}.wrap{max-width:620px;margin:auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px}.value{font-size:24px;color:#facc15}@media(max-width:480px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><h1>Diagnose</h1>");
+    html += dashboardNav("diagnostics");
+    html += F("<div class='grid'><div class='card'>Freier Heap<div class='value' id='heap'>-</div></div><div class='card'>Minimaler Heap<div class='value' id='minHeap'>-</div></div><div class='card'>Groesster Block<div class='value' id='maxBlock'>-</div></div><div class='card'>Laufzeit<div class='value' id='uptime'>-</div></div><div class='card'>Aktiver Task<div class='value' id='task'>-</div></div><div class='card'>I2C Fehler<div class='value' id='i2c'>-</div></div></div><script>const el=id=>document.getElementById(id);async function load(){try{const r=await fetch('/diagnostics/state',{cache:'no-store'}),j=await r.json();el('heap').textContent=j.heap;el('minHeap').textContent=j.minHeap;el('maxBlock').textContent=j.maxBlock;el('uptime').textContent=j.uptime+' s';el('task').textContent=j.activeTask;el('i2c').textContent=j.i2cErrors+' / '+(j.i2cOk+j.i2cErrors)}catch(e){}}setInterval(load,1000);load();</script></div></body></html>");
     sendDashboardHtml(html);
 }
 
@@ -869,7 +1053,12 @@ void handlePongPage() {
     html += "<div class='line'>Links: <b>" + (pongLeftUser == "" ? String("Bot") : htmlEscape(pongLeftUser)) + "</b> | Rechts: <b>" + (pongRightUser == "" ? String("Bot") : htmlEscape(pongRightUser)) + "</b></div>";
     html += "<div class='line muted'>Links = I2C Joystick. Rechts = ESP32 Joystick 1. Feld leer lassen aktiviert den Bot.</div>";
     html += "<form action='/pong/login' method='POST'><div class='grid'><div><label>Links</label><input name='left' placeholder='Name links oder leer fuer Bot' value='" + htmlEscape(pongLeftUser) + "'></div>";
-    html += "<div><label>Rechts</label><input name='right' placeholder='Name rechts oder leer fuer Bot' value='" + htmlEscape(pongRightUser) + "'></div></div><button>Spieler speichern</button></form>";
+    html += "<div><label>Rechts</label><input name='right' placeholder='Name rechts oder leer fuer Bot' value='" + htmlEscape(pongRightUser) + "'></div></div>";
+    html += "<label>Bot-Staerke</label><select name='bot' style='box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;margin:6px 0;font-size:15px'>";
+    html += "<option value='0'" + String(pongBotDifficulty == 0 ? " selected" : "") + ">Locker</option>";
+    html += "<option value='1'" + String(pongBotDifficulty == 1 ? " selected" : "") + ">Normal</option>";
+    html += "<option value='2'" + String(pongBotDifficulty == 2 ? " selected" : "") + ">Stark</option></select>";
+    html += "<button>Spieler und Bot speichern</button></form>";
     if (pongLeftUser != "") html += "<div class='line ok'>" + htmlEscape(pongLeftUser) + " Best Rally: " + String(getPongHighScore(pongLeftUser)) + "</div>";
     if (pongRightUser != "" && pongRightUser != pongLeftUser) html += "<div class='line ok'>" + htmlEscape(pongRightUser) + " Best Rally: " + String(getPongHighScore(pongRightUser)) + "</div>";
     html += "</div>";
@@ -883,14 +1072,16 @@ void handlePongPage() {
 
 void handlePongLogin() {
     if (server.hasArg("left")) {
-        pongLeftUser = server.arg("left");
-        pongLeftUser.trim();
+        pongLeftUser = sanitizePlayerName(server.arg("left"));
         ensureUserExists(pongLeftUser);
     }
     if (server.hasArg("right")) {
-        pongRightUser = server.arg("right");
-        pongRightUser.trim();
+        pongRightUser = sanitizePlayerName(server.arg("right"));
         ensureUserExists(pongRightUser);
+    }
+    if (server.hasArg("bot")) {
+        pongBotDifficulty = constrain(server.arg("bot").toInt(), 0, 2);
+        savePongBotSettings();
     }
     if (pongLeftUser != "") {
         loadConfigForUser(pongLeftUser);
@@ -935,13 +1126,11 @@ void handlePacmanPage() {
 
 void handlePacmanLogin() {
     if (server.hasArg("p1")) {
-        pacmanP1User = server.arg("p1");
-        pacmanP1User.trim();
+        pacmanP1User = sanitizePlayerName(server.arg("p1"));
         ensureUserExists(pacmanP1User);
     }
     if (server.hasArg("p2")) {
-        pacmanP2User = server.arg("p2");
-        pacmanP2User.trim();
+        pacmanP2User = sanitizePlayerName(server.arg("p2"));
         ensureUserExists(pacmanP2User);
     }
     pacmanGhostManual = server.hasArg("ghost");
@@ -1041,8 +1230,7 @@ void handleMarioStart() {
 
 void handleDoLogin() {
     if (server.hasArg("username")) {
-        String u = server.arg("username");
-        u.trim();
+        String u = sanitizePlayerName(server.arg("username"));
         ensureUserExists(u);
         loadConfigForUser(u);
     }
@@ -1083,6 +1271,18 @@ void handleUpdateClock() {
     server.send(303);
 }
 
+void handleUpdateJoysticks() {
+    if (server.hasArg("j1")) joystick1DeadzonePercent = constrain(server.arg("j1").toInt(), 1, 20);
+    if (server.hasArg("j2")) joystick2DeadzonePercent = constrain(server.arg("j2").toInt(), 1, 20);
+    if (server.hasArg("j3")) joystick3DeadzonePercent = constrain(server.arg("j3").toInt(), 1, 20);
+    joystick1.setDeadZonePercent(joystick1DeadzonePercent);
+    joystick2.setDeadZonePercent(joystick2DeadzonePercent);
+    joystick3.setDeadZonePercent(joystick3DeadzonePercent);
+    saveJoystickDeadzoneSettings();
+    server.sendHeader("Location", "/");
+    server.send(303);
+}
+
 
 void handleLogout() {
     loadConfigForUser("");
@@ -1094,12 +1294,13 @@ void startCaptivePortal() {
     if (captivePortalActive) return;
 
     WiFi.mode(WIFI_AP_STA);
-    bool ok = WiFi.softAP(captiveSsid);
+    bool ok = WiFi.softAP(captiveSsid, captivePassword);
     IPAddress apIp = WiFi.softAPIP();
     if (ok) {
         dnsServer.start(DNS_PORT, "*", apIp);
         captivePortalActive = true;
-        Serial.println("Captive Portal aktiv: http://" + apIp.toString() + " / SSID: " + String(captiveSsid));
+        Serial.println("Captive Portal aktiv: http://" + apIp.toString() +
+                       " / SSID: " + String(captiveSsid) + " / Passwort gesetzt");
     } else {
         Serial.println("Captive Portal konnte nicht gestartet werden.");
     }
@@ -1168,8 +1369,11 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/ip", HTTP_GET, handleIpInfo);
+    server.on("/diagnostics", HTTP_GET, handleDiagnosticsPage);
+    server.on("/diagnostics/state", HTTP_GET, handleDiagnosticsState);
     server.on("/sound/state", HTTP_GET, handleSoundState);
     server.on("/sound/settings", HTTP_POST, handleSoundSettings);
+    server.on("/sound/test", HTTP_POST, handleSoundTest);
     server.on("/snake", HTTP_GET, handleSnakePage);
     server.on("/snake/settings", HTTP_POST, handleSnakeSettings);
     server.on("/pong", HTTP_GET, handlePongPage);
@@ -1184,19 +1388,20 @@ void setupWebServer() {
     server.on("/mario/start", HTTP_POST, handleMarioStart);
     server.on("/shooter", HTTP_GET, handleShooterPage);
     server.on("/shooter/state", HTTP_GET, handleShooterState);
-    server.on("/shooter/input", HTTP_GET, handleShooterInput);
-    server.on("/shooter/spawn", HTTP_GET, handleShooterSpawn);
-    server.on("/shooter/boss", HTTP_GET, handleShooterBoss);
-    server.on("/shooter/hazard", HTTP_GET, handleShooterHazard);
-    server.on("/shooter/powerup", HTTP_GET, handleShooterPowerUp);
-    server.on("/shooter/director", HTTP_GET, handleShooterDirector);
-    server.on("/shooter/inputmap", HTTP_GET, handleShooterInputMap);
-    server.on("/shooter/names", HTTP_GET, handleShooterNames);
+    server.on("/shooter/input", HTTP_POST, handleShooterInput);
+    server.on("/shooter/spawn", HTTP_POST, handleShooterSpawn);
+    server.on("/shooter/boss", HTTP_POST, handleShooterBoss);
+    server.on("/shooter/hazard", HTTP_POST, handleShooterHazard);
+    server.on("/shooter/powerup", HTTP_POST, handleShooterPowerUp);
+    server.on("/shooter/director", HTTP_POST, handleShooterDirector);
+    server.on("/shooter/inputmap", HTTP_POST, handleShooterInputMap);
+    server.on("/shooter/names", HTTP_POST, handleShooterNames);
     server.on("/doLogin", HTTP_POST, handleDoLogin);
     server.on("/saveWifi", HTTP_POST, handleSaveWifi);
     server.on("/updateCity", HTTP_POST, handleUpdateCity);
     server.on("/updateTheme", HTTP_POST, handleUpdateTheme);
     server.on("/updateClock", HTTP_POST, handleUpdateClock);
+    server.on("/updateJoysticks", HTTP_POST, handleUpdateJoysticks);
     server.on("/logout", HTTP_GET, handleLogout);
     server.on("/generate_204", HTTP_GET, handleCaptiveProbe);
     server.on("/gen_204", HTTP_GET, handleCaptiveProbe);

@@ -790,12 +790,12 @@ String raumschiffStateJson()
     json += ",\"activeHazards\":" + String(activeHazardCount());
     json += ",\"slow\":" + String(secondsLeft(slowFieldUntil));
     json += "}";
-    json += ",\"lastMatch\":{\"name\":\"" + String(lastMatchName) + "\"";
+    json += ",\"lastMatch\":{\"name\":\"" + jsonEscape(htmlEscape(String(lastMatchName))) + "\"";
     json += ",\"score\":" + String(lastMatchScore);
     json += ",\"p1\":" + String(lastMatchP1Score);
     json += ",\"p2\":" + String(lastMatchP2Score);
-    json += ",\"p1Name\":\"" + playerNameOrDefault(0) + "\"";
-    json += ",\"p2Name\":\"" + playerNameOrDefault(1) + "\"";
+    json += ",\"p1Name\":\"" + jsonEscape(htmlEscape(playerNameOrDefault(0))) + "\"";
+    json += ",\"p2Name\":\"" + jsonEscape(htmlEscape(playerNameOrDefault(1))) + "\"";
     json += ",\"p1Kills\":" + String(lastMatchP1Kills);
     json += ",\"p2Kills\":" + String(lastMatchP2Kills);
     json += ",\"bosses\":" + String(lastMatchBosses);
@@ -809,15 +809,15 @@ String raumschiffStateJson()
     for (int i = 0; i < topCount; i++)
     {
         if (i > 0) json += ",";
-        json += "{\"name\":\"" + top[i].name + "\",\"score\":" + String(top[i].score) + "}";
+        json += "{\"name\":\"" + jsonEscape(htmlEscape(top[i].name)) + "\",\"score\":" + String(top[i].score) + "}";
     }
     json += "]";
     json += ",\"players\":[";
     for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++)
     {
         if (i > 0) json += ",";
-        json += "{\"name\":\"" + String(playerNames[i]) + "\"";
-        json += ",\"shortName\":\"" + shortPlayerName(i) + "\"";
+        json += "{\"name\":\"" + jsonEscape(htmlEscape(String(playerNames[i]))) + "\"";
+        json += ",\"shortName\":\"" + jsonEscape(htmlEscape(shortPlayerName(i))) + "\"";
         json += ",\"active\":" + String(spieler[i].active ? 1 : 0);
         json += ",\"alive\":" + String(spieler[i].hp > 0 ? 1 : 0);
         json += ",\"hp\":" + String(spieler[i].hp);

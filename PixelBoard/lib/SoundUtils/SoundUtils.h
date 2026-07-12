@@ -28,6 +28,10 @@ void playSound(SoundType type);
 // Global fuer Musik und alle Spieleffekte. 0 = stumm, 100 = volle Lautstaerke.
 void setMasterVolume(int volume);
 uint8_t getMasterVolume();
+void setEffectsVolume(int volume);
+uint8_t getEffectsVolume();
+void setMusicVolume(int volume);
+uint8_t getMusicVolume();
 
 void startMusic();
 void stopMusic();
