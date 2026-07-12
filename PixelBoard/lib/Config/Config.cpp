@@ -9,6 +9,7 @@
 #include "SoundUtils.h"
 #include "Joystick.h"
 #include "TaskMario.h"
+#include "RuntimeHealth.h"
 
 extern Joystick joystick1;
 extern Joystick joystick2;
@@ -56,17 +57,62 @@ static const char* deviceConfigPath = "/device.json";
 static const char* deviceHostNameValue = "pixelboard";
 static unsigned long lastWifiBeginMs = 0;
 static unsigned long firstWifiAttemptMs = 0;
+static bool deviceSettingsDirty = false;
+static unsigned long deviceSettingsDirtyMs = 0;
+static String pendingDefaultCity = "";
+static const unsigned long SETTINGS_SAVE_DELAY_MS = 2500;
 
 extern volatile int aktiverTask;
 extern int fokusModus;
-extern volatile uint32_t i2cJoystickReadsOk;
-extern volatile uint32_t i2cJoystickReadErrors;
+
+static void recoverAtomicFile(const char* path) {
+    String temp = String(path) + ".tmp";
+    String backup = String(path) + ".bak";
+    if (!LittleFS.exists(path) && LittleFS.exists(backup)) {
+        LittleFS.rename(backup.c_str(), path);
+    } else if (LittleFS.exists(path) && LittleFS.exists(backup)) {
+        LittleFS.remove(backup.c_str());
+    }
+    if (LittleFS.exists(temp)) LittleFS.remove(temp.c_str());
+}
+
+static bool atomicWriteJson(const char* path, JsonDocument& doc) {
+    String temp = String(path) + ".tmp";
+    String backup = String(path) + ".bak";
+    LittleFS.remove(temp.c_str());
+
+    File file = LittleFS.open(temp.c_str(), "w");
+    if (!file) return false;
+    size_t written = serializeJson(doc, file);
+    file.flush();
+    file.close();
+    if (written == 0) {
+        LittleFS.remove(temp.c_str());
+        return false;
+    }
+
+    LittleFS.remove(backup.c_str());
+    bool hadOriginal = LittleFS.exists(path);
+    if (hadOriginal && !LittleFS.rename(path, backup.c_str())) {
+        LittleFS.remove(temp.c_str());
+        return false;
+    }
+    if (!LittleFS.rename(temp.c_str(), path)) {
+        if (hadOriginal) LittleFS.rename(backup.c_str(), path);
+        return false;
+    }
+    LittleFS.remove(backup.c_str());
+    return true;
+}
 
 void initLittleFS() {
     if (!LittleFS.begin(true)) {
         Serial.println("LittleFS Mount fehlgeschlagen!");
         return;
     }
+    recoverAtomicFile("/wifi.json");
+    recoverAtomicFile(deviceConfigPath);
+    recoverAtomicFile("/config.json");
     Serial.println("LittleFS erfolgreich gemountet.");
 }
 
@@ -213,10 +259,7 @@ void saveWifiCredentials(String newSsid, String newPassword) {
     doc["s"] = wifiSsid;
     doc["p"] = wifiPassword;
 
-    File file = LittleFS.open("/wifi.json", "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
+    if (atomicWriteJson("/wifi.json", doc)) {
         Serial.println("WLAN-Daten gespeichert fuer SSID: " + wifiSsid);
     } else {
         Serial.println("WLAN-Daten konnten nicht gespeichert werden.");
@@ -343,60 +386,17 @@ static String loadDefaultCity() {
 }
 
 static void saveDefaultCity(const String& city) {
-    JsonDocument doc;
-    if (LittleFS.exists(deviceConfigPath)) {
-        File existing = LittleFS.open(deviceConfigPath, "r");
-        if (existing) {
-            deserializeJson(doc, existing);
-            existing.close();
-        }
-    }
-    doc["city"] = city;
-
-    File file = LittleFS.open(deviceConfigPath, "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-        Serial.println("Default-Stadt gespeichert: " + city);
-    } else {
-        Serial.println("Default-Stadt konnte nicht gespeichert werden.");
-    }
+    pendingDefaultCity = city;
+    deviceSettingsDirty = true;
+    deviceSettingsDirtyMs = millis();
 }
 
-static bool saveSoundVolumeSettings(uint8_t volume, uint8_t effects, uint8_t music) {
-    JsonDocument doc;
-    if (LittleFS.exists(deviceConfigPath)) {
-        File existing = LittleFS.open(deviceConfigPath, "r");
-        if (!existing) {
-            Serial.println("Geraete-Einstellungen konnten nicht zum Lesen geoeffnet werden.");
-            return false;
-        }
-
-        DeserializationError error = deserializeJson(doc, existing);
-        existing.close();
-        if (error || !doc.is<JsonObject>()) {
-            Serial.println("Geraete-Einstellungen sind ungueltig; Sound wurde nicht gespeichert.");
-            return false;
-        }
-    }
-    doc["volume"] = volume;
-    doc["effectsVolume"] = effects;
-    doc["musicVolume"] = music;
-
-    File file = LittleFS.open(deviceConfigPath, "w");
-    if (!file) {
-        Serial.println("Sound-Lautstaerke konnte nicht gespeichert werden.");
-        return false;
-    }
-
-    serializeJson(doc, file);
-    file.close();
-    Serial.println("Sound gespeichert: Gesamt " + String(volume) + "%, Effekte " +
-                   String(effects) + "%, Musik " + String(music) + "%");
-    return true;
+static void markDeviceSettingsDirty() {
+    deviceSettingsDirty = true;
+    deviceSettingsDirtyMs = millis();
 }
 
-static bool saveJoystickDeadzoneSettings() {
+static bool saveDeviceSettingsNow() {
     JsonDocument doc;
     if (LittleFS.exists(deviceConfigPath)) {
         File existing = LittleFS.open(deviceConfigPath, "r");
@@ -405,33 +405,26 @@ static bool saveJoystickDeadzoneSettings() {
         existing.close();
         if (error || !doc.is<JsonObject>()) return false;
     }
+    doc["volume"] = getMasterVolume();
+    doc["effectsVolume"] = getEffectsVolume();
+    doc["musicVolume"] = getMusicVolume();
     doc["deadzone1"] = joystick1DeadzonePercent;
     doc["deadzone2"] = joystick2DeadzonePercent;
     doc["deadzone3"] = joystick3DeadzonePercent;
+    doc["pongBotDifficulty"] = pongBotDifficulty;
+    if (pendingDefaultCity != "") doc["city"] = pendingDefaultCity;
 
-    File file = LittleFS.open(deviceConfigPath, "w");
-    if (!file) return false;
-    serializeJson(doc, file);
-    file.close();
+    if (!atomicWriteJson(deviceConfigPath, doc)) return false;
+    deviceSettingsDirty = false;
+    pendingDefaultCity = "";
+    Serial.println("Gebündelte Geraete-Einstellungen atomar gespeichert.");
     return true;
 }
 
-static bool savePongBotSettings() {
-    JsonDocument doc;
-    if (LittleFS.exists(deviceConfigPath)) {
-        File existing = LittleFS.open(deviceConfigPath, "r");
-        if (!existing) return false;
-        DeserializationError error = deserializeJson(doc, existing);
-        existing.close();
-        if (error || !doc.is<JsonObject>()) return false;
-    }
-    doc["pongBotDifficulty"] = pongBotDifficulty;
-
-    File file = LittleFS.open(deviceConfigPath, "w");
-    if (!file) return false;
-    serializeJson(doc, file);
-    file.close();
-    return true;
+static void flushDeviceSettingsIfDue() {
+    if (!deviceSettingsDirty) return;
+    if (millis() - deviceSettingsDirtyMs < SETTINGS_SAVE_DELAY_MS) return;
+    if (!saveDeviceSettingsNow()) deviceSettingsDirtyMs = millis();
 }
 
 static bool isScoreEntry(JsonPair kv) {
@@ -544,11 +537,7 @@ void ensureUserExists(String user) {
         JsonObject obj = doc[user].to<JsonObject>();
         if (oldCity != "") obj["c"] = oldCity;
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
-        } else {
+        if (!atomicWriteJson("/config.json", doc)) {
             Serial.println("User konnte nicht gespeichert werden.");
         }
     }
@@ -582,11 +571,7 @@ void saveConfig(String user, String city) {
     obj["c"] = city;
     removeLegacyUserKeys(obj);
 
-    File file = LittleFS.open("/config.json", "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-    } else {
+    if (!atomicWriteJson("/config.json", doc)) {
         Serial.println("Config konnte nicht gespeichert werden.");
     }
 
@@ -609,11 +594,7 @@ void saveTheme(String user, int themeIdx) {
     obj["t"] = String(themeCode(g_themeIndex));
     removeLegacyUserKeys(obj);
 
-    File file = LittleFS.open("/config.json", "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-    } else {
+    if (!atomicWriteJson("/config.json", doc)) {
         Serial.println("Design konnte nicht gespeichert werden.");
     }
 
@@ -636,11 +617,7 @@ void saveClockStyle(String user, int clockIdx) {
     obj["u"] = String(clockCode(g_clockStyle));
     removeLegacyUserKeys(obj);
 
-    File file = LittleFS.open("/config.json", "w");
-    if (file) {
-        serializeJson(doc, file);
-        file.close();
-    } else {
+    if (!atomicWriteJson("/config.json", doc)) {
         Serial.println("Uhr-Stil konnte nicht gespeichert werden.");
     }
 
@@ -778,14 +755,10 @@ static void handleSoundSettings() {
         return;
     }
 
-    if (!saveSoundVolumeSettings(volume, effects, music)) {
-        sendSoundJson(500, F("{\"ok\":false,\"error\":\"volume could not be saved\"}"));
-        return;
-    }
-
     setMasterVolume(volume);
     setEffectsVolume(effects);
     setMusicVolume(music);
+    markDeviceSettingsDirty();
     sendSoundJson(200, soundStateJson());
 }
 
@@ -798,7 +771,6 @@ static String dashboardNav(const String& active) {
     if (active != "pacman") nav += "<a href='/pacman'>Pacman</a>";
     if (active != "tetris") nav += "<a href='/tetris'>Tetris</a>";
     if (active != "mario") nav += "<a href='/mario'>Mario</a>";
-    if (active != "diagnostics") nav += "<a href='/diagnostics'>Diagnose</a>";
     nav += "</div>";
     return nav;
 }
@@ -898,37 +870,6 @@ void handleShooterPage() {
 <div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='8000' step='10' value='24'><output id='spawnHpo'>24</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='16' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
 <div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='20000' step='100' value='900'><output id='bossHpo'>900</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='4'><output id='bossSizeo'>4</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='6000' step='20' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='7' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='12' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
 <script>let synced=false;const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function preset(m){let p=m==0?[5,1700,260,55,35]:m==1?[8,1150,190,40,25]:[13,520,95,20,45];by('maxA').value=p[0];by('spawnMs').value=p[1];by('moveMs').value=p[2];by('smallP').value=p[3];by('powerP').value=p[4];syncOut();applyDirector()}function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function setP2Mode(){fetch('/shooter/inputmap?'+q({p2:by('p2mode').value})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function saveNames(){fetch('/shooter/names?'+q({p1:by('p1name').value,p2:by('p2name').value})).then(state).catch(()=>{})}function short(n,i){n=(n||('Spieler '+(i+1))).trim();return n.length>3?n.slice(0,3):n}function playerHtml(p,i){let input=i==0?'Joystick 1':(by('p2mode').options[by('p2mode').selectedIndex].text);let status=!p.active?'wartet':(p.alive?'lebt':'tot');let cls=!p.active?'wait':(p.alive?'':'dead');return `<div class='player p${i}'><b>${p.name}</b><div>${input} - <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Dmg Lv ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>+1 bei ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function loadNetwork(){try{let r=await fetch('/ip');let j=await r.json();by('networkLine').textContent=j.connected?`Netzwerk: ${j.ip} | ${j.url}`:`Netzwerk: offline | Host ${j.host}`}catch(e){}}async function state(){try{let r=await fetch('/shooter/state');let j=await r.json();by('score').textContent='Team Score '+j.score;by('energyText').textContent='Energie '+j.webEnergy+' / '+j.webEnergyMax;by('energyFill').style.width=Math.max(0,Math.min(100,j.webEnergy*100/j.webEnergyMax))+'%';by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Web ${j.web?'verbunden':'offline'}</span><span>Auto Web ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;let lm=j.lastMatch;by('lastMatch').textContent=lm.score>0?`Letztes Match: ${lm.name} - ${lm.score} | ${lm.p1Name} ${lm.p1} / ${lm.p1Kills}K, ${lm.p2Name} ${lm.p2} / ${lm.p2Kills}K | Bosse ${lm.bosses} | ${lm.duration}s`:'Letztes Match: -';by('topScores').innerHTML=j.top.length?j.top.map((t,i)=>`<div class='line'>${i+1}. ${t.name}: ${t.score}</div>`).join(''):'<div class=line>Noch keine Highscores</div>';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;by('p1name').value=j.players[0].name;by('p2name').value=j.players[1].name;by('p2mode').value=j.p2InputMode;syncOut();synced=true}}catch(e){}}setInterval(()=>{ping();state();loadNetwork()},700);ping();state();loadNetwork();</script></body></html>)HTML";
-    sendDashboardHtml(html);
-}
-
-static String diagnosticsJson() {
-    String json = F("{");
-    json += F("\"uptime\":"); json += String(millis() / 1000UL);
-    json += F(",\"heap\":"); json += String(ESP.getFreeHeap());
-    json += F(",\"minHeap\":"); json += String(ESP.getMinFreeHeap());
-    json += F(",\"maxBlock\":"); json += String(ESP.getMaxAllocHeap());
-    json += F(",\"activeTask\":"); json += String(aktiverTask);
-    json += F(",\"i2cOk\":"); json += String((uint32_t)i2cJoystickReadsOk);
-    json += F(",\"i2cErrors\":"); json += String((uint32_t)i2cJoystickReadErrors);
-    json += F(",\"sound\":"); json += String(getMasterVolume());
-    json += F(",\"effects\":"); json += String(getEffectsVolume());
-    json += F(",\"music\":"); json += String(getMusicVolume());
-    json += F(",\"deadzone1\":"); json += String(joystick1DeadzonePercent);
-    json += F(",\"deadzone2\":"); json += String(joystick2DeadzonePercent);
-    json += F(",\"deadzone3\":"); json += String(joystick3DeadzonePercent);
-    json += '}';
-    return json;
-}
-
-void handleDiagnosticsState() {
-    server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "application/json; charset=utf-8", diagnosticsJson());
-}
-
-void handleDiagnosticsPage() {
-    String html = F("<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}.wrap{max-width:620px;margin:auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px}.value{font-size:24px;color:#facc15}@media(max-width:480px){.grid{grid-template-columns:1fr}}</style></head><body><div class='wrap'><h1>Diagnose</h1>");
-    html += dashboardNav("diagnostics");
-    html += F("<div class='grid'><div class='card'>Freier Heap<div class='value' id='heap'>-</div></div><div class='card'>Minimaler Heap<div class='value' id='minHeap'>-</div></div><div class='card'>Groesster Block<div class='value' id='maxBlock'>-</div></div><div class='card'>Laufzeit<div class='value' id='uptime'>-</div></div><div class='card'>Aktiver Task<div class='value' id='task'>-</div></div><div class='card'>I2C Fehler<div class='value' id='i2c'>-</div></div></div><script>const el=id=>document.getElementById(id);async function load(){try{const r=await fetch('/diagnostics/state',{cache:'no-store'}),j=await r.json();el('heap').textContent=j.heap;el('minHeap').textContent=j.minHeap;el('maxBlock').textContent=j.maxBlock;el('uptime').textContent=j.uptime+' s';el('task').textContent=j.activeTask;el('i2c').textContent=j.i2cErrors+' / '+(j.i2cOk+j.i2cErrors)}catch(e){}}setInterval(load,1000);load();</script></div></body></html>");
     sendDashboardHtml(html);
 }
 
@@ -1081,7 +1022,7 @@ void handlePongLogin() {
     }
     if (server.hasArg("bot")) {
         pongBotDifficulty = constrain(server.arg("bot").toInt(), 0, 2);
-        savePongBotSettings();
+        markDeviceSettingsDirty();
     }
     if (pongLeftUser != "") {
         loadConfigForUser(pongLeftUser);
@@ -1278,7 +1219,7 @@ void handleUpdateJoysticks() {
     joystick1.setDeadZonePercent(joystick1DeadzonePercent);
     joystick2.setDeadZonePercent(joystick2DeadzonePercent);
     joystick3.setDeadZonePercent(joystick3DeadzonePercent);
-    saveJoystickDeadzoneSettings();
+    markDeviceSettingsDirty();
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -1369,8 +1310,6 @@ static void handleNotFound() {
 void setupWebServer() {
     server.on("/", HTTP_GET, handleRoot);
     server.on("/ip", HTTP_GET, handleIpInfo);
-    server.on("/diagnostics", HTTP_GET, handleDiagnosticsPage);
-    server.on("/diagnostics/state", HTTP_GET, handleDiagnosticsState);
     server.on("/sound/state", HTTP_GET, handleSoundState);
     server.on("/sound/settings", HTTP_POST, handleSoundSettings);
     server.on("/sound/test", HTTP_POST, handleSoundTest);
@@ -1417,9 +1356,12 @@ void setupWebServer() {
 }
 
 void taskWebServerHandler(void * pvParameters) {
+    registerCurrentTaskWithWatchdog();
     for (;;) {
         if (captivePortalActive) dnsServer.processNextRequest();
         server.handleClient();
+        flushDeviceSettingsIfDue();
+        feedRuntimeWatchdog();
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }
@@ -1444,10 +1386,7 @@ void saveHighScore(String user, int score) {
         obj["h"] = score;
         removeLegacyUserKeys(obj);
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
+        if (atomicWriteJson("/config.json", doc)) {
             Serial.println("Neuer Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Highscore konnte nicht gespeichert werden.");
@@ -1526,10 +1465,7 @@ void saveSnakeHighScore(String user, int score) {
         obj["snake"] = score;
         removeLegacyUserKeys(obj);
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
+        if (atomicWriteJson("/config.json", doc)) {
             Serial.println("Neuer Snake-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Snake-Highscore konnte nicht gespeichert werden.");
@@ -1567,10 +1503,7 @@ void savePongHighScore(String user, int score) {
         obj["pong"] = score;
         removeLegacyUserKeys(obj);
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
+        if (atomicWriteJson("/config.json", doc)) {
             Serial.println("Neuer Pong-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Pong-Highscore konnte nicht gespeichert werden.");
@@ -1608,10 +1541,7 @@ void savePacmanHighScore(String user, int score) {
         obj["pac"] = score;
         removeLegacyUserKeys(obj);
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
+        if (atomicWriteJson("/config.json", doc)) {
             Serial.println("Neuer Pacman-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Pacman-Highscore konnte nicht gespeichert werden.");
@@ -1649,10 +1579,7 @@ void saveTetrisHighScore(String user, int score) {
         obj["tetris"] = score;
         removeLegacyUserKeys(obj);
 
-        File file = LittleFS.open("/config.json", "w");
-        if (file) {
-            serializeJson(doc, file);
-            file.close();
+        if (atomicWriteJson("/config.json", doc)) {
             Serial.println("Neuer Tetris-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Tetris-Highscore konnte nicht gespeichert werden.");

@@ -8,6 +8,8 @@
 #include "HardwareUtils.h"
 #include "Joystick.h"
 #include "SoundUtils.h"
+#include "GameRuntime.h"
+#include "RuntimeHealth.h"
 
 extern volatile int aktiverTask;
 extern Joystick joystick1;
@@ -30,14 +32,6 @@ const int MAX_VX = 188;
 const int MAX_VY = 185;
 const int WIN_SCORE = 7;
 
-enum PongState {
-    PONG_MENU,
-    PONG_COUNTDOWN,
-    PONG_PLAYING,
-    PONG_SCORE,
-    PONG_GAMEOVER
-};
-
 struct Particle {
     int8_t x;
     int8_t y;
@@ -45,7 +39,9 @@ struct Particle {
     CRGB color;
 };
 
-PongState state = PONG_MENU;
+UnifiedGameState state = GAME_MENU;
+GameRuntime runtime;
+bool pointPause = false;
 int leftY = 6;
 int rightY = 6;
 int leftScore = 0;
@@ -110,8 +106,8 @@ void updateParticles() {
     }
 }
 
-int readVertical(Joystick& stick) {
-    int x = stick.readXPercent();
+int readVertical(const GameStickState& stick) {
+    int x = stick.x;
     if (x > INPUT_DEADZONE) return -1;
     if (x < -INPUT_DEADZONE) return 1;
     return 0;
@@ -144,6 +140,7 @@ void resetMatch() {
     rightScore = 0;
     matchBestRally = 0;
     savedMatch = false;
+    pointPause = false;
     nextServeVxAbs = INITIAL_VX;
     resetPaddles();
     serveBall(random(0, 2) == 0 ? -1 : 1);
@@ -156,20 +153,20 @@ void refreshCachedBest() {
 }
 
 void beginCountdown() {
-    state = PONG_COUNTDOWN;
+    state = GAME_COUNTDOWN;
     stateStartedMs = millis();
     resetPaddles();
     serveBall(serveDir);
     playSound(SND_SELECT);
 }
 
-void applyInput(unsigned long now) {
+void applyInput(unsigned long now, const GameControlEvents& controls) {
     int leftMove = 0;
     int rightMove = 0;
     int currentBallY = clampInt((ballY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
 
-    if (pongLeftUser != "") leftMove = readVertical(joystick3);
-    if (pongRightUser != "") rightMove = readVertical(joystick1);
+    if (pongLeftUser != "") leftMove = readVertical(controls.secondary);
+    if (pongRightUser != "") rightMove = readVertical(controls.primary);
 
     const int botStepMs[3] = {125, 96, 76};
     const int botError[3] = {3, 2, 1};
@@ -247,9 +244,8 @@ void handlePaddleHit(bool leftPaddle, int hitY) {
     int targetVy = rel2 * (move == 0 ? 26 : 34) + move * 44;
 
     rallyHits++;
-    if (rallyHits % SPEED_UP_EVERY_HITS == 0) {
-        ballVxAbs = clampInt(ballVxAbs + SPEED_STEP, INITIAL_VX, MAX_VX);
-    }
+    ballVxAbs = steppedCappedSpeed(ballVxAbs, rallyHits,
+                                   SPEED_UP_EVERY_HITS, SPEED_STEP, MAX_VX);
     ballVx = leftPaddle ? ballVxAbs : -ballVxAbs;
     ballVy = clampInt(targetVy, -MAX_VY, MAX_VY);
     ballX = (leftPaddle ? (LEFT_X + 2) : (RIGHT_X - 2)) * SCALE;
@@ -295,14 +291,14 @@ void updateBall() {
         nextServeVxAbs = clampInt(ballVxAbs - SPEED_STEP * 2, INITIAL_VX, INITIAL_VX + 48);
         rightScore++;
         serveDir = -1;
-        state = PONG_SCORE;
+        pointPause = true;
         stateStartedMs = millis();
         playSound(SND_DIE);
     } else if (ballX > WIDTH * SCALE) {
         nextServeVxAbs = clampInt(ballVxAbs - SPEED_STEP * 2, INITIAL_VX, INITIAL_VX + 48);
         leftScore++;
         serveDir = 1;
-        state = PONG_SCORE;
+        pointPause = true;
         stateStartedMs = millis();
         playSound(SND_DIE);
     }
@@ -379,70 +375,71 @@ void saveMatchHighscores() {
     if (matchBestRally > cachedBestRally) cachedBestRally = matchBestRally;
 }
 
-bool consumeStartDoubleClick() {
-    bool doubleClicked = joystick1.doppelklickZaehler > 0 || joystick3.doppelklickZaehler > 0;
-
-    joystick1.einfacherKlickZaehler = 0;
-    joystick1.doppelklickZaehler = 0;
-    joystick1.langKlickZaehler = 0;
-    joystick3.einfacherKlickZaehler = 0;
-    joystick3.doppelklickZaehler = 0;
-    joystick3.langKlickZaehler = 0;
-
-    return doubleClicked;
-}
-
 void tickPong() {
     unsigned long now = millis();
-    bool startDoubleClick = consumeStartDoubleClick();
+    GameControlEvents controls = runtime.poll(joystick1, joystick3);
+    bool startDoubleClick = controls.doubleClick;
+    joystick1.einfacherKlickZaehler = 0;
+    joystick3.einfacherKlickZaehler = 0;
+    if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
+        runtime.applyPause(state);
 
     switch (state) {
-    case PONG_MENU:
+    case GAME_MENU:
         renderMenu();
         if (startDoubleClick) {
             if (pongLeftUser == "" && pongRightUser == "") ensureDefaultPlayers();
             resetMatch();
+            runtime.animateTransition(CRGB::Blue);
             beginCountdown();
         }
         break;
 
-    case PONG_COUNTDOWN:
-        applyInput(now);
+    case GAME_COUNTDOWN:
+        applyInput(now, controls);
         renderCountdown(now);
         if (now - stateStartedMs >= 2100) {
-            state = PONG_PLAYING;
+            state = GAME_PLAYING;
             stateStartedMs = now;
         }
         break;
 
-    case PONG_PLAYING:
-        applyInput(now);
+    case GAME_PLAYING:
+        if (pointPause) {
+            updateParticles();
+            renderField();
+            if (leftScore >= WIN_SCORE || rightScore >= WIN_SCORE) {
+                if (!savedMatch) {
+                    saveMatchHighscores();
+                    savedMatch = true;
+                }
+                if (now - stateStartedMs >= 900) {
+                    runtime.animateTransition(CRGB::Red);
+                    state = GAME_GAME_OVER;
+                    stateStartedMs = now;
+                    pointPause = false;
+                }
+            } else if (now - stateStartedMs >= 900) {
+                pointPause = false;
+                beginCountdown();
+            }
+            break;
+        }
+        applyInput(now, controls);
         updateBall();
         updateParticles();
         renderField();
         break;
 
-    case PONG_SCORE:
-        updateParticles();
-        renderField();
-        if (leftScore >= WIN_SCORE || rightScore >= WIN_SCORE) {
-            if (!savedMatch) {
-                saveMatchHighscores();
-                savedMatch = true;
-            }
-            if (now - stateStartedMs >= 900) {
-                state = PONG_GAMEOVER;
-                stateStartedMs = now;
-            }
-        } else if (now - stateStartedMs >= 900) {
-            beginCountdown();
-        }
+    case GAME_PAUSED:
+        runtime.drawPauseOverlay();
         break;
 
-    case PONG_GAMEOVER:
+    case GAME_GAME_OVER:
         renderGameOver();
         if (startDoubleClick) {
             resetMatch();
+            runtime.animateTransition(CRGB::Blue);
             beginCountdown();
         }
         break;
@@ -461,13 +458,15 @@ void taskPongHandler(void *pvParameters) {
 
     for (;;) {
         if (aktiverTask != 7) {
+            feedRuntimeWatchdog();
             lastTask = -1;
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
         }
 
         if (lastTask != 7) {
-            state = PONG_MENU;
+            state = GAME_MENU;
+            runtime.begin();
             joystick1.reset();
             joystick3.reset();
             resetMatch();
@@ -484,6 +483,6 @@ void taskPongHandler(void *pvParameters) {
         if (aktiverTask == 7) tickPong();
 
         unlockDisplay();
-        vTaskDelay(pdMS_TO_TICKS(16));
+        runtime.waitForNextFrame(16);
     }
 }

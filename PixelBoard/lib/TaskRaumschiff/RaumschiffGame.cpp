@@ -11,7 +11,9 @@ extern Joystick joystick1;
 extern Joystick joystick2;
 extern Joystick joystick3;
 
-static GameState gameState = MENU;
+static UnifiedGameState gameState = GAME_MENU;
+static GameRuntime gameRuntime;
+static uint32_t countdownStartedMs = 0;
 
 static Spieler spieler[RAUMSCHIFF_MAX_PLAYERS];
 
@@ -234,7 +236,7 @@ static String playerNameOrDefault(uint8_t index)
 static void updateWebEnergy()
 {
     uint32_t now = millis();
-    if (!webConnectedNow() || gameState == MENU || gameState == GAME_OVER)
+    if (!webConnectedNow() || gameState == GAME_MENU || gameState == GAME_GAME_OVER)
     {
         lastWebEnergyRegenMs = now;
         return;
@@ -334,7 +336,7 @@ static void resetPlayer(uint8_t index, bool active)
     spieler[index].ready = false;
 }
 
-GameState getGameState() { return gameState; }
+UnifiedGameState getGameState() { return gameState; }
 uint32_t getRaumschiffScore() { return score; }
 uint32_t getRaumschiffTeamScore() { return score; }
 
@@ -393,10 +395,11 @@ void raumschiffRegisterKill(uint8_t playerIndex, uint16_t points, int dropX, int
 
 void raumschiffGameOver()
 {
-    if (gameState == GAME_OVER)
+    if (gameState == GAME_GAME_OVER)
         return;
 
-    gameState = GAME_OVER;
+    gameRuntime.animateTransition(CRGB::Red);
+    gameState = GAME_GAME_OVER;
     Audio::playExplosion();
 
     if (!highScoreSaved)
@@ -937,6 +940,15 @@ static InputState readP2Input()
     return readJoystickInput(1, joystick3);
 }
 
+static void applyCentralStick(InputState& input, const GameStickState& stick)
+{
+    input.axisX = stick.x;
+    input.axisY = stick.y;
+    input.dy = stepFromAxis(stick.x, true);
+    input.dx = stepFromAxis(stick.y, false);
+    input.touched = input.touched || input.dx != 0 || input.dy != 0 || stick.pressed;
+}
+
 static bool allocatePlayerProjectile(uint8_t playerIndex, int8_t dy, uint8_t damage, bool charged)
 {
     if (playerIndex >= RAUMSCHIFF_MAX_PLAYERS)
@@ -1124,7 +1136,7 @@ static void spawnBossWith(uint16_t hp, uint8_t size)
     boss.size = size;
     boss.attackTimer = millis();
     bossVolleyCounter = 0;
-    gameState = BOSS;
+    gameState = GAME_PLAYING;
     Audio::playBoss();
 }
 
@@ -1209,7 +1221,7 @@ static void spawnAsteroid()
         spawnHazardWith(requestedHazardType, requestedHazardRadius, requestedHazardSpeed, requestedHazardHp);
 
     bool webActive = webConnectedNow();
-    if ((webActive && !directorAutoWhenWebConnected) || gameState == BOSS)
+    if ((webActive && !directorAutoWhenWebConnected) || boss.active)
         return;
 
     uint8_t maxAsteroids = directorMaxActiveAsteroids;
@@ -1766,12 +1778,18 @@ static void renderGameOver()
     FastLED.show();
 }
 
-static void updatePlaying()
+static void updatePlaying(const GameControlEvents& controls)
 {
     updateWebEnergy();
 
     InputState p1 = readJoystickInput(0, joystick1);
     InputState p2 = readP2Input();
+    applyCentralStick(p1, controls.primary);
+    if (p2InputMode != p2InputEsp32) applyCentralStick(p2, controls.secondary);
+    p1.dash = p1.dash || controls.primaryDoubleClick;
+    p2.dash = p2.dash || controls.secondaryDoubleClick;
+    p1.charge = p1.charge || controls.primary.longClick;
+    p2.charge = p2.charge || controls.secondary.longClick;
 
     applyInput(0, p1);
     applyInput(1, p2);
@@ -1795,20 +1813,33 @@ static void beginMatch()
     Audio::playUI();
     matchStartMs = millis();
     lastWebEnergyRegenMs = matchStartMs;
-    gameState = PLAYING;
+    gameState = GAME_PLAYING;
 }
 
 void raumschiffGameTick()
 {
-    if (gameState == MENU)
+    GameControlEvents controls = gameRuntime.poll(joystick1, joystick3);
+    if (controls.pauseToggle && (gameState == GAME_PLAYING || gameState == GAME_PAUSED))
+        gameRuntime.applyPause(gameState);
+
+    if (gameState == GAME_PAUSED)
     {
-        bool joystick3Start = joystick3.doppelklickZaehler > 0;
-        if (joystick3Start)
-            joystick3.doppelklickZaehler = 0;
+        gameRuntime.drawPauseOverlay();
+        return;
+    }
+
+    if (gameState == GAME_MENU)
+    {
         InputState p1 = readJoystickInput(0, joystick1);
         InputState p2 = readP2Input();
+        applyCentralStick(p1, controls.primary);
+        if (p2InputMode != p2InputEsp32) applyCentralStick(p2, controls.secondary);
+        p1.dash = p1.dash || controls.primaryDoubleClick;
+        p2.dash = p2.dash || controls.secondaryDoubleClick;
+        p1.charge = p1.charge || controls.primary.longClick;
+        p2.charge = p2.charge || controls.secondary.longClick;
 
-        if (p2.touched || joystick3Start)
+        if (p2.touched || controls.secondaryDoubleClick)
             spieler[1].active = true;
         if (p1.charge)
             spieler[0].ready = true;
@@ -1816,16 +1847,32 @@ void raumschiffGameTick()
             spieler[1].ready = true;
 
         // Joystick 2 bleibt ausnahmslos der globale Menue-Controller.
-        if (p1.dash || joystick3Start)
-            beginMatch();
+        if (controls.doubleClick)
+        {
+            gameRuntime.animateTransition(CRGB::Cyan);
+            countdownStartedMs = millis();
+            gameState = GAME_COUNTDOWN;
+        }
 
         renderMenu();
         return;
     }
 
-    if (gameState == PLAYING)
+    if (gameState == GAME_COUNTDOWN)
     {
-        updatePlaying();
+        renderMenu();
+        uint32_t elapsed = millis() - countdownStartedMs;
+        gameRuntime.drawCountdownOverlay(3 - min(2UL, elapsed / 700UL));
+        FastLED.show();
+        if (elapsed >= 2100UL) beginMatch();
+        return;
+    }
+
+    if (gameState == GAME_PLAYING)
+    {
+        updatePlaying(controls);
+
+        if (boss.active) bossLogic();
 
         if (!boss.active && score >= nextBossScore)
         {
@@ -1840,30 +1887,18 @@ void raumschiffGameTick()
         return;
     }
 
-    if (gameState == BOSS)
-    {
-        updatePlaying();
-        bossLogic();
-
-        if (!boss.active)
-            gameState = PLAYING;
-        return;
-    }
-
-    if (gameState == GAME_OVER)
+    if (gameState == GAME_GAME_OVER)
     {
         renderGameOver();
-        bool joystick3Start = joystick3.doppelklickZaehler > 0;
-        if (joystick3Start)
-            joystick3.doppelklickZaehler = 0;
-        InputState p1 = readJoystickInput(0, joystick1);
         InputState p2 = readP2Input();
-        if (p1.dash || joystick3Start)
+        if (controls.doubleClick)
         {
-            bool keepSecondPlayer = spieler[1].active || p2.touched || joystick3Start;
+            bool keepSecondPlayer = spieler[1].active || p2.touched || controls.secondaryDoubleClick;
             raumschiffResetGame();
             spieler[1].active = keepSecondPlayer;
-            beginMatch();
+            gameRuntime.animateTransition(CRGB::Cyan);
+            countdownStartedMs = millis();
+            gameState = GAME_COUNTDOWN;
         }
         return;
     }
@@ -1871,7 +1906,8 @@ void raumschiffGameTick()
 
 void raumschiffResetGame()
 {
-    gameState = MENU;
+    gameState = GAME_MENU;
+    gameRuntime.begin();
 
     resetPlayer(0, true);
     resetPlayer(1, false);

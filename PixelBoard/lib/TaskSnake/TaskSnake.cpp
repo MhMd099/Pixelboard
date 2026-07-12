@@ -5,6 +5,8 @@
 #include "Config.h"
 #include "SoundUtils.h"
 #include "Joystick.h"
+#include "GameRuntime.h"
+#include "RuntimeHealth.h"
 
 extern volatile bool taskWechselAnforderung;
 extern volatile int aktiverTask;
@@ -20,15 +22,14 @@ extern void drawDigitW(int x, int y, int n, CRGB c);
 #define MAX_SNAKE_OBSTACLES 48
 #define MAX_SNAKE_POWERUPS 6
 
-enum GameState { STATE_MENU, STATE_PLAYING, STATE_GAMEOVER };
-static GameState currentState = STATE_MENU;
+static UnifiedGameState currentState = GAME_MENU;
 
 struct Point { int x, y; };
 struct SnakeItem { Point p; bool active; };
 
-static bool applySnakeInput(Joystick& stick, Point& dir) {
-    int xPerc = stick.readXPercent();
-    int yPerc = stick.readYPercent();
+static bool applySnakeInput(const GameStickState& stick, Point& dir) {
+    int xPerc = stick.x;
+    int yPerc = stick.y;
 
     if (yPerc > 70 && dir.x == 0) {
         dir = {1, 0};
@@ -49,17 +50,12 @@ static bool applySnakeInput(Joystick& stick, Point& dir) {
     return false;
 }
 
-static bool snakeJoystickMoved(Joystick& stick) {
-    return abs(stick.readXPercent()) > 70 || abs(stick.readYPercent()) > 70;
-}
-
-static int wrapCoordinate(int value, int size) {
-    if (value < 0) return size - 1;
-    if (value >= size) return 0;
-    return value;
+static bool snakeJoystickMoved(const GameStickState& stick) {
+    return abs(stick.x) > 70 || abs(stick.y) > 70;
 }
 
 void taskSnakeHandler(void *pvParameters) {
+    GameRuntime runtime;
     static Point snakes[2][MAX_SNAKE_LENGTH];
     int snakeLengths[2] = {3, 3};
     Point dirs[2] = {{1, 0}, {-1, 0}};
@@ -69,6 +65,7 @@ void taskSnakeHandler(void *pvParameters) {
     unsigned long playerJoinMs[2] = {0, 0};
     unsigned long playerDeathMs[2] = {0, 0};
     unsigned long allLostSinceMs = 0;
+    unsigned long countdownStartedMs = 0;
 
     static SnakeItem foods[MAX_SNAKE_FOOD];
     static SnakeItem obstacles[MAX_SNAKE_OBSTACLES];
@@ -182,8 +179,8 @@ void taskSnakeHandler(void *pvParameters) {
             }
 
             Point ahead = {
-                wrapCoordinate(head.x + dirs[1].x, WIDTH),
-                wrapCoordinate(head.y + dirs[1].y, HEIGHT_TOTAL)
+                wrapGameCoordinate(head.x + dirs[1].x, WIDTH),
+                wrapGameCoordinate(head.y + dirs[1].y, HEIGHT_TOTAL)
             };
             return !onSnake(0, ahead) && !onItems(obstacles, MAX_SNAKE_OBSTACLES, ahead);
         };
@@ -259,27 +256,13 @@ void taskSnakeHandler(void *pvParameters) {
                 Point head = snakes[player][0];
                 CRGB pulse = headCols[player];
                 pulse.nscale8_video(145);
-                setPixel(wrapCoordinate(head.x - 1, WIDTH), head.y, pulse);
-                setPixel(wrapCoordinate(head.x + 1, WIDTH), head.y, pulse);
-                setPixel(head.x, wrapCoordinate(head.y - 1, HEIGHT_TOTAL), pulse);
-                setPixel(head.x, wrapCoordinate(head.y + 1, HEIGHT_TOTAL), pulse);
+                setPixel(wrapGameCoordinate(head.x - 1, WIDTH), head.y, pulse);
+                setPixel(wrapGameCoordinate(head.x + 1, WIDTH), head.y, pulse);
+                setPixel(head.x, wrapGameCoordinate(head.y - 1, HEIGHT_TOTAL), pulse);
+                setPixel(head.x, wrapGameCoordinate(head.y + 1, HEIGHT_TOTAL), pulse);
             }
         }
         FastLED.show();
-    };
-    auto consumeStartDoubleClick = [&]() {
-        bool doubleClicked = joystick1.doppelklickZaehler > 0 ||
-                             joystick3.doppelklickZaehler > 0;
-
-        // Snake owns both game joysticks while active. Consume every click type
-        // each tick so an event from play cannot become a later restart event.
-        joystick1.einfacherKlickZaehler = 0;
-        joystick1.doppelklickZaehler = 0;
-        joystick1.langKlickZaehler = 0;
-        joystick3.einfacherKlickZaehler = 0;
-        joystick3.doppelklickZaehler = 0;
-        joystick3.langKlickZaehler = 0;
-        return doubleClicked;
     };
     auto finishGame = [&]() {
         currentScore = snakeLengths[0];
@@ -289,7 +272,8 @@ void taskSnakeHandler(void *pvParameters) {
         snakeUser.trim();
         if (snakeUser == "") snakeUser = "Gast";
         saveSnakeHighScore(snakeUser, currentScore);
-        currentState = STATE_GAMEOVER;
+        runtime.animateTransition(CRGB::Red);
+        currentState = GAME_GAME_OVER;
     };
 
     resetGame();
@@ -297,6 +281,7 @@ void taskSnakeHandler(void *pvParameters) {
 
     for (;;) {
         if (aktiverTask != 2) {
+            feedRuntimeWatchdog();
             taskWasActive = false;
             taskWechselAnforderung = false;
             vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -309,7 +294,8 @@ void taskSnakeHandler(void *pvParameters) {
             joystick1.reset();
             joystick3.reset();
             resetGame();
-            currentState = STATE_MENU;
+            runtime.begin();
+            currentState = GAME_MENU;
         }
 
         if (!lockDisplay(20)) {
@@ -321,10 +307,17 @@ void taskSnakeHandler(void *pvParameters) {
             continue;
         }
 
-        bool startDoubleClick = consumeStartDoubleClick();
+        GameControlEvents controls = runtime.poll(joystick1, joystick3);
+        bool startDoubleClick = controls.doubleClick;
+        joystick1.einfacherKlickZaehler = 0;
+        joystick3.einfacherKlickZaehler = 0;
+        if (controls.pauseToggle &&
+            (currentState == GAME_PLAYING || currentState == GAME_PAUSED)) {
+            runtime.applyPause(currentState);
+        }
 
         switch (currentState) {
-            case STATE_MENU: {
+            case GAME_MENU: {
                 FastLED.clear();
                 unsigned long now = millis();
                 CRGB headCol = themeCol(now / 18, 255);
@@ -357,19 +350,33 @@ void taskSnakeHandler(void *pvParameters) {
                 FastLED.show();
                 if (startDoubleClick) {
                     resetGame();
-                    lastMoveTime = millis();
-                    currentState = STATE_PLAYING;
+                    countdownStartedMs = millis();
+                    currentState = GAME_COUNTDOWN;
+                    runtime.animateTransition(CRGB::Green);
                     playSound(SND_SELECT);
                 }
                 break;
             }
 
-            case STATE_PLAYING: {
-                if (playerAlive[0]) applySnakeInput(joystick1, dirs[0]);
+            case GAME_COUNTDOWN: {
+                renderGame();
+                unsigned long elapsed = millis() - countdownStartedMs;
+                uint8_t number = 3 - min(2UL, elapsed / 700UL);
+                runtime.drawCountdownOverlay(number);
+                FastLED.show();
+                if (elapsed >= 2100UL) {
+                    lastMoveTime = millis();
+                    currentState = GAME_PLAYING;
+                }
+                break;
+            }
+
+            case GAME_PLAYING: {
+                if (playerAlive[0]) applySnakeInput(controls.primary, dirs[0]);
                 if (!playerJoined[1]) {
-                    if (snakeJoystickMoved(joystick3)) activateSecondPlayer();
+                    if (snakeJoystickMoved(controls.secondary)) activateSecondPlayer();
                 } else if (playerAlive[1] && !secondPlayerNeedsInitialMove) {
-                    applySnakeInput(joystick3, dirs[1]);
+                    applySnakeInput(controls.secondary, dirs[1]);
                 }
 
                 unsigned long now = millis();
@@ -382,8 +389,8 @@ void taskSnakeHandler(void *pvParameters) {
 
                     for (int player = 0; player < 2; player++) {
                         if (!moving[player]) continue;
-                        next[player].x = wrapCoordinate(snakes[player][0].x + dirs[player].x, WIDTH);
-                        next[player].y = wrapCoordinate(snakes[player][0].y + dirs[player].y, HEIGHT_TOTAL);
+                        next[player].x = wrapGameCoordinate(snakes[player][0].x + dirs[player].x, WIDTH);
+                        next[player].y = wrapGameCoordinate(snakes[player][0].y + dirs[player].y, HEIGHT_TOTAL);
 
                         if (onItems(obstacles, MAX_SNAKE_OBSTACLES, next[player])) dead[player] = true;
                         if (onSnake(player, next[player])) dead[player] = true;
@@ -463,7 +470,12 @@ void taskSnakeHandler(void *pvParameters) {
                 break;
             }
 
-            case STATE_GAMEOVER: {
+            case GAME_PAUSED: {
+                runtime.drawPauseOverlay();
+                break;
+            }
+
+            case GAME_GAME_OVER: {
                 FastLED.clear();
                 unsigned long now = millis();
                 CRGB playerCols[2] = {
@@ -481,14 +493,15 @@ void taskSnakeHandler(void *pvParameters) {
                 FastLED.show();
                 if (startDoubleClick) {
                     resetGame();
-                    lastMoveTime = millis();
-                    currentState = STATE_PLAYING;
+                    countdownStartedMs = millis();
+                    currentState = GAME_COUNTDOWN;
+                    runtime.animateTransition(CRGB::Green);
                     playSound(SND_SELECT);
                 }
                 break;
             }
         }
         unlockDisplay();
-        vTaskDelay(10 / portTICK_PERIOD_MS);
+        runtime.waitForNextFrame(16);
     }
 }

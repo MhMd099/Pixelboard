@@ -2,14 +2,7 @@
 #define RAUMSCHIFF_GAME_H
 
 #include <Arduino.h>
-
-enum GameState
-{
-    MENU,
-    PLAYING,
-    BOSS,
-    GAME_OVER
-};
+#include "GameRuntime.h"
 
 static const uint8_t RAUMSCHIFF_MAX_PLAYERS = 2;
 
@@ -168,7 +161,7 @@ void raumschiffGameTick();
 void raumschiffResetGame();
 void raumschiffRenderMenuPreview();
 
-GameState getGameState();
+UnifiedGameState getGameState();
 uint32_t getRaumschiffScore();
 uint32_t getRaumschiffTeamScore();
 void raumschiffAddScore(uint8_t points);

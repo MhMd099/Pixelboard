@@ -8,6 +8,8 @@
 #include "HardwareUtils.h"
 #include "Joystick.h"
 #include "SoundUtils.h"
+#include "GameRuntime.h"
+#include "RuntimeHealth.h"
 
 extern volatile int aktiverTask;
 extern Joystick joystick1;
@@ -35,14 +37,6 @@ enum Tile : uint8_t {
     TILE_WALL = 1,
     TILE_DOT = 2,
     TILE_POWER = 3
-};
-
-enum PacmanState {
-    PAC_LOBBY,
-    PAC_COUNTDOWN,
-    PAC_PLAYING,
-    PAC_WIN,
-    PAC_GAMEOVER
 };
 
 struct Vec {
@@ -76,7 +70,9 @@ struct Ghost {
     CRGB color;
 };
 
-PacmanState state = PAC_LOBBY;
+UnifiedGameState state = GAME_MENU;
+GameRuntime runtime;
+bool wonGame = false;
 Tile mapTiles[HEIGHT][WIDTH];
 Player players[PLAYER_COUNT];
 Ghost ghosts[GHOST_COUNT];
@@ -251,9 +247,7 @@ void buildMap() {
     }
 }
 
-Vec readGridDir(Joystick& stick, bool invertX, bool invertY) {
-    int xPerc = stick.readXPercent();
-    int yPerc = stick.readYPercent();
+Vec readGridDirValues(int xPerc, int yPerc, bool invertX, bool invertY) {
     if (invertX) xPerc = -xPerc;
     if (invertY) yPerc = -yPerc;
 
@@ -265,6 +259,10 @@ Vec readGridDir(Joystick& stick, bool invertX, bool invertY) {
         if (xPerc > DEADZONE) return makeVec(0, -1);
     }
     return makeVec(0, 0);
+}
+
+Vec readGridDir(Joystick& stick, bool invertX, bool invertY) {
+    return readGridDirValues(stick.readXPercent(), stick.readYPercent(), invertX, invertY);
 }
 
 int manhattan(int x1, int y1, int x2, int y2) {
@@ -394,7 +392,8 @@ void consumeTile(Player& player, unsigned long now) {
     }
 }
 
-void updateOnePlayer(Player& player, Joystick& stick, unsigned long now, bool invertX, bool invertY) {
+void updateOnePlayer(Player& player, const GameStickState& stick,
+                     unsigned long now, bool invertX, bool invertY) {
     if (!player.active || !player.alive) return;
 
     if ((long)(now - playerInvertUntilMs) < 0) {
@@ -402,7 +401,7 @@ void updateOnePlayer(Player& player, Joystick& stick, unsigned long now, bool in
         invertY = !invertY;
     }
 
-    Vec input = readGridDir(stick, invertX, invertY);
+    Vec input = readGridDirValues(stick.x, stick.y, invertX, invertY);
     if (input.x != 0 || input.y != 0) player.wanted = input;
 
     if (canMove(player.x, player.y, player.wanted)) player.dir = player.wanted;
@@ -410,11 +409,11 @@ void updateOnePlayer(Player& player, Joystick& stick, unsigned long now, bool in
     consumeTile(player, now);
 }
 
-void updatePlayers(unsigned long now) {
+void updatePlayers(unsigned long now, const GameControlEvents& controls) {
     if (now - lastPlayerMoveMs < PLAYER_STEP_MS) return;
     lastPlayerMoveMs = now;
-    updateOnePlayer(players[0], joystick1, now, false, false);
-    updateOnePlayer(players[1], joystick3, now, false, false);
+    updateOnePlayer(players[0], controls.primary, now, false, false);
+    updateOnePlayer(players[1], controls.secondary, now, false, false);
 }
 
 Vec targetForGhost(uint8_t idx) {
@@ -575,7 +574,9 @@ void checkCollisions(unsigned long now) {
     }
 
     if (!anyPlayerAlive()) {
-        state = PAC_GAMEOVER;
+        wonGame = false;
+        runtime.animateTransition(CRGB::Red);
+        state = GAME_GAME_OVER;
         stateStartedMs = now;
     }
 }
@@ -706,17 +707,10 @@ void renderWin() {
 
 void beginCountdown() {
     resetGame();
-    state = PAC_COUNTDOWN;
+    wonGame = false;
+    state = GAME_COUNTDOWN;
     stateStartedMs = millis();
     playSound(SND_SELECT);
-}
-
-bool consumeGameStartDoubleClick() {
-    bool pressed = joystick1.doppelklickZaehler > 0 ||
-                   joystick3.doppelklickZaehler > 0;
-    joystick1.doppelklickZaehler = 0;
-    joystick3.doppelklickZaehler = 0;
-    return pressed;
 }
 
 void tickPacman() {
@@ -727,58 +721,66 @@ void tickPacman() {
     unsigned long now = millis();
     // Start/Neustart ist in allen Spielen ein Doppelklick am Spiel-Joystick.
     // Ein Doppelklick auf Joystick 2 bleibt global "zurueck zum Menue".
-    bool startDoubleClick = consumeGameStartDoubleClick();
+    GameControlEvents controls = runtime.poll(joystick1, joystick3);
+    bool startDoubleClick = controls.doubleClick;
+    if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
+        runtime.applyPause(state);
     joystick1.einfacherKlickZaehler = 0;
     joystick1.langKlickZaehler = 0;
     joystick3.einfacherKlickZaehler = 0;
     joystick3.langKlickZaehler = 0;
 
     switch (state) {
-    case PAC_LOBBY:
+    case GAME_MENU:
         renderLobby(now);
         if (startDoubleClick) {
             if (!hasAnyPlayer()) {
                 ensureDefaultPlayers();
             }
+            runtime.animateTransition(CRGB::Yellow);
             beginCountdown();
         }
         break;
 
-    case PAC_COUNTDOWN:
+    case GAME_COUNTDOWN:
         renderCountdown(now);
         if (now - stateStartedMs >= 2100UL) {
-            state = PAC_PLAYING;
+            state = GAME_PLAYING;
             stateStartedMs = now;
             lastPlayerMoveMs = now;
             for (uint8_t i = 0; i < GHOST_COUNT; i++) ghosts[i].lastMoveMs = now;
         }
         break;
 
-    case PAC_PLAYING:
-        updatePlayers(now);
+    case GAME_PLAYING:
+        updatePlayers(now, controls);
         updateGhosts(now);
         checkCollisions(now);
         if (dotsLeft <= 0) {
             players[0].score += players[0].active ? 250 : 0;
             players[1].score += players[1].active ? 250 : 0;
-            state = PAC_WIN;
+            wonGame = true;
+            runtime.animateTransition(CRGB::Green);
+            state = GAME_GAME_OVER;
             stateStartedMs = now;
             playSound(SND_BUFF);
         }
-        if (state == PAC_GAMEOVER || state == PAC_WIN) saveScoreIfNeeded();
+        if (state == GAME_GAME_OVER) saveScoreIfNeeded();
         renderGame(now);
         break;
 
-    case PAC_WIN:
-        saveScoreIfNeeded();
-        renderWin();
-        if (startDoubleClick) beginCountdown();
+    case GAME_PAUSED:
+        runtime.drawPauseOverlay();
         break;
 
-    case PAC_GAMEOVER:
+    case GAME_GAME_OVER:
         saveScoreIfNeeded();
-        renderGameOver();
-        if (startDoubleClick) beginCountdown();
+        if (wonGame) renderWin();
+        else renderGameOver();
+        if (startDoubleClick) {
+            runtime.animateTransition(CRGB::Yellow);
+            beginCountdown();
+        }
         break;
     }
 
@@ -801,6 +803,7 @@ void taskPacmanHandler(void *pvParameters) {
 
     for (;;) {
         if (aktiverTask != 8) {
+            feedRuntimeWatchdog();
             lastTask = -1;
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
@@ -810,7 +813,8 @@ void taskPacmanHandler(void *pvParameters) {
             joystick1.reset();
             joystick3.reset();
             clearDefaultPlayersIfNeeded();
-            state = PAC_LOBBY;
+            state = GAME_MENU;
+            runtime.begin();
             resetGame();
             refreshCachedBest();
             joystick2.einfacherKlickZaehler = 0;
@@ -827,6 +831,6 @@ void taskPacmanHandler(void *pvParameters) {
         if (aktiverTask == 8) tickPacman();
 
         unlockDisplay();
-        vTaskDelay(pdMS_TO_TICKS(16));
+        runtime.waitForNextFrame(16);
     }
 }

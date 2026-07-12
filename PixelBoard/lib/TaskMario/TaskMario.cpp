@@ -7,6 +7,8 @@
 #include "HardwareUtils.h"
 #include "Joystick.h"
 #include "SoundUtils.h"
+#include "GameRuntime.h"
+#include "RuntimeHealth.h"
 
 extern volatile int aktiverTask;
 extern int fokusModus;
@@ -41,7 +43,6 @@ const uint8_t MAX_JUMP_HOLD_TICKS = 8;
 const uint8_t COYOTE_TICKS = 3;
 const uint8_t JUMP_BUFFER_TICKS = 3;
 
-enum MarioMode : uint8_t { MARIO_LOBBY, MARIO_PLAYING, MARIO_WIN, MARIO_GAMEOVER };
 enum MarioPower : uint8_t { MARIO_SMALL, MARIO_SUPER, MARIO_FIRE };
 enum SegmentType : uint8_t { SEG_GROUND, SEG_PLATFORM };
 enum BlockType : uint8_t { BLOCK_BRICK, BLOCK_QUESTION };
@@ -131,7 +132,9 @@ Enemy enemies[8];
 Item items[4];
 Fireball fireballs[4];
 
-MarioMode mode = MARIO_LOBBY;
+UnifiedGameState mode = GAME_MENU;
+GameRuntime runtime;
+bool levelWon = false;
 Player mario;
 uint16_t marioScore = 0;
 uint8_t marioCoins = 0;
@@ -574,7 +577,8 @@ void resetLevel(bool fullReset) {
     initEnemies();
     placeMarioAtCheckpoint();
     if (fullReset) mario.invulnerableUntil = 0;
-    mode = MARIO_LOBBY;
+    levelWon = false;
+    mode = GAME_MENU;
     modeStartedMs = millis();
 }
 
@@ -587,7 +591,8 @@ void startNextLevel() {
     clearTransientObjects();
     initEnemies();
     placeMarioAtCheckpoint();
-    mode = MARIO_PLAYING;
+    levelWon = false;
+    mode = GAME_PLAYING;
     modeStartedMs = millis();
     playSound(SND_LEVELUP);
 }
@@ -596,7 +601,7 @@ void respawnFromCheckpoint() {
     clearTransientObjects();
     initEnemies();
     placeMarioAtCheckpoint();
-    mode = MARIO_PLAYING;
+    mode = GAME_PLAYING;
     modeStartedMs = millis();
 }
 
@@ -605,18 +610,20 @@ void loseLifeAndRespawn() {
     if (marioLives > 0) marioLives--;
     playSound(SND_DIE);
     if (marioLives == 0) {
-        mode = MARIO_GAMEOVER;
+        levelWon = false;
+        runtime.animateTransition(CRGB::Red);
+        mode = GAME_GAME_OVER;
         modeStartedMs = now;
         return;
     }
     respawnFromCheckpoint();
 }
 
-InputState readInput() {
-    int x1 = joystick1.readYPercent();
-    int y1 = joystick1.readXPercent();
-    int x3 = joystick3.readYPercent();
-    int y3 = joystick3.readXPercent();
+InputState readInput(const GameControlEvents& controls) {
+    int x1 = controls.primary.y;
+    int y1 = controls.primary.x;
+    int x3 = controls.secondary.y;
+    int y3 = controls.secondary.x;
 
     InputState in = {0, false, false, false, false};
     int horizontal = abs(x1) >= abs(x3) ? x1 : x3;
@@ -633,10 +640,8 @@ InputState readInput() {
     lastUp3 = up3;
     in.duck = vertical < -INPUT_DEADZONE;
 
-    if (joystick1.einfacherKlickZaehler > 0 || joystick3.einfacherKlickZaehler > 0) {
+    if (controls.primary.simpleClick || controls.secondary.simpleClick) {
         in.action = true;
-        joystick1.einfacherKlickZaehler = 0;
-        joystick3.einfacherKlickZaehler = 0;
     }
     return in;
 }
@@ -866,8 +871,8 @@ void applyMarioGravity(bool jumpHeld) {
     if (mario.vy > MAX_FALL_VY) mario.vy = MAX_FALL_VY;
 }
 
-void updatePlaying() {
-    InputState in = readInput();
+void updatePlaying(const GameControlEvents& controls) {
+    InputState in = readInput(controls);
     if (!resolvePlayerEmbedding()) {
         respawnFromCheckpoint();
         return;
@@ -899,7 +904,7 @@ void updatePlaying() {
     updateEnemies();
     updateFireballs();
     checkEnemyCollisions();
-    if (mode != MARIO_PLAYING) return;
+    if (mode != GAME_PLAYING) return;
 
     if (pixelY(mario.y) >= SCREEN_H) {
         loseLifeAndRespawn();
@@ -907,7 +912,9 @@ void updatePlaying() {
     }
     if (pixelX(mario.x) >= FLAG_X) {
         marioScore += 1000;
-        mode = MARIO_WIN;
+        levelWon = true;
+        runtime.animateTransition(CRGB::Green);
+        mode = GAME_GAME_OVER;
         modeStartedMs = millis();
         playSound(SND_LEVELUP);
     }
@@ -1030,9 +1037,10 @@ String marioStateJson() {
     if (mario.power == MARIO_SUPER) power = "super";
     if (mario.power == MARIO_FIRE) power = "fire";
     String state = "lobby";
-    if (mode == MARIO_PLAYING) state = "playing";
-    else if (mode == MARIO_WIN) state = "win";
-    else if (mode == MARIO_GAMEOVER) state = "gameover";
+    if (mode == GAME_COUNTDOWN) state = "countdown";
+    else if (mode == GAME_PLAYING) state = "playing";
+    else if (mode == GAME_PAUSED) state = "paused";
+    else if (mode == GAME_GAME_OVER) state = levelWon ? "win" : "gameover";
 
     String json = "{";
     json += "\"state\":\"" + state + "\"";
@@ -1048,14 +1056,6 @@ String marioStateJson() {
     return json;
 }
 
-static bool consumeMarioStartDoubleClick() {
-    bool pressed = joystick1.doppelklickZaehler > 0 ||
-                   joystick3.doppelklickZaehler > 0;
-    joystick1.doppelklickZaehler = 0;
-    joystick3.doppelklickZaehler = 0;
-    return pressed;
-}
-
 void renderMarioMenuPreview() {
     renderLobby();
 }
@@ -1065,6 +1065,7 @@ void taskMarioHandler(void *pvParameters) {
 
     for (;;) {
         if (aktiverTask != 10) {
+            feedRuntimeWatchdog();
             lastTask = -1;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -1075,6 +1076,7 @@ void taskMarioHandler(void *pvParameters) {
             joystick1.reset();
             joystick3.reset();
             resetLevel(true);
+            runtime.begin();
             lastTask = 10;
             Serial.println("Mario gestartet.");
         }
@@ -1085,30 +1087,43 @@ void taskMarioHandler(void *pvParameters) {
         }
 
         uint32_t now = millis();
-        bool gameStartDoubleClick = consumeMarioStartDoubleClick();
-        joystick1.langKlickZaehler = 0;
-        joystick3.langKlickZaehler = 0;
-        if (mode != MARIO_PLAYING) {
+        GameControlEvents controls = runtime.poll(joystick1, joystick3);
+        bool gameStartDoubleClick = controls.doubleClick;
+        if (controls.pauseToggle && (mode == GAME_PLAYING || mode == GAME_PAUSED))
+            runtime.applyPause(mode);
+        if (mode != GAME_PLAYING) {
             joystick1.einfacherKlickZaehler = 0;
             joystick3.einfacherKlickZaehler = 0;
         }
         if (now - lastTickMs >= TICK_MS) {
             lastTickMs = now;
-            if (mode == MARIO_PLAYING) updatePlaying();
+            if (mode == GAME_PLAYING) updatePlaying(controls);
         }
 
-        if (mode == MARIO_LOBBY) {
+        if (mode == GAME_MENU) {
             renderLobby();
             if (gameStartDoubleClick) {
-                mode = MARIO_PLAYING;
+                runtime.animateTransition(CRGB::Green);
+                mode = GAME_COUNTDOWN;
                 modeStartedMs = millis();
                 lastUp1 = false;
                 lastUp3 = false;
                 playSound(SND_SELECT);
             }
-        } else if (mode == MARIO_PLAYING) {
+        } else if (mode == GAME_COUNTDOWN) {
             renderPlaying();
-        } else if (mode == MARIO_WIN) {
+            uint32_t elapsed = now - modeStartedMs;
+            runtime.drawCountdownOverlay(3 - min(2UL, elapsed / 700UL));
+            FastLED.show();
+            if (elapsed >= 2100UL) {
+                mode = GAME_PLAYING;
+                lastTickMs = now;
+            }
+        } else if (mode == GAME_PLAYING) {
+            renderPlaying();
+        } else if (mode == GAME_PAUSED) {
+            runtime.drawPauseOverlay();
+        } else if (levelWon) {
             renderEnd(CRGB::Green);
             if (millis() - modeStartedMs > 1800UL) {
                 startNextLevel();
@@ -1119,7 +1134,8 @@ void taskMarioHandler(void *pvParameters) {
             // neue Runde, ohne Umweg ueber Lobby oder Menue-Joystick.
             if (now - modeStartedMs >= 400UL && gameStartDoubleClick) {
                 resetLevel(true);
-                mode = MARIO_PLAYING;
+                runtime.animateTransition(CRGB::Green);
+                mode = GAME_COUNTDOWN;
                 modeStartedMs = now;
                 lastUp1 = false;
                 lastUp3 = false;
@@ -1128,6 +1144,6 @@ void taskMarioHandler(void *pvParameters) {
         }
 
         unlockDisplay();
-        vTaskDelay(pdMS_TO_TICKS(16));
+        runtime.waitForNextFrame(16);
     }
 }

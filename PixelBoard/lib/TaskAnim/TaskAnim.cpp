@@ -1,6 +1,7 @@
 #include "TaskAnim.h"
 #include <FastLED.h>
 #include "HardwareUtils.h"
+#include "RuntimeHealth.h"
 
 extern volatile int aktiverTask;
 
@@ -19,6 +20,7 @@ static CRGB themedHeatColor(uint8_t heat, uint32_t frame) {
 }
 
 void taskAnim(void *pvParameters) {
+    registerCurrentTaskWithWatchdog();
     static uint8_t heat[16 * 32];
     static int     dropY[32];
     static bool    life[16 * 32];
@@ -35,6 +37,7 @@ void taskAnim(void *pvParameters) {
     auto idx = [](int x, int y) { x = (x + 32) % 32; y = (y + 16) % 16; return y * 32 + x; };
 
     for (;;) {
+        feedRuntimeWatchdog();
         if (aktiverTask != 4) {
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;

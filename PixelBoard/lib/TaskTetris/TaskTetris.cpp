@@ -7,6 +7,8 @@
 #include "HardwareUtils.h"
 #include "Joystick.h"
 #include "SoundUtils.h"
+#include "GameRuntime.h"
+#include "RuntimeHealth.h"
 
 extern volatile int aktiverTask;
 extern Joystick joystick1;
@@ -29,12 +31,6 @@ const int INPUT_DEADZONE = 62;
 const unsigned long MOVE_REPEAT_MS = 125;
 const unsigned long BUTTON_HOLD_MS = 700;
 
-enum TetrisState {
-    TETRIS_MENU,
-    TETRIS_PLAYING,
-    TETRIS_GAMEOVER
-};
-
 struct Piece {
     int8_t type;
     int8_t rot;
@@ -42,7 +38,9 @@ struct Piece {
     int8_t y;
 };
 
-TetrisState state = TETRIS_MENU;
+UnifiedGameState state = GAME_MENU;
+GameRuntime runtime;
+unsigned long countdownStartedMs = 0;
 uint8_t board[FIELD_H][FIELD_W];
 Piece current;
 int8_t holdType = -1;
@@ -139,7 +137,7 @@ uint32_t visibleScore() {
 void syncDashboardScore() {
     tetrisCurrentScore = score;
     tetrisBoardScore = visibleScore();
-    tetrisPlaying = state == TETRIS_PLAYING;
+    tetrisPlaying = state == GAME_PLAYING;
 }
 
 unsigned long currentFallInterval() {
@@ -170,7 +168,8 @@ void spawnPiece(int8_t type) {
     current.y = 0;
     holdUsed = false;
     if (!validPiece(current)) {
-        state = TETRIS_GAMEOVER;
+        runtime.animateTransition(CRGB::Red);
+        state = GAME_GAME_OVER;
         playSound(SND_DIE);
     }
 }
@@ -195,7 +194,8 @@ void resetGame() {
     holdTriggered = false;
     scoreSaved = false;
     buttonDownMs = 0;
-    state = TETRIS_PLAYING;
+    countdownStartedMs = millis();
+    state = GAME_COUNTDOWN;
     spawnPiece(randomPiece());
     syncDashboardScore();
 }
@@ -323,9 +323,10 @@ void handleButton(unsigned long now) {
     joystick1.langKlickZaehler = 0;
 }
 
-void handleStick(unsigned long now, bool& softDrop, bool& didHardDrop) {
-    int horizontal = joystick1.readYPercent();
-    int vertical = joystick1.readXPercent();
+void handleStick(unsigned long now, const GameStickState& stick,
+                 bool& softDrop, bool& didHardDrop) {
+    int horizontal = stick.y;
+    int vertical = stick.x;
 
     if (now - lastMoveMs >= MOVE_REPEAT_MS) {
         if (horizontal > INPUT_DEADZONE) {
@@ -476,34 +477,57 @@ void renderGameOver() {
 
 void tickTetris() {
     unsigned long now = millis();
-    bool startDoubleClick = joystick1.doppelklickZaehler > 0 ||
-                            joystick3.doppelklickZaehler > 0;
+    GameControlEvents controls = runtime.poll(joystick1, joystick3);
+    bool startDoubleClick = controls.doubleClick;
     joystick1.einfacherKlickZaehler = 0;
-    joystick1.doppelklickZaehler = 0;
-    joystick1.langKlickZaehler = 0;
     joystick3.einfacherKlickZaehler = 0;
-    joystick3.doppelklickZaehler = 0;
-    joystick3.langKlickZaehler = 0;
+    if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
+        runtime.applyPause(state);
 
-    if (state == TETRIS_MENU) {
+    if (state == GAME_MENU) {
         tetrisPlaying = false;
         renderMenu();
-        if (startDoubleClick) resetGame();
+        if (startDoubleClick) {
+            runtime.animateTransition(CRGB::Blue);
+            resetGame();
+        }
         return;
     }
 
-    if (state == TETRIS_GAMEOVER) {
+    if (state == GAME_COUNTDOWN) {
+        tetrisPlaying = false;
+        renderPlaying();
+        unsigned long elapsed = now - countdownStartedMs;
+        runtime.drawCountdownOverlay(3 - min(2UL, elapsed / 700UL));
+        FastLED.show();
+        if (elapsed >= 2100UL) {
+            state = GAME_PLAYING;
+            lastFallMs = now;
+        }
+        return;
+    }
+
+    if (state == GAME_PAUSED) {
+        tetrisPlaying = false;
+        runtime.drawPauseOverlay();
+        return;
+    }
+
+    if (state == GAME_GAME_OVER) {
         tetrisPlaying = false;
         saveTetrisScoreIfNeeded();
         renderGameOver();
-        if (startDoubleClick) resetGame();
+        if (startDoubleClick) {
+            runtime.animateTransition(CRGB::Blue);
+            resetGame();
+        }
         return;
     }
 
     handleButton(now);
     bool softDrop = false;
     bool didHardDrop = false;
-    handleStick(now, softDrop, didHardDrop);
+    handleStick(now, controls.primary, softDrop, didHardDrop);
 
     if (!didHardDrop) {
         unsigned long interval = softDrop ? constrain((int)tetrisSoftFallMs, 20, 500) : currentFallInterval();
@@ -527,6 +551,7 @@ void taskTetrisHandler(void *pvParameters) {
 
     for (;;) {
         if (aktiverTask != 9) {
+            feedRuntimeWatchdog();
             tetrisPlaying = false;
             lastTask = -1;
             vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -534,7 +559,8 @@ void taskTetrisHandler(void *pvParameters) {
         }
 
         if (lastTask != 9) {
-            state = TETRIS_MENU;
+            state = GAME_MENU;
+            runtime.begin();
             joystick1.reset();
             joystick3.reset();
             lastTask = 9;
@@ -549,7 +575,6 @@ void taskTetrisHandler(void *pvParameters) {
         if (aktiverTask == 9) tickTetris();
 
         unlockDisplay();
-        bool soft = state == TETRIS_PLAYING && joystick1.readXPercent() < -INPUT_DEADZONE;
-        vTaskDelay(pdMS_TO_TICKS(soft ? 8 : 16));
+        runtime.waitForNextFrame(16);
     }
 }

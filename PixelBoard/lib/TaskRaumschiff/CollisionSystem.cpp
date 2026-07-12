@@ -425,7 +425,7 @@ void collisionUpdate()
                 continue;
 
             bool dashProtected = (long)(millis() - player.invulnerableUntil) < 0;
-            bool bossRound = getGameState() == BOSS;
+            bool bossRound = boss.active;
             if ((!dashProtected || bossRound) &&
                 samePixel(enemyShots[e].x, enemyShots[e].y, player.x, player.y))
             {

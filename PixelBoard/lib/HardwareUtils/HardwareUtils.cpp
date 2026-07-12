@@ -1,5 +1,6 @@
 
 #include "HardwareUtils.h"
+#include <math.h>
 #include <LEDText.h> // Musst du hier hinzufügen
 
 
@@ -8,6 +9,8 @@ cLEDMatrix<-32, 8, VERTICAL_ZIGZAG_MATRIX> ledsUnten;
 cLEDText AnzeigeOben;
 cLEDText AnzeigeUnten;
 bool displayAktiv = true;
+static uint8_t gammaLut[256];
+static bool gammaReady = false;
 extern SemaphoreHandle_t displayMutex;
 const char* font3x5[26] = {
   "111101111101101", "110101110101110", "111100100100111", "110101101101110",
@@ -121,8 +124,21 @@ char clockCode(int idx) {
     return grossbuchstabe(CLOCK_STYLES[idx][0]);
 }
 
+void initLedColorCorrection() {
+    for (int i = 0; i < 256; i++) {
+        float normalized = i / 255.0f;
+        gammaLut[i] = (uint8_t)roundf(powf(normalized, 1.35f) * 255.0f);
+    }
+    gammaReady = true;
+}
+
 void setPixel(int x, int y, CRGB color) {
     if (y < 0 || y >= 16 || x < 0 || x >= 32) return;
+    if (gammaReady) {
+        color.r = gammaLut[color.r];
+        color.g = gammaLut[color.g];
+        color.b = gammaLut[color.b];
+    }
     if (y < 8) { 
         int index = (x % 2 == 0) ? (x * 8 + y) : (x * 8 + (7 - y));
         ledsOben[0][index] = color;

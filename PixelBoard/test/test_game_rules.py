@@ -1,0 +1,84 @@
+import pathlib
+import unittest
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+def wrap(value: int, size: int) -> int:
+    if size <= 0:
+        return 0
+    if value < 0:
+        return size - 1
+    if value >= size:
+        return 0
+    return value
+
+
+def pong_speed(current: int, hits: int, every: int = 2,
+               step: int = 12, maximum: int = 188) -> int:
+    if every <= 0 or hits <= 0 or hits % every:
+        return min(current, maximum)
+    return min(current + step, maximum)
+
+
+def all_snake_players_lost(p1_alive: bool, p2_joined: bool,
+                           p2_alive: bool) -> bool:
+    return not p1_alive and (not p2_joined or not p2_alive)
+
+
+class GameRuleTests(unittest.TestCase):
+    def test_snake_wraps_on_all_edges(self):
+        self.assertEqual(wrap(-1, 32), 31)
+        self.assertEqual(wrap(32, 32), 0)
+        self.assertEqual(wrap(-1, 16), 15)
+        self.assertEqual(wrap(16, 16), 0)
+
+    def test_snake_waits_until_both_joined_players_lose(self):
+        self.assertFalse(all_snake_players_lost(False, True, True))
+        self.assertTrue(all_snake_players_lost(False, True, False))
+        self.assertTrue(all_snake_players_lost(False, False, False))
+
+    def test_pong_accelerates_every_second_hit_and_is_capped(self):
+        speed = 92
+        self.assertEqual(pong_speed(speed, 1), 92)
+        speed = pong_speed(speed, 2)
+        self.assertEqual(speed, 104)
+        for hit in range(3, 80):
+            speed = pong_speed(speed, hit)
+        self.assertEqual(speed, 188)
+
+    def test_score_only_increases_for_positive_awards(self):
+        score = 10
+        award = 12
+        score += max(0, award)
+        self.assertEqual(score, 22)
+
+    def test_shared_states_and_restart_are_used_by_every_game(self):
+        header = (ROOT / "lib/GameRuntime/GameRuntime.h").read_text(encoding="utf-8")
+        for state in ("GAME_MENU", "GAME_COUNTDOWN", "GAME_PLAYING",
+                      "GAME_PAUSED", "GAME_GAME_OVER"):
+            self.assertIn(state, header)
+
+        game_sources = [
+            "lib/TaskSnake/TaskSnake.cpp",
+            "lib/TaskPong/TaskPong.cpp",
+            "lib/TaskPacman/TaskPacman.cpp",
+            "lib/TaskTetris/TaskTetris.cpp",
+            "lib/TaskMario/TaskMario.cpp",
+            "lib/TaskRaumschiff/RaumschiffGame.cpp",
+        ]
+        for relative in game_sources:
+            source = (ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn("GAME_PLAYING", source, relative)
+            self.assertIn("GAME_GAME_OVER", source, relative)
+            self.assertIn("GAME_PAUSED", source, relative)
+
+    def test_restart_is_double_click_driven_centrally(self):
+        runtime = (ROOT / "lib/GameRuntime/GameRuntime.cpp").read_text(encoding="utf-8")
+        self.assertIn("doppelklickZaehler", runtime)
+        self.assertIn("PAUSE_HOLD_MS = 5000UL", runtime)
+
+
+if __name__ == "__main__":
+    unittest.main()

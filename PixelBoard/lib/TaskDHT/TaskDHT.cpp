@@ -1,4 +1,5 @@
 #include "TaskDHT.h"
+#include "RuntimeHealth.h"
 #include "HardwareUtils.h"
 #include "Config.h"
 #include <FastLED.h>
@@ -165,9 +166,11 @@ static void drawError(CRGB col) {
 }
 
 void taskDHTHandler(void *pvParameters) {
+    registerCurrentTaskWithWatchdog();
     ensureSensor();
 
     for (;;) {
+        feedRuntimeWatchdog();
         if (aktiverTask != 5) {
             vTaskDelay(100 / portTICK_PERIOD_MS);
             continue;

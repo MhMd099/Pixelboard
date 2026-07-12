@@ -21,6 +21,7 @@ bool lockDisplay(uint32_t timeoutMs = 50);
 void unlockDisplay();
 
 void setPixel(int x, int y, CRGB color);
+void initLedColorCorrection();
 void drawChar3x5(int startX, int startY, char c, CRGB color);
 
 void drawDigitW(int x, int y, int n, CRGB c);

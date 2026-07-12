@@ -5,6 +5,7 @@
 #include <FastLED.h>
 #include "HardwareUtils.h"
 #include "Config.h"
+#include "RuntimeHealth.h"
 #include "SoundUtils.h" // für Donner-Geräusch
 
 extern volatile int aktiverTask;
@@ -183,6 +184,7 @@ void taskWetterFetch(void * pvParameters) {
 }
 
 void taskWetter(void * pvParameters) {
+    registerCurrentTaskWithWatchdog();
     // --- Wetter-Symbol-Helfer (zeichnen im linken Bereich x:1..11) ---
     auto drawWolke = [](int ox, int oy, CRGB col) {
         for (int x = ox; x <= ox + 9; x++) setPixel(x, oy + 3, col);
@@ -210,6 +212,7 @@ void taskWetter(void * pvParameters) {
     };
 
     for(;;) {
+        feedRuntimeWatchdog();
         if (aktiverTask != 1) {
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;

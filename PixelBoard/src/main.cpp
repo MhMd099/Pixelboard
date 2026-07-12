@@ -5,6 +5,7 @@
 #include "time.h"
 #include "HardwareUtils.h"
 #include "SoundUtils.h"
+#include "RuntimeHealth.h"
 
 #include <FastLED.h>
 #include <LEDMatrix.h>
@@ -101,8 +102,6 @@ volatile bool taskWechselAnforderung = false;
 int fokusModus = 0; // Navigation im Menü
 bool navigationsSperre = false;
 unsigned long eventSperreBis = 0;
-volatile uint32_t i2cJoystickReadsOk = 0;
-volatile uint32_t i2cJoystickReadErrors = 0;
 
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
@@ -497,8 +496,10 @@ struct ClickEvent readAppClicks()
 // ==========================================
 void taskMusik(void *pv)
 {
+    registerCurrentTaskWithWatchdog();
     for (;;)
     {
+        feedRuntimeWatchdog();
         if (aktiverTask != 3)
         {
             vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -540,11 +541,13 @@ void taskMusik(void *pv)
 
 void taskWifiManager(void *pv)
 {
+    registerCurrentTaskWithWatchdog();
     bool timeConfigured = false;
     bool mdnsStarted = false;
 
     for (;;)
     {
+        feedRuntimeWatchdog();
         maintainWifiConnection();
 
         if (WiFi.status() == WL_CONNECTED)
@@ -587,8 +590,10 @@ void taskWifiManager(void *pv)
 
 void taskI2CJoystickHandler(void *pv)
 {
+    registerCurrentTaskWithWatchdog();
     TickType_t lastWake = xTaskGetTickCount();
     const TickType_t interval = pdMS_TO_TICKS(15);
+    uint8_t consecutiveErrors = 0;
 
     for (;;)
     {
@@ -596,7 +601,7 @@ void taskI2CJoystickHandler(void *pv)
 
         if (received >= 5 && Wire.available() >= 5)
         {
-            i2cJoystickReadsOk++;
+            consecutiveErrors = 0;
             int rawX = (Wire.read() << 8) | Wire.read();
             int rawY = (Wire.read() << 8) | Wire.read();
             bool pressed = (Wire.read() == 1);
@@ -606,13 +611,22 @@ void taskI2CJoystickHandler(void *pv)
         }
         else
         {
-            i2cJoystickReadErrors++;
+            consecutiveErrors++;
             while (Wire.available() > 0)
                 Wire.read();
             joystick3.setI2CData(512, 512, false);
             joystick3.update();
+            if (consecutiveErrors >= 8)
+            {
+                Wire.end();
+                vTaskDelay(pdMS_TO_TICKS(5));
+                Wire.begin(I2C_SDA, I2C_SCL);
+                consecutiveErrors = 0;
+                Serial.println("I2C-Joystick-Bus automatisch neu gestartet.");
+            }
         }
 
+        feedRuntimeWatchdog();
         vTaskDelayUntil(&lastWake, interval);
     }
 }
@@ -628,6 +642,9 @@ void setup()
     clickCounterMutex = xSemaphoreCreateMutex();
     displayMutex = xSemaphoreCreateMutex();
 
+    initRuntimeWatchdog();
+    registerCurrentTaskWithWatchdog();
+
     initLittleFS();
     loadWifiCredentials();
     loadDeviceSettings();
@@ -641,6 +658,9 @@ void setup()
 
     FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
     FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
+    initLedColorCorrection();
+    FastLED.setCorrection(TypicalLEDStrip);
+    FastLED.setDither(true);
     FastLED.setBrightness(18);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 2400);
 
@@ -689,6 +709,7 @@ void setup()
 // ==========================================
 void loop()
 {
+    feedRuntimeWatchdog();
     joystick1.klickenErkennen();
     joystick2.klickenErkennen();
 

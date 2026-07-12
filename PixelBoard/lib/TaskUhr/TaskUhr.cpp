@@ -1,4 +1,5 @@
 #include "TaskUhr.h"
+#include "RuntimeHealth.h"
 #include <FastLED.h>
 #include <math.h>
 #include "HardwareUtils.h"
@@ -81,10 +82,12 @@ static void uhrAnalog(struct tm &ti, CRGB col) {
 }
 
 void taskUhr(void *pvParameters) {
+    registerCurrentTaskWithWatchdog();
     struct tm timeinfo;
     Serial.println("TaskUhr: Gestartet.");
 
     for (;;) {
+        feedRuntimeWatchdog();
         if (aktiverTask != 0) {
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
