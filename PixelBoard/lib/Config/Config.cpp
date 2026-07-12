@@ -215,7 +215,14 @@ String deviceLocalUrl() {
 void beginWifiConnection() {
     if (!hasWifiCredentials()) return;
 
-    WiFi.mode(WIFI_AP_STA);
+    if (captivePortalActive) {
+        // Keep the already secured portal online while trying the configured WLAN.
+        WiFi.mode(WIFI_AP_STA);
+    } else {
+        // Never let the ESP32 restore an old open AP configuration from NVS.
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+    }
     WiFi.setAutoReconnect(true);
     WiFi.setHostname(deviceHostNameValue);
     WiFi.disconnect(false, false);
@@ -1234,8 +1241,12 @@ void handleLogout() {
 void startCaptivePortal() {
     if (captivePortalActive) return;
 
+    // Clear a possibly restored legacy/open AP before creating the WPA2 AP.
+    dnsServer.stop();
+    WiFi.softAPdisconnect(true);
+    vTaskDelay(pdMS_TO_TICKS(40));
     WiFi.mode(WIFI_AP_STA);
-    bool ok = WiFi.softAP(captiveSsid, captivePassword);
+    bool ok = WiFi.softAP(captiveSsid, captivePassword, 1, false, 4);
     IPAddress apIp = WiFi.softAPIP();
     if (ok) {
         dnsServer.start(DNS_PORT, "*", apIp);
@@ -1248,13 +1259,17 @@ void startCaptivePortal() {
 }
 
 void stopCaptivePortal() {
-    if (!captivePortalActive) return;
-
-    dnsServer.stop();
-    WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
+    bool wasActive = captivePortalActive;
+    wifi_mode_t mode = WiFi.getMode();
+    bool apRadioEnabled = mode == WIFI_AP || mode == WIFI_AP_STA;
+    if (wasActive) dnsServer.stop();
+    if (apRadioEnabled) {
+        WiFi.softAPdisconnect(true);
+        WiFi.mode(WIFI_STA);
+    }
     captivePortalActive = false;
-    Serial.println("Captive Portal beendet, Access Point ist aus.");
+    if (wasActive || apRadioEnabled)
+        Serial.println("Captive Portal beendet, Access Point ist aus.");
 }
 
 static void redirectToPortal() {
