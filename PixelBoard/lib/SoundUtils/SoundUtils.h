@@ -36,6 +36,11 @@ uint8_t getMusicVolume();
 void startMusic();
 void stopMusic();
 
+// PCM bridge used by the menu MP3 decoder. Samples are mixed with effects.
+bool pushMenuMusicSample(int16_t sample);
+void clearMenuMusicBuffer();
+void setMenuMusicEnabled(bool enabled);
+
 extern volatile int musicBeat;
 
 namespace Audio {

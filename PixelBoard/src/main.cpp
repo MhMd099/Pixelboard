@@ -27,6 +27,7 @@
 #include "TaskPacman.h"
 #include "TaskTetris.h"
 #include "TaskMario.h"
+#include "MenuMusic.h"
 #include <LittleFS.h>
 
 // ==========================================
@@ -675,6 +676,10 @@ void setup()
     // ALL TASKS PINNED TO CORE 1
     xTaskCreatePinnedToCore(taskI2CJoystickHandler, "I2CJoy", 2048, NULL, 4, NULL, 1);
     xTaskCreatePinnedToCore(taskWebServerHandler, "Web", 4096, NULL, 1, NULL, 0);
+    BaseType_t menuMusicTaskResult =
+        xTaskCreatePinnedToCore(taskMenuMusic, "MenuMP3", 10240, NULL, 2, NULL, 0);
+    if (menuMusicTaskResult != pdPASS)
+        Serial.println("Menue-MP3-Task konnte nicht erstellt werden.");
     xTaskCreatePinnedToCore(taskWifiManager, "WiFi", 4096, NULL, 1, NULL, 0);
     xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleUhr, 1);
     xTaskCreatePinnedToCore(taskWetter, "Wetter", 4096, NULL, 1, &handleWetter, 1);

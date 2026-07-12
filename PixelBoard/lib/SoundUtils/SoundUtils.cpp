@@ -14,6 +14,12 @@ volatile int musicBeat = 0;
 static volatile uint8_t masterVolume = 100;
 static volatile uint8_t effectsVolume = 100;
 static volatile uint8_t musicVolume = 100;
+static const uint16_t MENU_PCM_CAPACITY = 8192;
+static int16_t menuPcm[MENU_PCM_CAPACITY];
+static volatile uint16_t menuPcmRead = 0;
+static volatile uint16_t menuPcmWrite = 0;
+static volatile bool menuMusicEnabled = false;
+static portMUX_TYPE menuPcmMux = portMUX_INITIALIZER_UNLOCKED;
 
 struct Note {
   uint16_t freq;
@@ -87,7 +93,7 @@ static uint16_t perceptualGain(uint8_t volume)
 static int32_t scaledAmplitude(int32_t fullVolumeAmplitude, uint8_t channelVolume)
 {
   uint32_t masterGain = perceptualGain(masterVolume);
-  uint32_t channelGain = perceptualGain(channelVolume);
+  uint32_t channelGain = channelVolume;
   return (int32_t)(((int64_t)fullVolumeAmplitude * masterGain * channelGain) / 10000LL);
 }
 
@@ -218,6 +224,19 @@ static void loadNextMusicPart()
 
 static int32_t renderMusicSample()
 {
+  if(menuMusicEnabled) {
+    int16_t sample = 0;
+    portENTER_CRITICAL(&menuPcmMux);
+    if(menuPcmRead != menuPcmWrite) {
+      sample = menuPcm[menuPcmRead];
+      menuPcmRead = (menuPcmRead + 1) % MENU_PCM_CAPACITY;
+    }
+    portEXIT_CRITICAL(&menuPcmMux);
+    uint32_t masterGain = perceptualGain(masterVolume);
+    uint32_t channelGain = musicVolume;
+    return (int32_t)(((int64_t)sample * masterGain * channelGain) / 10000LL);
+  }
+
   if(!musicPlaying) {
     musicSamplesLeft = 0;
     musicIndex = 0;
@@ -270,6 +289,34 @@ void setEffectsVolume(int volume) { effectsVolume = (uint8_t)constrain(volume, 0
 uint8_t getEffectsVolume() { return effectsVolume; }
 void setMusicVolume(int volume) { musicVolume = (uint8_t)constrain(volume, 0, 100); }
 uint8_t getMusicVolume() { return musicVolume; }
+
+bool pushMenuMusicSample(int16_t sample)
+{
+  bool pushed = false;
+  portENTER_CRITICAL(&menuPcmMux);
+  uint16_t next = (menuPcmWrite + 1) % MENU_PCM_CAPACITY;
+  if(next != menuPcmRead) {
+    menuPcm[menuPcmWrite] = sample;
+    menuPcmWrite = next;
+    pushed = true;
+  }
+  portEXIT_CRITICAL(&menuPcmMux);
+  return pushed;
+}
+
+void clearMenuMusicBuffer()
+{
+  portENTER_CRITICAL(&menuPcmMux);
+  menuPcmRead = 0;
+  menuPcmWrite = 0;
+  portEXIT_CRITICAL(&menuPcmMux);
+}
+
+void setMenuMusicEnabled(bool enabled)
+{
+  menuMusicEnabled = enabled;
+  if(!enabled) clearMenuMusicBuffer();
+}
 
 void playSound(SoundType type)
 {
