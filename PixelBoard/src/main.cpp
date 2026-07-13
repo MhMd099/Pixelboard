@@ -6,6 +6,7 @@
 #include "HardwareUtils.h"
 #include "SoundUtils.h"
 #include "RuntimeHealth.h"
+#include "AppNavigation.h"
 
 #include <FastLED.h>
 #include <LEDMatrix.h>
@@ -37,11 +38,6 @@
 #define LED_PIN_UNTEN 25
 #define COLOR_ORDER GRB
 #define CHIPSET WS2812B
-#define MATRIX_WIDTH 32
-#define MATRIX_HEIGHT 8
-#define MATRIX_TYPE VERTICAL_ZIGZAG_MATRIX
-#define WIDTH 32
-#define HEIGHT_TOTAL 16
 static const int APP_COUNT = 11;
 static const SoundType APP_ENTRY_SOUNDS[APP_COUNT] = {
     SND_CHECKPOINT, // Uhr
@@ -61,9 +57,6 @@ static const SoundType APP_ENTRY_SOUNDS[APP_COUNT] = {
 #define J1_PIN_X 34
 #define J1_PIN_Y 35
 #define J1_PIN_TASTER 13
-#define PIN_X J1_PIN_X
-#define PIN_Y J1_PIN_Y
-#define PIN_BTN J1_PIN_TASTER
 
 // --- Joystick 2 (Für Menü & Navigation) ---
 #define J2_PIN_X 36
@@ -82,46 +75,18 @@ Joystick joystick1(J1_PIN_X, J1_PIN_Y, J1_PIN_TASTER, INPUT_PULLDOWN);
 Joystick joystick2(J2_PIN_X, J2_PIN_Y, J2_PIN_TASTER, INPUT_PULLUP);
 Joystick joystick3;
 
-// KLAR BENANNTE TASKS
-TaskHandle_t handleUhr = NULL;    // Task 0
-TaskHandle_t handleWetter = NULL; // Task 1
-TaskHandle_t handleSnake = NULL;  // Task 2
-TaskHandle_t handleMusik = NULL;  // Task 3 (War vorher handleData)
-TaskHandle_t handleAnim = NULL;   // Task 4 (War vorher handleE)
-TaskHandle_t handleDHT = NULL;    // Task 5 (NEU)
-TaskHandle_t handleRaumschiff = NULL; // Task 6
-TaskHandle_t handlePong = NULL;       // Task 7
-TaskHandle_t handlePacman = NULL;     // Task 8
-TaskHandle_t handleTetris = NULL;     // Task 9
-TaskHandle_t handleMario = NULL;      // Task 10
-
-SemaphoreHandle_t clickCounterMutex = NULL;
 SemaphoreHandle_t displayMutex = NULL; // MUTEX FÜR DAS DISPLAY
 
 volatile int aktiverTask = -1; // -1 = Menü, 0..APP_COUNT-1 = Apps
-volatile bool taskWechselAnforderung = false;
 int fokusModus = 0; // Navigation im Menü
 bool navigationsSperre = false;
 unsigned long eventSperreBis = 0;
+static portMUX_TYPE navigationRequestMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile int requestedAppTask = -1;
 
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
 // ==========================================
-const uint32_t menuIcons[APP_COUNT] = {
-    0x3A5A7, // 0: Uhr
-    0x3EEDC, // 1: Wetter
-    0x74B5E, // 2: Snake
-    0x49249, // 3: Musik
-    0x24924, // 4: Animationen
-    0x72497, // 5: DHT
-    0x5A5A5, // 6 Raumschiff (einfach placeholder)
-    0x57575, // 7 Pong
-    0x7AB57, // 8 Pacman
-    0x2F2F2, // 9 Tetris
-    0x4E4B5  // 10 Mario
-
-};
-
 void drawIcon(int xOffset, int yOffset, uint32_t icon, CRGB color)
 {
     for (int i = 0; i < 15; i++)
@@ -358,37 +323,6 @@ void printMenu()
 // ==========================================
 // 4. TASK MANAGEMENT
 // ==========================================
-TaskHandle_t getTaskHandle(int nummer)
-{
-    switch (nummer)
-    {
-    case 0:
-        return handleUhr;
-    case 1:
-        return handleWetter;
-    case 2:
-        return handleSnake;
-    case 3:
-        return handleMusik;
-    case 4:
-        return handleAnim;
-    case 5:
-        return handleDHT;
-    case 6:
-        return handleRaumschiff;
-    case 7:
-        return handlePong;
-    case 8:
-        return handlePacman;
-    case 9:
-        return handleTetris;
-    case 10:
-        return handleMario;
-    default:
-        return NULL;
-    }
-}
-
 void setEventSperre(unsigned long dauerMs)
 {
     eventSperreBis = millis() + dauerMs;
@@ -396,6 +330,25 @@ void setEventSperre(unsigned long dauerMs)
 bool eventSperreAktiv()
 {
     return (long)(millis() - eventSperreBis) < 0;
+}
+
+bool requestAppTaskSwitch(int taskNumber)
+{
+    if (taskNumber < 0 || taskNumber >= APP_COUNT)
+        return false;
+    portENTER_CRITICAL(&navigationRequestMux);
+    requestedAppTask = taskNumber;
+    portEXIT_CRITICAL(&navigationRequestMux);
+    return true;
+}
+
+static int takeRequestedAppTask()
+{
+    portENTER_CRITICAL(&navigationRequestMux);
+    int taskNumber = requestedAppTask;
+    requestedAppTask = -1;
+    portEXIT_CRITICAL(&navigationRequestMux);
+    return taskNumber;
 }
 
 void wechsleZuTask(int zielTask)
@@ -592,9 +545,9 @@ void taskWifiManager(void *pv)
 void taskI2CJoystickHandler(void *pv)
 {
     registerCurrentTaskWithWatchdog();
-    TickType_t lastWake = xTaskGetTickCount();
-    const TickType_t interval = pdMS_TO_TICKS(15);
-    uint8_t consecutiveErrors = 0;
+    bool connected = false;
+    bool offlineLogged = false;
+    uint8_t validPackets = 0;
 
     for (;;)
     {
@@ -602,34 +555,54 @@ void taskI2CJoystickHandler(void *pv)
 
         if (received >= 5 && Wire.available() >= 5)
         {
-            consecutiveErrors = 0;
             int rawX = (Wire.read() << 8) | Wire.read();
             int rawY = (Wire.read() << 8) | Wire.read();
             bool pressed = (Wire.read() == 1);
 
+            if (validPackets < 2)
+                validPackets++;
+            if (!connected && validPackets >= 2)
+            {
+                connected = true;
+                offlineLogged = false;
+                joystick3.reset();
+                Serial.println("I2C-Joystick verbunden.");
+            }
             joystick3.setI2CData(rawX, rawY, pressed);
-            joystick3.update();
+            if (connected)
+                joystick3.update();
         }
         else
         {
-            consecutiveErrors++;
             while (Wire.available() > 0)
                 Wire.read();
-            joystick3.setI2CData(512, 512, false);
-            joystick3.update();
-            if (consecutiveErrors >= 8)
+            validPackets = 0;
+            if (connected || !offlineLogged)
             {
-                Wire.end();
-                vTaskDelay(pdMS_TO_TICKS(5));
-                Wire.begin(I2C_SDA, I2C_SCL);
-                consecutiveErrors = 0;
-                Serial.println("I2C-Joystick-Bus automatisch neu gestartet.");
+                connected = false;
+                offlineLogged = true;
+                joystick3.setI2CData(512, 512, false);
+                joystick3.reset();
+                Serial.println("I2C-Joystick nicht verbunden; langsame Wiederverbindung aktiv.");
             }
         }
 
         feedRuntimeWatchdog();
-        vTaskDelayUntil(&lastWake, interval);
+        vTaskDelay(connected ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(1500));
     }
+}
+
+static bool createTaskChecked(TaskFunction_t function, const char *name,
+                              uint32_t stackSize, UBaseType_t priority,
+                              BaseType_t core)
+{
+    BaseType_t result = xTaskCreatePinnedToCore(
+        function, name, stackSize, NULL, priority, NULL, core);
+    if (result == pdPASS)
+        return true;
+    Serial.print("Task konnte nicht erstellt werden: ");
+    Serial.println(name);
+    return false;
 }
 
 // ==========================================
@@ -640,8 +613,13 @@ void setup()
     Serial.begin(115200);
     vTaskDelay(pdMS_TO_TICKS(500));
 
-    clickCounterMutex = xSemaphoreCreateMutex();
     displayMutex = xSemaphoreCreateMutex();
+    if (displayMutex == NULL)
+    {
+        Serial.println("FATAL: Display-Mutex konnte nicht erstellt werden.");
+        for (;;)
+            vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 
     initRuntimeWatchdog();
     registerCurrentTaskWithWatchdog();
@@ -673,34 +651,22 @@ void setup()
     initAudio();
     setupWebServer();
 
-    // ALL TASKS PINNED TO CORE 1
-    xTaskCreatePinnedToCore(taskI2CJoystickHandler, "I2CJoy", 2048, NULL, 4, NULL, 1);
-    xTaskCreatePinnedToCore(taskWebServerHandler, "Web", 4096, NULL, 1, NULL, 0);
-    BaseType_t menuMusicTaskResult =
-        xTaskCreatePinnedToCore(taskMenuMusic, "MenuMP3", 10240, NULL, 2, NULL, 0);
-    if (menuMusicTaskResult != pdPASS)
-        Serial.println("Menue-MP3-Task konnte nicht erstellt werden.");
-    xTaskCreatePinnedToCore(taskWifiManager, "WiFi", 4096, NULL, 1, NULL, 0);
-    xTaskCreatePinnedToCore(taskUhr, "Uhr", 4096, NULL, 1, &handleUhr, 1);
-    xTaskCreatePinnedToCore(taskWetter, "Wetter", 4096, NULL, 1, &handleWetter, 1);
-    xTaskCreatePinnedToCore(taskSnakeHandler, "Snake", 6144, NULL, 1, &handleSnake, 1);
-    xTaskCreatePinnedToCore(taskMusik, "Musik", 2560, NULL, 1, &handleMusik, 1);
-    xTaskCreatePinnedToCore(taskAnim, "Anim", 4096, NULL, 1, &handleAnim, 1);
-    xTaskCreatePinnedToCore(taskDHTHandler, "DHT", 4096, NULL, 1, &handleDHT, 1); // <--- NEUER DHT TASK START
-
-    xTaskCreatePinnedToCore(taskWetterFetch, "WetterNet", 8192, NULL, 1, NULL, 0);
-    xTaskCreatePinnedToCore(
-        taskRaumschiffHandler,
-        "Raumschiff",
-        4096,
-        NULL,
-        1,
-        &handleRaumschiff,
-        1);
-    xTaskCreatePinnedToCore(taskPongHandler, "Pong", 4096, NULL, 1, &handlePong, 1);
-    xTaskCreatePinnedToCore(taskPacmanHandler, "Pacman", 4096, NULL, 1, &handlePacman, 1);
-    xTaskCreatePinnedToCore(taskTetrisHandler, "Tetris", 4096, NULL, 1, &handleTetris, 1);
-    xTaskCreatePinnedToCore(taskMarioHandler, "Mario", 6144, NULL, 1, &handleMario, 1);
+    createTaskChecked(taskI2CJoystickHandler, "I2CJoy", 2048, 4, 1);
+    createTaskChecked(taskWebServerHandler, "Web", 4096, 1, 0);
+    createTaskChecked(taskMenuMusic, "MenuMP3", 10240, 2, 0);
+    createTaskChecked(taskWifiManager, "WiFi", 4096, 1, 0);
+    createTaskChecked(taskUhr, "Uhr", 4096, 1, 1);
+    createTaskChecked(taskWetter, "Wetter", 4096, 1, 1);
+    createTaskChecked(taskSnakeHandler, "Snake", 6144, 1, 1);
+    createTaskChecked(taskMusik, "Musik", 2560, 1, 1);
+    createTaskChecked(taskAnim, "Anim", 4096, 1, 1);
+    createTaskChecked(taskDHTHandler, "DHT", 4096, 1, 1);
+    createTaskChecked(taskWetterFetch, "WetterNet", 8192, 1, 0);
+    createTaskChecked(taskRaumschiffHandler, "Raumschiff", 4096, 1, 1);
+    createTaskChecked(taskPongHandler, "Pong", 4096, 1, 1);
+    createTaskChecked(taskPacmanHandler, "Pacman", 4096, 1, 1);
+    createTaskChecked(taskTetrisHandler, "Tetris", 4096, 1, 1);
+    createTaskChecked(taskMarioHandler, "Mario", 6144, 1, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
@@ -717,6 +683,14 @@ void loop()
     feedRuntimeWatchdog();
     joystick1.klickenErkennen();
     joystick2.klickenErkennen();
+
+    int requestedTask = takeRequestedAppTask();
+    if (requestedTask >= 0)
+    {
+        fokusModus = requestedTask + 1;
+        wechsleZuTask(requestedTask);
+        return;
+    }
 
     if (eventSperreAktiv())
     {

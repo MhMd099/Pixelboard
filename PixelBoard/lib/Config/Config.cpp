@@ -10,12 +10,19 @@
 #include "Joystick.h"
 #include "TaskMario.h"
 #include "RuntimeHealth.h"
+#include "AppNavigation.h"
+#include "ConfigStorage.h"
+#if __has_include("Secrets.h")
+#include "Secrets.h"
+#else
+#define WEATHER_API_KEY "343df2364dc5541a3efd274bf2f845df"
+#endif
 
 extern Joystick joystick1;
 extern Joystick joystick2;
 extern Joystick joystick3;
 
-const char* weatherApiKey = "343df2364dc5541a3efd274bf2f845df";
+const char* weatherApiKey = WEATHER_API_KEY;
 
 String currentCity = "Innsbruck";
 String currentUser = "";
@@ -65,54 +72,13 @@ static const unsigned long SETTINGS_SAVE_DELAY_MS = 2500;
 extern volatile int aktiverTask;
 extern int fokusModus;
 
-static void recoverAtomicFile(const char* path) {
-    String temp = String(path) + ".tmp";
-    String backup = String(path) + ".bak";
-    if (!LittleFS.exists(path) && LittleFS.exists(backup)) {
-        LittleFS.rename(backup.c_str(), path);
-    } else if (LittleFS.exists(path) && LittleFS.exists(backup)) {
-        LittleFS.remove(backup.c_str());
-    }
-    if (LittleFS.exists(temp)) LittleFS.remove(temp.c_str());
-}
-
-static bool atomicWriteJson(const char* path, JsonDocument& doc) {
-    String temp = String(path) + ".tmp";
-    String backup = String(path) + ".bak";
-    LittleFS.remove(temp.c_str());
-
-    File file = LittleFS.open(temp.c_str(), "w");
-    if (!file) return false;
-    size_t written = serializeJson(doc, file);
-    file.flush();
-    file.close();
-    if (written == 0) {
-        LittleFS.remove(temp.c_str());
-        return false;
-    }
-
-    LittleFS.remove(backup.c_str());
-    bool hadOriginal = LittleFS.exists(path);
-    if (hadOriginal && !LittleFS.rename(path, backup.c_str())) {
-        LittleFS.remove(temp.c_str());
-        return false;
-    }
-    if (!LittleFS.rename(temp.c_str(), path)) {
-        if (hadOriginal) LittleFS.rename(backup.c_str(), path);
-        return false;
-    }
-    LittleFS.remove(backup.c_str());
-    return true;
-}
+using ConfigGuard = ConfigStorageGuard;
 
 void initLittleFS() {
-    if (!LittleFS.begin(true)) {
-        Serial.println("LittleFS Mount fehlgeschlagen!");
+    if (!beginConfigStorage()) {
+        Serial.println("LittleFS Mount fehlgeschlagen; automatische Formatierung ist deaktiviert.");
         return;
     }
-    recoverAtomicFile("/wifi.json");
-    recoverAtomicFile(deviceConfigPath);
-    recoverAtomicFile("/config.json");
     Serial.println("LittleFS erfolgreich gemountet.");
 }
 
@@ -175,6 +141,7 @@ static int normalizeDhtType(int type) {
 }
 
 void loadWifiCredentials() {
+    ConfigGuard guard;
     wifiSsid = "";
     wifiPassword = "";
 
@@ -197,12 +164,21 @@ void loadWifiCredentials() {
 }
 
 bool hasWifiCredentials() {
+    ConfigGuard guard;
     return wifiSsid.length() > 0;
 }
 
 String configuredWifiSsid() {
+    ConfigGuard guard;
     return wifiSsid;
 }
+
+String currentCitySnapshot() { ConfigGuard guard; return currentCity; }
+String currentUserSnapshot() { ConfigGuard guard; return currentUser; }
+String pongLeftUserSnapshot() { ConfigGuard guard; return pongLeftUser; }
+String pongRightUserSnapshot() { ConfigGuard guard; return pongRightUser; }
+String pacmanP1UserSnapshot() { ConfigGuard guard; return pacmanP1User; }
+String pacmanP2UserSnapshot() { ConfigGuard guard; return pacmanP2User; }
 
 String deviceHostname() {
     return String(deviceHostNameValue);
@@ -252,6 +228,7 @@ void maintainWifiConnection() {
 }
 
 void saveWifiCredentials(String newSsid, String newPassword) {
+    ConfigGuard guard;
     newSsid.trim();
 
     if (newSsid == "") return;
@@ -266,7 +243,7 @@ void saveWifiCredentials(String newSsid, String newPassword) {
     doc["s"] = wifiSsid;
     doc["p"] = wifiPassword;
 
-    if (atomicWriteJson("/wifi.json", doc)) {
+    if (writeJsonAtomically("/wifi.json", doc)) {
         Serial.println("WLAN-Daten gespeichert fuer SSID: " + wifiSsid);
     } else {
         Serial.println("WLAN-Daten konnten nicht gespeichert werden.");
@@ -276,8 +253,17 @@ void saveWifiCredentials(String newSsid, String newPassword) {
 }
 
 void loadDeviceSettings() {
+    ConfigGuard guard;
     currentDhtPin = 21;
     currentDhtType = 22;
+    snakeObstacleTarget = 0;
+    snakeFoodTarget = 3;
+    snakePowerupTarget = 1;
+    tetrisNormalFallMs = 500;
+    tetrisSoftFallMs = 65;
+    tetrisMinFallMs = 220;
+    tetrisSpeedScoreStep = 250;
+    tetrisSpeedStepMs = 35;
 
     int savedVolume = 100;
     int savedEffectsVolume = 100;
@@ -293,6 +279,16 @@ void loadDeviceSettings() {
             joystick2DeadzonePercent = constrain((int)(doc["deadzone2"] | 1), 1, 20);
             joystick3DeadzonePercent = constrain((int)(doc["deadzone3"] | 4), 1, 20);
             pongBotDifficulty = constrain((int)(doc["pongBotDifficulty"] | 0), 0, 2);
+            snakeFoodTarget = constrain((int)(doc["snakeFood"] | 3), 1, 8);
+            snakeObstacleTarget = constrain((int)(doc["snakeObstacles"] | 0), 0, 48);
+            snakePowerupTarget = constrain((int)(doc["snakePowerups"] | 1), 0, 6);
+            tetrisNormalFallMs = constrain((int)(doc["tetrisNormalMs"] | 500), 120, 1500);
+            tetrisSoftFallMs = constrain((int)(doc["tetrisSoftMs"] | 65), 20, 500);
+            tetrisMinFallMs = constrain((int)(doc["tetrisMinMs"] | 220), 80, 1500);
+            tetrisSpeedScoreStep = constrain((int)(doc["tetrisScoreStep"] | 250), 50, 2000);
+            tetrisSpeedStepMs = constrain((int)(doc["tetrisSpeedStepMs"] | 35), 0, 250);
+            if (tetrisMinFallMs > tetrisNormalFallMs)
+                tetrisMinFallMs = tetrisNormalFallMs;
         }
         if (file) file.close();
     }
@@ -404,6 +400,7 @@ static void markDeviceSettingsDirty() {
 }
 
 static bool saveDeviceSettingsNow() {
+    ConfigGuard guard;
     JsonDocument doc;
     if (LittleFS.exists(deviceConfigPath)) {
         File existing = LittleFS.open(deviceConfigPath, "r");
@@ -419,9 +416,17 @@ static bool saveDeviceSettingsNow() {
     doc["deadzone2"] = joystick2DeadzonePercent;
     doc["deadzone3"] = joystick3DeadzonePercent;
     doc["pongBotDifficulty"] = pongBotDifficulty;
+    doc["snakeFood"] = snakeFoodTarget;
+    doc["snakeObstacles"] = snakeObstacleTarget;
+    doc["snakePowerups"] = snakePowerupTarget;
+    doc["tetrisNormalMs"] = (uint16_t)tetrisNormalFallMs;
+    doc["tetrisSoftMs"] = (uint16_t)tetrisSoftFallMs;
+    doc["tetrisMinMs"] = (uint16_t)tetrisMinFallMs;
+    doc["tetrisScoreStep"] = (uint16_t)tetrisSpeedScoreStep;
+    doc["tetrisSpeedStepMs"] = (uint16_t)tetrisSpeedStepMs;
     if (pendingDefaultCity != "") doc["city"] = pendingDefaultCity;
 
-    if (!atomicWriteJson(deviceConfigPath, doc)) return false;
+    if (!writeJsonAtomically(deviceConfigPath, doc)) return false;
     deviceSettingsDirty = false;
     pendingDefaultCity = "";
     Serial.println("Gebündelte Geraete-Einstellungen atomar gespeichert.");
@@ -479,6 +484,7 @@ static int clockIndexFromLegacy(int idx) {
 }
 
 void loadConfigForUser(String user) {
+    ConfigGuard guard;
     user.trim();
     currentUser = user;
 
@@ -529,6 +535,7 @@ void loadConfigForUser(String user) {
 }
 
 void ensureUserExists(String user) {
+    ConfigGuard guard;
     user.trim();
     if (user == "") return;
 
@@ -544,13 +551,14 @@ void ensureUserExists(String user) {
         JsonObject obj = doc[user].to<JsonObject>();
         if (oldCity != "") obj["c"] = oldCity;
 
-        if (!atomicWriteJson("/config.json", doc)) {
+        if (!writeJsonAtomically("/config.json", doc)) {
             Serial.println("User konnte nicht gespeichert werden.");
         }
     }
 }
 
 void saveConfig(String user, String city) {
+    ConfigGuard guard;
     user.trim();
     city.trim();
     if (city == "") city = "Innsbruck";
@@ -578,7 +586,7 @@ void saveConfig(String user, String city) {
     obj["c"] = city;
     removeLegacyUserKeys(obj);
 
-    if (!atomicWriteJson("/config.json", doc)) {
+    if (!writeJsonAtomically("/config.json", doc)) {
         Serial.println("Config konnte nicht gespeichert werden.");
     }
 
@@ -586,6 +594,7 @@ void saveConfig(String user, String city) {
 }
 
 void saveTheme(String user, int themeIdx) {
+    ConfigGuard guard;
     user.trim();
     applyTheme(themeIdx);
 
@@ -601,7 +610,7 @@ void saveTheme(String user, int themeIdx) {
     obj["t"] = String(themeCode(g_themeIndex));
     removeLegacyUserKeys(obj);
 
-    if (!atomicWriteJson("/config.json", doc)) {
+    if (!writeJsonAtomically("/config.json", doc)) {
         Serial.println("Design konnte nicht gespeichert werden.");
     }
 
@@ -609,6 +618,7 @@ void saveTheme(String user, int themeIdx) {
 }
 
 void saveClockStyle(String user, int clockIdx) {
+    ConfigGuard guard;
     user.trim();
     applyClockStyle(clockIdx);
 
@@ -624,7 +634,7 @@ void saveClockStyle(String user, int clockIdx) {
     obj["u"] = String(clockCode(g_clockStyle));
     removeLegacyUserKeys(obj);
 
-    if (!atomicWriteJson("/config.json", doc)) {
+    if (!writeJsonAtomically("/config.json", doc)) {
         Serial.println("Uhr-Stil konnte nicht gespeichert werden.");
     }
 
@@ -980,6 +990,7 @@ void handleSnakeSettings() {
     if (server.hasArg("food")) snakeFoodTarget = constrain(server.arg("food").toInt(), 1, 8);
     if (server.hasArg("obs")) snakeObstacleTarget = constrain(server.arg("obs").toInt(), 0, 48);
     if (server.hasArg("pow")) snakePowerupTarget = constrain(server.arg("pow").toInt(), 0, 6);
+    markDeviceSettingsDirty();
     server.sendHeader("Location", "/snake");
     server.send(303);
 }
@@ -1019,6 +1030,7 @@ void handlePongPage() {
 }
 
 void handlePongLogin() {
+    ConfigGuard guard;
     if (server.hasArg("left")) {
         pongLeftUser = sanitizePlayerName(server.arg("left"));
         ensureUserExists(pongLeftUser);
@@ -1073,6 +1085,7 @@ void handlePacmanPage() {
 }
 
 void handlePacmanLogin() {
+    ConfigGuard guard;
     if (server.hasArg("p1")) {
         pacmanP1User = sanitizePlayerName(server.arg("p1"));
         ensureUserExists(pacmanP1User);
@@ -1124,6 +1137,7 @@ void handleTetrisSettings() {
     if (server.hasArg("scorestep")) tetrisSpeedScoreStep = constrain(server.arg("scorestep").toInt(), 50, 2000);
     if (server.hasArg("speedstep")) tetrisSpeedStepMs = constrain(server.arg("speedstep").toInt(), 0, 250);
     if (tetrisMinFallMs > tetrisNormalFallMs) tetrisMinFallMs = tetrisNormalFallMs;
+    markDeviceSettingsDirty();
     server.sendHeader("Location", "/tetris");
     server.send(303);
 }
@@ -1170,13 +1184,13 @@ void handleMarioState() {
 
 void handleMarioStart() {
     marioRequestRestart();
-    fokusModus = 11;
-    aktiverTask = 10;
+    requestAppTaskSwitch(10);
     server.sendHeader("Location", "/mario");
     server.send(303);
 }
 
 void handleDoLogin() {
+    ConfigGuard guard;
     if (server.hasArg("username")) {
         String u = sanitizePlayerName(server.arg("username"));
         ensureUserExists(u);
@@ -1196,6 +1210,7 @@ void handleSaveWifi() {
 }
 
 void handleUpdateCity() {
+    ConfigGuard guard;
     if (server.hasArg("city")) {
         saveConfig(currentUser, server.arg("city"));
     }
@@ -1204,6 +1219,7 @@ void handleUpdateCity() {
 }
 
 void handleUpdateTheme() {
+    ConfigGuard guard;
     if (server.hasArg("theme")) {
         saveTheme(currentUser, server.arg("theme").toInt());
     }
@@ -1212,6 +1228,7 @@ void handleUpdateTheme() {
 }
 
 void handleUpdateClock() {
+    ConfigGuard guard;
     if (server.hasArg("clock")) {
         saveClockStyle(currentUser, server.arg("clock").toInt());
     }
@@ -1233,6 +1250,7 @@ void handleUpdateJoysticks() {
 
 
 void handleLogout() {
+    ConfigGuard guard;
     loadConfigForUser("");
     server.sendHeader("Location", "/");
     server.send(303);
@@ -1295,6 +1313,7 @@ static String contentTypeForPath(const String& path) {
 }
 
 static bool serveLittleFsFile(String path) {
+    ConfigGuard guard;
     if (path.endsWith("/")) path += "index.html";
 
     String gzPath = path + ".gz";
@@ -1382,6 +1401,7 @@ void taskWebServerHandler(void * pvParameters) {
 }
 
 void saveHighScore(String user, int score) {
+    ConfigGuard guard;
     user.trim();
     if (user == "") return;
     String checkName = user;
@@ -1401,7 +1421,7 @@ void saveHighScore(String user, int score) {
         obj["h"] = score;
         removeLegacyUserKeys(obj);
 
-        if (atomicWriteJson("/config.json", doc)) {
+        if (writeJsonAtomically("/config.json", doc)) {
             Serial.println("Neuer Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Highscore konnte nicht gespeichert werden.");
@@ -1412,6 +1432,7 @@ void saveHighScore(String user, int score) {
 }
 
 void printTopThree() {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) return;
@@ -1453,6 +1474,7 @@ void printTopThree() {
 }
 
 int getHighScore(String user) {
+    ConfigGuard guard;
     if (LittleFS.exists("/config.json")) {
         File file = LittleFS.open("/config.json", "r");
         JsonDocument doc;
@@ -1464,6 +1486,7 @@ int getHighScore(String user) {
 }
 
 void saveSnakeHighScore(String user, int score) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || score <= 0) return;
 
@@ -1480,7 +1503,7 @@ void saveSnakeHighScore(String user, int score) {
         obj["snake"] = score;
         removeLegacyUserKeys(obj);
 
-        if (atomicWriteJson("/config.json", doc)) {
+        if (writeJsonAtomically("/config.json", doc)) {
             Serial.println("Neuer Snake-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Snake-Highscore konnte nicht gespeichert werden.");
@@ -1489,6 +1512,7 @@ void saveSnakeHighScore(String user, int score) {
 }
 
 int getSnakeHighScore(String user) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || !LittleFS.exists("/config.json")) return 0;
 
@@ -1502,6 +1526,7 @@ int getSnakeHighScore(String user) {
 }
 
 void savePongHighScore(String user, int score) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || score <= 0) return;
 
@@ -1518,7 +1543,7 @@ void savePongHighScore(String user, int score) {
         obj["pong"] = score;
         removeLegacyUserKeys(obj);
 
-        if (atomicWriteJson("/config.json", doc)) {
+        if (writeJsonAtomically("/config.json", doc)) {
             Serial.println("Neuer Pong-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Pong-Highscore konnte nicht gespeichert werden.");
@@ -1527,6 +1552,7 @@ void savePongHighScore(String user, int score) {
 }
 
 int getPongHighScore(String user) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || !LittleFS.exists("/config.json")) return 0;
 
@@ -1540,6 +1566,7 @@ int getPongHighScore(String user) {
 }
 
 void savePacmanHighScore(String user, int score) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || score <= 0) return;
 
@@ -1556,7 +1583,7 @@ void savePacmanHighScore(String user, int score) {
         obj["pac"] = score;
         removeLegacyUserKeys(obj);
 
-        if (atomicWriteJson("/config.json", doc)) {
+        if (writeJsonAtomically("/config.json", doc)) {
             Serial.println("Neuer Pacman-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Pacman-Highscore konnte nicht gespeichert werden.");
@@ -1565,6 +1592,7 @@ void savePacmanHighScore(String user, int score) {
 }
 
 int getPacmanHighScore(String user) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || !LittleFS.exists("/config.json")) return 0;
 
@@ -1578,6 +1606,7 @@ int getPacmanHighScore(String user) {
 }
 
 void saveTetrisHighScore(String user, int score) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || score <= 0) return;
 
@@ -1594,7 +1623,7 @@ void saveTetrisHighScore(String user, int score) {
         obj["tetris"] = score;
         removeLegacyUserKeys(obj);
 
-        if (atomicWriteJson("/config.json", doc)) {
+        if (writeJsonAtomically("/config.json", doc)) {
             Serial.println("Neuer Tetris-Highscore gespeichert: " + String(score));
         } else {
             Serial.println("Tetris-Highscore konnte nicht gespeichert werden.");
@@ -1603,6 +1632,7 @@ void saveTetrisHighScore(String user, int score) {
 }
 
 int getTetrisHighScore(String user) {
+    ConfigGuard guard;
     user.trim();
     if (user == "" || !LittleFS.exists("/config.json")) return 0;
 
@@ -1616,6 +1646,7 @@ int getTetrisHighScore(String user) {
 }
 
 void getTopScores(PlayerData* list, int& count) {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) {
@@ -1654,6 +1685,7 @@ void getTopScores(PlayerData* list, int& count) {
 }
 
 void getTopSnakeScores(PlayerData* list, int& count) {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) {
@@ -1692,6 +1724,7 @@ void getTopSnakeScores(PlayerData* list, int& count) {
 }
 
 void getTopPongScores(PlayerData* list, int& count) {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) {
@@ -1730,6 +1763,7 @@ void getTopPongScores(PlayerData* list, int& count) {
 }
 
 void getTopPacmanScores(PlayerData* list, int& count) {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) {
@@ -1768,6 +1802,7 @@ void getTopPacmanScores(PlayerData* list, int& count) {
 }
 
 void getTopTetrisScores(PlayerData* list, int& count) {
+    ConfigGuard guard;
     JsonDocument doc;
     File file = LittleFS.open("/config.json", "r");
     if (!file) {

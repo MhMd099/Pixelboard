@@ -8,7 +8,6 @@
 #include "GameRuntime.h"
 #include "RuntimeHealth.h"
 
-extern volatile bool taskWechselAnforderung;
 extern volatile int aktiverTask;
 extern Joystick joystick1;
 extern Joystick joystick3;
@@ -268,7 +267,7 @@ void taskSnakeHandler(void *pvParameters) {
         currentScore = snakeLengths[0];
         if (playerJoined[1] && snakeLengths[1] > currentScore) currentScore = snakeLengths[1];
 
-        String snakeUser = currentUser;
+        String snakeUser = currentUserSnapshot();
         snakeUser.trim();
         if (snakeUser == "") snakeUser = "Gast";
         saveSnakeHighScore(snakeUser, currentScore);
@@ -283,11 +282,9 @@ void taskSnakeHandler(void *pvParameters) {
         if (aktiverTask != 2) {
             feedRuntimeWatchdog();
             taskWasActive = false;
-            taskWechselAnforderung = false;
             vTaskDelay(20 / portTICK_PERIOD_MS);
             continue;
         }
-        taskWechselAnforderung = false;
 
         if (!taskWasActive) {
             taskWasActive = true;

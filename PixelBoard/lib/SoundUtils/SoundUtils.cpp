@@ -15,11 +15,14 @@ static volatile uint8_t masterVolume = 100;
 static volatile uint8_t effectsVolume = 100;
 static volatile uint8_t musicVolume = 100;
 static const uint16_t MENU_PCM_CAPACITY = 8192;
+static_assert((MENU_PCM_CAPACITY & (MENU_PCM_CAPACITY - 1)) == 0,
+              "MENU_PCM_CAPACITY must be a power of two");
 static int16_t menuPcm[MENU_PCM_CAPACITY];
-static volatile uint16_t menuPcmRead = 0;
-static volatile uint16_t menuPcmWrite = 0;
-static volatile bool menuMusicEnabled = false;
-static portMUX_TYPE menuPcmMux = portMUX_INITIALIZER_UNLOCKED;
+// One MP3 decoder produces samples on core 0 and one audio task consumes them
+// on core 1. Monotonic atomic indices make this SPSC ring lock-free.
+static uint32_t menuPcmRead = 0;
+static uint32_t menuPcmWrite = 0;
+static bool menuMusicEnabled = false;
 
 struct Note {
   uint16_t freq;
@@ -112,7 +115,7 @@ static int32_t envelope(int32_t amplitude, int32_t samplesLeft, int32_t totalSam
   return amplitude * level / 32767L;
 }
 
-static void initI2S()
+static bool initI2S()
 {
   i2s_config_t config = {
     .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
@@ -131,9 +134,24 @@ static void initI2S()
     .data_out_num = I2S_DIN,
     .data_in_num = I2S_PIN_NO_CHANGE
   };
-  i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
-  i2s_set_pin(I2S_NUM_0, &pins);
-  i2s_zero_dma_buffer(I2S_NUM_0);
+  esp_err_t result = i2s_driver_install(I2S_NUM_0, &config, 0, NULL);
+  if(result != ESP_OK) {
+    Serial.printf("I2S-Treiber konnte nicht starten: %d\n", (int)result);
+    return false;
+  }
+  result = i2s_set_pin(I2S_NUM_0, &pins);
+  if(result != ESP_OK) {
+    Serial.printf("I2S-Pins konnten nicht gesetzt werden: %d\n", (int)result);
+    i2s_driver_uninstall(I2S_NUM_0);
+    return false;
+  }
+  result = i2s_zero_dma_buffer(I2S_NUM_0);
+  if(result != ESP_OK) {
+    Serial.printf("I2S-DMA konnte nicht initialisiert werden: %d\n", (int)result);
+    i2s_driver_uninstall(I2S_NUM_0);
+    return false;
+  }
+  return true;
 }
 
 static bool loadVoiceStep(EffectVoice& voice)
@@ -224,14 +242,14 @@ static void loadNextMusicPart()
 
 static int32_t renderMusicSample()
 {
-  if(menuMusicEnabled) {
+  if(__atomic_load_n(&menuMusicEnabled, __ATOMIC_ACQUIRE)) {
     int16_t sample = 0;
-    portENTER_CRITICAL(&menuPcmMux);
-    if(menuPcmRead != menuPcmWrite) {
-      sample = menuPcm[menuPcmRead];
-      menuPcmRead = (menuPcmRead + 1) % MENU_PCM_CAPACITY;
+    uint32_t read = __atomic_load_n(&menuPcmRead, __ATOMIC_RELAXED);
+    uint32_t write = __atomic_load_n(&menuPcmWrite, __ATOMIC_ACQUIRE);
+    if(read != write) {
+      sample = menuPcm[read & (MENU_PCM_CAPACITY - 1)];
+      __atomic_store_n(&menuPcmRead, read + 1, __ATOMIC_RELEASE);
     }
-    portEXIT_CRITICAL(&menuPcmMux);
     uint32_t masterGain = perceptualGain(masterVolume);
     uint32_t channelGain = musicVolume;
     return (int32_t)(((int64_t)sample * masterGain * channelGain) / 10000LL);
@@ -256,7 +274,10 @@ static int32_t renderMusicSample()
 
 static void audioTask(void *pvParameters)
 {
-  initI2S();
+  if(!initI2S()) {
+    vTaskDelete(NULL);
+    return;
+  }
   static int16_t buffer[128];
 
   for(;;) {
@@ -272,15 +293,24 @@ static void audioTask(void *pvParameters)
     }
 
     size_t written = 0;
-    i2s_write(I2S_NUM_0, buffer, sizeof(buffer), &written, portMAX_DELAY);
+    esp_err_t result = i2s_write(I2S_NUM_0, buffer, sizeof(buffer), &written, portMAX_DELAY);
+    if(result != ESP_OK || written != sizeof(buffer)) {
+      Serial.printf("I2S-Schreibfehler: %d, Bytes: %u\n", (int)result, (unsigned int)written);
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
   }
 }
 
 void initAudio()
 {
   if(soundQueue == NULL) soundQueue = xQueueCreate(16, sizeof(SoundType));
+  if(soundQueue == NULL) {
+    Serial.println("Audio-Queue konnte nicht erstellt werden.");
+    return;
+  }
   for(uint8_t i = 0; i < EFFECT_VOICES; i++) voices[i].active = false;
-  xTaskCreatePinnedToCore(audioTask, "AudioTask", 4096, NULL, 3, NULL, 1);
+  if(xTaskCreatePinnedToCore(audioTask, "AudioTask", 4096, NULL, 3, NULL, 1) != pdPASS)
+    Serial.println("Audio-Task konnte nicht erstellt werden.");
 }
 
 void setMasterVolume(int volume) { masterVolume = (uint8_t)constrain(volume, 0, 100); }
@@ -292,29 +322,23 @@ uint8_t getMusicVolume() { return musicVolume; }
 
 bool pushMenuMusicSample(int16_t sample)
 {
-  bool pushed = false;
-  portENTER_CRITICAL(&menuPcmMux);
-  uint16_t next = (menuPcmWrite + 1) % MENU_PCM_CAPACITY;
-  if(next != menuPcmRead) {
-    menuPcm[menuPcmWrite] = sample;
-    menuPcmWrite = next;
-    pushed = true;
-  }
-  portEXIT_CRITICAL(&menuPcmMux);
-  return pushed;
+  uint32_t write = __atomic_load_n(&menuPcmWrite, __ATOMIC_RELAXED);
+  uint32_t read = __atomic_load_n(&menuPcmRead, __ATOMIC_ACQUIRE);
+  if(write - read >= MENU_PCM_CAPACITY - 1) return false;
+  menuPcm[write & (MENU_PCM_CAPACITY - 1)] = sample;
+  __atomic_store_n(&menuPcmWrite, write + 1, __ATOMIC_RELEASE);
+  return true;
 }
 
 void clearMenuMusicBuffer()
 {
-  portENTER_CRITICAL(&menuPcmMux);
-  menuPcmRead = 0;
-  menuPcmWrite = 0;
-  portEXIT_CRITICAL(&menuPcmMux);
+  uint32_t write = __atomic_load_n(&menuPcmWrite, __ATOMIC_ACQUIRE);
+  __atomic_store_n(&menuPcmRead, write, __ATOMIC_RELEASE);
 }
 
 void setMenuMusicEnabled(bool enabled)
 {
-  menuMusicEnabled = enabled;
+  __atomic_store_n(&menuMusicEnabled, enabled, __ATOMIC_RELEASE);
 }
 
 void playSound(SoundType type)

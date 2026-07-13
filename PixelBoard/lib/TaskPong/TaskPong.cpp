@@ -71,6 +71,8 @@ unsigned long lastLeftBotErrorMs = 0;
 unsigned long lastRightBotErrorMs = 0;
 unsigned long stateStartedMs = 0;
 Particle particles[8];
+String activeLeftUser;
+String activeRightUser;
 
 int clampInt(int value, int low, int high) {
     if (value < low) return low;
@@ -148,8 +150,8 @@ void resetMatch() {
 
 void refreshCachedBest() {
     cachedBestRally = 0;
-    if (pongLeftUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(pongLeftUser));
-    if (pongRightUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(pongRightUser));
+    if (activeLeftUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(activeLeftUser));
+    if (activeRightUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(activeRightUser));
 }
 
 void beginCountdown() {
@@ -165,14 +167,14 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
     int rightMove = 0;
     int currentBallY = clampInt((ballY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
 
-    if (pongLeftUser != "") leftMove = readVertical(controls.secondary);
-    if (pongRightUser != "") rightMove = readVertical(controls.primary);
+    if (activeLeftUser != "") leftMove = readVertical(controls.secondary);
+    if (activeRightUser != "") rightMove = readVertical(controls.primary);
 
     const int botStepMs[3] = {125, 96, 76};
     const int botError[3] = {3, 2, 1};
     int difficulty = clampInt(pongBotDifficulty, 0, 2);
 
-    if (pongLeftUser == "" && now - lastLeftBotMs >= (unsigned long)botStepMs[difficulty]) {
+    if (activeLeftUser == "" && now - lastLeftBotMs >= (unsigned long)botStepMs[difficulty]) {
         if (now - lastLeftBotErrorMs >= BOT_ERROR_REFRESH_MS) {
             leftBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
             lastLeftBotErrorMs = now;
@@ -186,7 +188,7 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
         lastLeftBotMs = now;
     }
 
-    if (pongRightUser == "" && now - lastRightBotMs >= (unsigned long)botStepMs[difficulty]) {
+    if (activeRightUser == "" && now - lastRightBotMs >= (unsigned long)botStepMs[difficulty]) {
         if (now - lastRightBotErrorMs >= BOT_ERROR_REFRESH_MS) {
             rightBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
             lastRightBotErrorMs = now;
@@ -337,14 +339,14 @@ void renderMenu() {
     int leftPreview = 4 + (int)(sin(now / 260.0) * 3.0);
     int rightPreview = 8 + (int)(sin(now / 260.0 + 1.5) * 3.0);
     for (int y = 0; y < PADDLE_H; y++) {
-        setPixel(2, leftPreview + y, pongLeftUser == "" ? CRGB(20, 80, 90) : CRGB::Cyan);
-        setPixel(29, rightPreview + y, pongRightUser == "" ? CRGB(90, 55, 20) : CRGB::Orange);
+        setPixel(2, leftPreview + y, activeLeftUser == "" ? CRGB(20, 80, 90) : CRGB::Cyan);
+        setPixel(29, rightPreview + y, activeRightUser == "" ? CRGB(90, 55, 20) : CRGB::Orange);
     }
     int bx = 15 + (int)(sin(now / 180.0) * 8.0);
     int by = 7 + (int)(sin(now / 230.0) * 4.0);
     setPixel(bx, by, CRGB::White);
-    setPixel(15, 14, pongLeftUser == "" ? CRGB(30, 60, 70) : CRGB::Cyan);
-    setPixel(17, 14, pongRightUser == "" ? CRGB(70, 45, 30) : CRGB::Orange);
+    setPixel(15, 14, activeLeftUser == "" ? CRGB(30, 60, 70) : CRGB::Cyan);
+    setPixel(17, 14, activeRightUser == "" ? CRGB(70, 45, 30) : CRGB::Orange);
     if (cachedBestRally > 0) drawNumber2(min(cachedBestRally, 99), 11, 1, CRGB(70, 120, 220));
 }
 
@@ -365,13 +367,13 @@ void renderGameOver() {
 }
 
 void ensureDefaultPlayers() {
-    if (pongLeftUser == "") pongLeftUser = "P1";
-    if (pongRightUser == "") pongRightUser = "P2";
+    if (activeLeftUser == "") activeLeftUser = "P1";
+    if (activeRightUser == "") activeRightUser = "P2";
 }
 
 void saveMatchHighscores() {
-    if (pongLeftUser != "") savePongHighScore(pongLeftUser, matchBestRally);
-    if (pongRightUser != "" && pongRightUser != pongLeftUser) savePongHighScore(pongRightUser, matchBestRally);
+    if (activeLeftUser != "") savePongHighScore(activeLeftUser, matchBestRally);
+    if (activeRightUser != "" && activeRightUser != activeLeftUser) savePongHighScore(activeRightUser, matchBestRally);
     if (matchBestRally > cachedBestRally) cachedBestRally = matchBestRally;
 }
 
@@ -388,7 +390,7 @@ void tickPong() {
     case GAME_MENU:
         renderMenu();
         if (startDoubleClick) {
-            if (pongLeftUser == "" && pongRightUser == "") ensureDefaultPlayers();
+            if (activeLeftUser == "" && activeRightUser == "") ensureDefaultPlayers();
             resetMatch();
             runtime.animateTransition(CRGB::Blue);
             beginCountdown();
@@ -465,6 +467,8 @@ void taskPongHandler(void *pvParameters) {
         }
 
         if (lastTask != 7) {
+            activeLeftUser = pongLeftUserSnapshot();
+            activeRightUser = pongRightUserSnapshot();
             state = GAME_MENU;
             runtime.begin();
             joystick1.reset();

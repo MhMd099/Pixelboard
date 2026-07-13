@@ -92,6 +92,8 @@ unsigned long playerInvertUntilMs = 0;
 int8_t tempWallX = -1;
 int8_t tempWallY = -1;
 unsigned long tempWallUntilMs = 0;
+String activeP1User;
+String activeP2User;
 
 Vec makeVec(int8_t x, int8_t y) {
     Vec v = {x, y};
@@ -287,7 +289,7 @@ void initPlayers() {
     players[0].startY = 1;
     players[0].dir = makeVec(1, 0);
     players[0].wanted = makeVec(1, 0);
-    players[0].active = pacmanP1User != "" || defaultPlayersActive;
+    players[0].active = activeP1User != "" || defaultPlayersActive;
     players[0].alive = players[0].active;
     players[0].hp = players[0].active ? PLAYER_MAX_HP : 0;
     players[0].score = 0;
@@ -300,7 +302,7 @@ void initPlayers() {
     players[1].startY = 14;
     players[1].dir = makeVec(-1, 0);
     players[1].wanted = makeVec(-1, 0);
-    players[1].active = pacmanP2User != "";
+    players[1].active = activeP2User != "";
     players[1].alive = players[1].active;
     players[1].hp = players[1].active ? PLAYER_MAX_HP : 0;
     players[1].score = 0;
@@ -325,7 +327,7 @@ void initGhosts() {
 }
 
 bool hasAnyPlayer() {
-    return defaultPlayersActive || pacmanP1User != "" || pacmanP2User != "";
+    return defaultPlayersActive || activeP1User != "" || activeP2User != "";
 }
 
 void ensureDefaultPlayers() {
@@ -584,8 +586,8 @@ void checkCollisions(unsigned long now) {
 void saveScoreIfNeeded() {
     if (highscoreSaved) return;
     if (!defaultPlayersActive) {
-        if (players[0].active && pacmanP1User != "") savePacmanHighScore(pacmanP1User, players[0].score);
-        if (players[1].active && pacmanP2User != "" && pacmanP2User != pacmanP1User) savePacmanHighScore(pacmanP2User, players[1].score);
+        if (players[0].active && activeP1User != "") savePacmanHighScore(activeP1User, players[0].score);
+        if (players[1].active && activeP2User != "" && activeP2User != activeP1User) savePacmanHighScore(activeP2User, players[1].score);
         cachedBestScore = max(cachedBestScore, players[0].score);
         cachedBestScore = max(cachedBestScore, players[1].score);
     }
@@ -789,8 +791,8 @@ void tickPacman() {
 
 void refreshCachedBest() {
     cachedBestScore = 0;
-    if (pacmanP1User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(pacmanP1User));
-    if (pacmanP2User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(pacmanP2User));
+    if (activeP1User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(activeP1User));
+    if (activeP2User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(activeP2User));
 }
 }
 
@@ -810,6 +812,8 @@ void taskPacmanHandler(void *pvParameters) {
         }
 
         if (lastTask != 8) {
+            activeP1User = pacmanP1UserSnapshot();
+            activeP2User = pacmanP2UserSnapshot();
             joystick1.reset();
             joystick3.reset();
             clearDefaultPlayersIfNeeded();

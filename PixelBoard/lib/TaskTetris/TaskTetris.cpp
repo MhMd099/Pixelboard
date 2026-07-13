@@ -153,7 +153,7 @@ unsigned long currentFallInterval() {
 
 void saveTetrisScoreIfNeeded() {
     if (scoreSaved || score == 0) return;
-    String user = currentUser;
+    String user = currentUserSnapshot();
     user.trim();
     if (user == "") user = "Gast";
     saveTetrisHighScore(user, (int)min(score, (uint32_t)2147483647UL));

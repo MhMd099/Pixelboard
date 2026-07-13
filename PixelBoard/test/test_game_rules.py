@@ -96,6 +96,45 @@ class GameRuleTests(unittest.TestCase):
         )[1].split("void playSound", 1)[0]
         self.assertNotIn("clearMenuMusicBuffer()", enable_function)
 
+    def test_hardware_offline_and_storage_safety_guards_exist(self):
+        main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        storage = (ROOT / "lib/ConfigStorage/ConfigStorage.cpp").read_text(encoding="utf-8")
+
+        i2c_handler = main.split("void taskI2CJoystickHandler", 1)[1].split(
+            "static bool createTaskChecked", 1
+        )[0]
+        self.assertIn("pdMS_TO_TICKS(1500)", i2c_handler)
+        self.assertIn("I2C-Joystick nicht verbunden", i2c_handler)
+        self.assertNotIn("Wire.end()", i2c_handler)
+        self.assertIn("LittleFS.begin(false)", storage)
+        self.assertNotIn("LittleFS.begin(true)", storage)
+
+    def test_settings_navigation_and_audio_optimizations_are_wired(self):
+        config = (ROOT / "lib/Config/Config.cpp").read_text(encoding="utf-8")
+        main = (ROOT / "src/main.cpp").read_text(encoding="utf-8")
+        sound = (ROOT / "lib/SoundUtils/SoundUtils.cpp").read_text(encoding="utf-8")
+
+        for key in ("snakeFood", "snakeObstacles", "snakePowerups",
+                    "tetrisNormalMs", "tetrisSoftMs", "tetrisMinMs"):
+            self.assertIn(f'doc["{key}"]', config)
+        self.assertIn("requestAppTaskSwitch(10)", config)
+        self.assertIn("takeRequestedAppTask()", main)
+        self.assertIn("__atomic_store_n(&menuPcmWrite", sound)
+        self.assertNotIn("menuPcmMux", sound)
+
+    def test_secrets_and_large_responsibilities_are_separated(self):
+        config = (ROOT / "lib/Config/Config.cpp").read_text(encoding="utf-8")
+        weather = (ROOT / "lib/TaskWetter/TaskWetter.cpp").read_text(encoding="utf-8")
+        gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+        self.assertIn("weatherApiKey = WEATHER_API_KEY", config)
+        self.assertNotIn('weatherApiKey = "', config)
+        self.assertIn("include/Secrets.h", gitignore)
+        self.assertIn("WiFiClient", weather)
+        self.assertIn("connect(\"api.openweathermap.org\", 80)", weather)
+        self.assertTrue((ROOT / "lib/ConfigStorage/ConfigStorage.cpp").exists())
+        self.assertTrue((ROOT / "lib/TaskRaumschiff/RaumschiffWeb.cpp").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

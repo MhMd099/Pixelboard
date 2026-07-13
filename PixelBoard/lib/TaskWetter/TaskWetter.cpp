@@ -41,13 +41,16 @@ static String urlEncode(const String& value) {
 }
 
 static String normalizeWeatherCity() {
-    String city = currentCity;
+    String city = currentCitySnapshot();
     city.trim();
     if (city == "") city = "Innsbruck";
     return city;
 }
 
 static bool fetchJson(const String& path, JsonDocument& doc, int& httpCode) {
+    // TLS needs a large contiguous RAM block and fails while audio and the game
+    // tasks are active. OpenWeather also supports HTTP, which keeps this
+    // background request small enough for the ESP32.
     WiFiClient client;
     client.setTimeout(7000);
     httpCode = 0;
@@ -111,7 +114,7 @@ static bool fetchCoordinatesForQuery(const String& cityQuery, float& lat, float&
     }
 
     if (!geo[0].is<JsonObject>()) {
-        Serial.println("[WETTER] Ort nicht gefunden: " + currentCity);
+        Serial.println("[WETTER] Ort nicht gefunden: " + cityQuery);
         return false;
     }
 
@@ -139,6 +142,10 @@ static bool fetchCoordinates(float& lat, float& lon) {
 
 static bool fetchWetter() {
     if (WiFi.status() != WL_CONNECTED) return false;
+    if (weatherApiKey == nullptr || weatherApiKey[0] == '\0') {
+        Serial.println("[WETTER] WEATHER_API_KEY fehlt in include/Secrets.h");
+        return false;
+    }
 
     float lat = 0.0f;
     float lon = 0.0f;
@@ -160,7 +167,7 @@ static bool fetchWetter() {
     aktuelleTemp = doc["main"]["temp"] | aktuelleTemp;
     weatherID = doc["weather"][0]["id"] | weatherID;
     Serial.print("[WETTER] OK! Stadt: ");
-    Serial.print(currentCity);
+    Serial.print(currentCitySnapshot());
     Serial.print(" Temp: ");
     Serial.print(aktuelleTemp, 1);
     Serial.print(" ID: ");
@@ -233,7 +240,7 @@ void taskWetter(void * pvParameters) {
         CRGB valueCol = themeCol(jetzt / 40 + 96, 235);
         
         // --- DYNAMISCHER STADTNAME ---
-        String abbr = currentCity.substring(0, 3);
+        String abbr = currentCitySnapshot().substring(0, 3);
         abbr.toUpperCase();
         
         CRGB txtCol = textCol;

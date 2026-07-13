@@ -8,6 +8,7 @@
 #include <AudioLogger.h>
 
 #include "SoundUtils.h"
+#include "ConfigStorage.h"
 
 extern volatile int aktiverTask;
 
@@ -79,6 +80,12 @@ void taskMenuMusic(void *pvParameters) {
         }
 
         if (!running) {
+            ConfigStorageGuard storageGuard;
+            if (!storageGuard.ok()) {
+                setMenuMusicEnabled(false);
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
+            }
             if (!LittleFS.exists(MENU_TRACK) || !file.open(MENU_TRACK)) {
                 if (!missingLogged) {
                     Serial.println("Menue-Musik fehlt in LittleFS: /aria_math.mp3");
@@ -105,7 +112,14 @@ void taskMenuMusic(void *pvParameters) {
             Serial.println("Menue-Musik gestartet.");
         }
 
-        if (!decoder.loop()) {
+        bool decoderRunning = false;
+        {
+            ConfigStorageGuard storageGuard;
+            if (storageGuard.ok())
+                decoderRunning = decoder.loop();
+        }
+        if (!decoderRunning) {
+            ConfigStorageGuard storageGuard;
             decoder.stop();
             file.close();
             running = false;

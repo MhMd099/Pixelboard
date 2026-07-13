@@ -1,5 +1,6 @@
 #include "RaumschiffGame.h"
 #include "CollisionSystem.h"
+#include "RaumschiffWeb.h"
 
 #include "Config.h"
 #include "HardwareUtils.h"
@@ -424,8 +425,9 @@ void raumschiffGameOver()
             name.trim();
             if (isDefaultPlayerName(name, i))
                 continue;
-            if (i == 0 && name == "P1" && currentUser != "")
-                name = currentUser;
+            String signedInUser = currentUserSnapshot();
+            if (i == 0 && name == "P1" && signedInUser != "")
+                name = signedInUser;
             if (name != "")
                 saveHighScore(name, (int)spieler[i].score);
         }
@@ -768,79 +770,64 @@ bool raumschiffWebPlayerConnected()
 
 String raumschiffStateJson()
 {
-    String json = "{";
-    json.reserve(1800);
-    json += "\"state\":" + String((int)gameState);
-    json += ",\"score\":" + String(score);
-    json += ",\"web\":" + String(webConnectedNow() ? 1 : 0);
-    json += ",\"webEnergy\":" + String((uint16_t)webEnergy);
-    json += ",\"webEnergyMax\":" + String(webEnergyMax);
-    json += ",\"p2InputMode\":" + String((uint8_t)p2InputMode);
-    json += ",\"boss\":{\"active\":" + String(boss.active ? 1 : 0);
-    json += ",\"hp\":" + String(boss.active ? boss.hp : 0);
-    json += ",\"maxHp\":" + String(boss.maxHp);
-    json += ",\"phase\":" + String(boss.phase);
-    json += ",\"size\":" + String(boss.size);
-    json += "}";
-    json += ",\"director\":{\"spawnMs\":" + String((uint16_t)directorSpawnIntervalMs);
-    json += ",\"moveMs\":" + String((uint16_t)directorAsteroidMoveMs);
-    json += ",\"maxAsteroids\":" + String((uint8_t)directorMaxActiveAsteroids);
-    json += ",\"smallPercent\":" + String((uint8_t)directorSmallAsteroidPercent);
-    json += ",\"powerChance\":" + String((uint8_t)directorPowerUpChancePercent);
-    json += ",\"autoWeb\":" + String(directorAutoWhenWebConnected ? 1 : 0);
-    json += ",\"activeAsteroids\":" + String(activeAsteroidCount());
-    json += ",\"activePowerUps\":" + String(activePowerUpCount());
-    json += ",\"activeHazards\":" + String(activeHazardCount());
-    json += ",\"slow\":" + String(secondsLeft(slowFieldUntil));
-    json += "}";
-    json += ",\"lastMatch\":{\"name\":\"" + jsonEscape(htmlEscape(String(lastMatchName))) + "\"";
-    json += ",\"score\":" + String(lastMatchScore);
-    json += ",\"p1\":" + String(lastMatchP1Score);
-    json += ",\"p2\":" + String(lastMatchP2Score);
-    json += ",\"p1Name\":\"" + jsonEscape(htmlEscape(playerNameOrDefault(0))) + "\"";
-    json += ",\"p2Name\":\"" + jsonEscape(htmlEscape(playerNameOrDefault(1))) + "\"";
-    json += ",\"p1Kills\":" + String(lastMatchP1Kills);
-    json += ",\"p2Kills\":" + String(lastMatchP2Kills);
-    json += ",\"bosses\":" + String(lastMatchBosses);
-    json += ",\"duration\":" + String(lastMatchDurationSec);
-    json += "}";
-    PlayerData top[3];
-    int topCount = 0;
-    getTopScores(top, topCount);
-    if (topCount > 3) topCount = 3;
-    json += ",\"top\":[";
-    for (int i = 0; i < topCount; i++)
-    {
-        if (i > 0) json += ",";
-        json += "{\"name\":\"" + jsonEscape(htmlEscape(top[i].name)) + "\",\"score\":" + String(top[i].score) + "}";
+    RaumschiffStatusSnapshot snapshot;
+    raumschiffBuildStatusSnapshot(snapshot);
+    return formatRaumschiffStateJson(snapshot);
+}
+
+void raumschiffBuildStatusSnapshot(RaumschiffStatusSnapshot& s)
+{
+    s.state = gameState;
+    s.score = score;
+    portENTER_CRITICAL(&webInputMux);
+    s.webConnected = webConnectedNow();
+    s.webEnergy = webEnergy;
+    s.p2InputMode = p2InputMode;
+    s.directorSpawnMs = directorSpawnIntervalMs;
+    s.directorMoveMs = directorAsteroidMoveMs;
+    s.directorMaxAsteroids = directorMaxActiveAsteroids;
+    s.directorSmallPercent = directorSmallAsteroidPercent;
+    s.directorPowerChance = directorPowerUpChancePercent;
+    s.directorAutoWeb = directorAutoWhenWebConnected;
+    portEXIT_CRITICAL(&webInputMux);
+    s.webEnergyMax = webEnergyMax;
+    s.boss = boss;
+    s.activeAsteroids = activeAsteroidCount();
+    s.activePowerUps = activePowerUpCount();
+    s.activeHazards = activeHazardCount();
+    s.slowSeconds = secondsLeft(slowFieldUntil);
+    strncpy(s.lastMatchName, lastMatchName, sizeof(s.lastMatchName));
+    s.lastMatchName[sizeof(s.lastMatchName) - 1] = '\0';
+    s.lastMatchScore = lastMatchScore;
+    s.lastMatchP1Score = lastMatchP1Score;
+    s.lastMatchP2Score = lastMatchP2Score;
+    s.lastMatchP1Kills = lastMatchP1Kills;
+    s.lastMatchP2Kills = lastMatchP2Kills;
+    s.lastMatchBosses = lastMatchBosses;
+    s.lastMatchDurationSec = lastMatchDurationSec;
+    for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++) {
+        RaumschiffPlayerStatus& p = s.players[i];
+        String fullName = playerNameOrDefault(i);
+        String compactName = shortPlayerName(i);
+        fullName.toCharArray(p.name, sizeof(p.name));
+        compactName.toCharArray(p.shortName, sizeof(p.shortName));
+        p.active = spieler[i].active;
+        p.alive = spieler[i].hp > 0;
+        p.hp = spieler[i].hp;
+        p.score = spieler[i].score;
+        p.kills = spieler[i].kills;
+        p.level = spieler[i].damageLevel;
+        p.shield = spieler[i].shield;
+        p.multiSeconds = secondsLeft(spieler[i].multiShotUntil);
+        p.boostSeconds = secondsLeft(spieler[i].damageBoostUntil);
+        p.invertSeconds = secondsLeft(spieler[i].invertUntil);
+        p.baseDamage = baseShotDamage(i);
+        p.damage = normalShotDamage(i);
+        p.chargedDamage = chargedShotDamage(i);
+        p.nextDamageScore = nextDamageScore(i);
+        p.x = spieler[i].x;
+        p.y = spieler[i].y;
     }
-    json += "]";
-    json += ",\"players\":[";
-    for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++)
-    {
-        if (i > 0) json += ",";
-        json += "{\"name\":\"" + jsonEscape(htmlEscape(String(playerNames[i]))) + "\"";
-        json += ",\"shortName\":\"" + jsonEscape(htmlEscape(shortPlayerName(i))) + "\"";
-        json += ",\"active\":" + String(spieler[i].active ? 1 : 0);
-        json += ",\"alive\":" + String(spieler[i].hp > 0 ? 1 : 0);
-        json += ",\"hp\":" + String(spieler[i].hp);
-        json += ",\"score\":" + String(spieler[i].score);
-        json += ",\"kills\":" + String(spieler[i].kills);
-        json += ",\"level\":" + String(spieler[i].damageLevel);
-        json += ",\"shield\":" + String(spieler[i].shield);
-        json += ",\"multi\":" + String(secondsLeft(spieler[i].multiShotUntil));
-        json += ",\"boost\":" + String(secondsLeft(spieler[i].damageBoostUntil));
-        json += ",\"invert\":" + String(secondsLeft(spieler[i].invertUntil));
-        json += ",\"baseDamage\":" + String(baseShotDamage(i));
-        json += ",\"damage\":" + String(normalShotDamage(i));
-        json += ",\"chargedDamage\":" + String(chargedShotDamage(i));
-        json += ",\"nextDamageScore\":" + String(nextDamageScore(i));
-        json += ",\"x\":" + String(spieler[i].x);
-        json += ",\"y\":" + String(spieler[i].y);
-        json += "}";
-    }
-    json += "]}";
-    return json;
 }
 
 Spieler& getSpieler() { return spieler[0]; }
