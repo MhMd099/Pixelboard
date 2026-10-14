@@ -38,9 +38,16 @@ String formatRaumschiffStateJson(const RaumschiffStatusSnapshot& s)
     json += ",\"bosses\":" + String(s.lastMatchBosses);
     json += ",\"duration\":" + String(s.lastMatchDurationSec) + "}";
 
-    PlayerData top[3];
-    int topCount = 0;
-    getTopScores(top, topCount);
+    // The dashboard refreshes often. High scores only change at match end, so
+    // avoid parsing config.json on every status request.
+    static PlayerData top[3];
+    static int topCount = 0;
+    static unsigned long topLoadedAt = 0;
+    unsigned long now = millis();
+    if (topLoadedAt == 0 || now - topLoadedAt >= 10000UL) {
+        getTopScores(top, topCount);
+        topLoadedAt = now == 0 ? 1 : now;
+    }
     json += ",\"top\":[";
     for (int i = 0; i < min(topCount, 3); i++) {
         if (i > 0) json += ',';

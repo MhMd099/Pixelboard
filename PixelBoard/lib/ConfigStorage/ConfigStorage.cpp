@@ -32,7 +32,20 @@ bool beginConfigStorage() {
     if (configMutex == NULL) return false;
 
     ConfigStorageGuard guard;
-    if (!guard.ok() || !LittleFS.begin(false)) return false;
+    if (!guard.ok()) return false;
+
+    if (!LittleFS.begin(false)) {
+        // A full chip erase leaves the LittleFS partition blank; an interrupted
+        // filesystem upload can leave an invalid directory pair. Recover once
+        // here so the rest of the firmware never runs against an unmounted FS.
+        Serial.println("LittleFS ungueltig; Partition wird einmalig formatiert.");
+        LittleFS.end();
+        if (!LittleFS.begin(true)) {
+            Serial.println("LittleFS konnte auch nach Formatierung nicht gemountet werden.");
+            return false;
+        }
+        Serial.println("LittleFS wurde wiederhergestellt.");
+    }
     recoverAtomicFile("/wifi.json");
     recoverAtomicFile("/device.json");
     recoverAtomicFile("/config.json");

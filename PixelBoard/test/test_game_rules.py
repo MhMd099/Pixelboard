@@ -107,7 +107,8 @@ class GameRuleTests(unittest.TestCase):
         self.assertIn("I2C-Joystick nicht verbunden", i2c_handler)
         self.assertNotIn("Wire.end()", i2c_handler)
         self.assertIn("LittleFS.begin(false)", storage)
-        self.assertNotIn("LittleFS.begin(true)", storage)
+        self.assertIn("LittleFS.begin(true)", storage)
+        self.assertIn("LittleFS.end()", storage)
 
     def test_settings_navigation_and_audio_optimizations_are_wired(self):
         config = (ROOT / "lib/Config/Config.cpp").read_text(encoding="utf-8")
@@ -134,6 +135,19 @@ class GameRuleTests(unittest.TestCase):
         self.assertIn("connect(\"api.openweathermap.org\", 80)", weather)
         self.assertTrue((ROOT / "lib/ConfigStorage/ConfigStorage.cpp").exists())
         self.assertTrue((ROOT / "lib/TaskRaumschiff/RaumschiffWeb.cpp").exists())
+
+    def test_shooter_dashboard_uses_bounded_memory_and_polling(self):
+        config = (ROOT / "lib/Config/Config.cpp").read_text(encoding="utf-8")
+        shooter = config.split("void handleShooterPage()", 1)[1].split(
+            "void handleShooterState()", 1
+        )[0]
+        web = (ROOT / "lib/TaskRaumschiff/RaumschiffWeb.cpp").read_text(encoding="utf-8")
+        self.assertIn("static const char shooterHtml[] PROGMEM", shooter)
+        self.assertIn("server.send_P", shooter)
+        self.assertNotIn("String html", shooter)
+        self.assertIn("setInterval(state,1200)", shooter)
+        self.assertIn("setInterval(ping,3000)", shooter)
+        self.assertIn("now - topLoadedAt >= 10000UL", web)
 
 
 if __name__ == "__main__":
