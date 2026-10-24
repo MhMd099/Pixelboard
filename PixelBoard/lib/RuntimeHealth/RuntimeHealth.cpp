@@ -17,3 +17,15 @@ void registerCurrentTaskWithWatchdog() {
 void feedRuntimeWatchdog() {
     if (watchdogReady) esp_task_wdt_reset();
 }
+
+void delayWithRuntimeWatchdog(uint32_t milliseconds) {
+    TickType_t remaining = pdMS_TO_TICKS(milliseconds);
+    const TickType_t sliceTicks = pdMS_TO_TICKS(250) > 0 ? pdMS_TO_TICKS(250) : 1;
+    while (remaining > 0) {
+        feedRuntimeWatchdog();
+        TickType_t slice = remaining < sliceTicks ? remaining : sliceTicks;
+        vTaskDelay(slice);
+        remaining -= slice;
+    }
+    feedRuntimeWatchdog();
+}

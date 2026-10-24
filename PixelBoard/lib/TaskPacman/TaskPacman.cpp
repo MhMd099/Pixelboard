@@ -661,20 +661,37 @@ void renderGame(unsigned long now) {
 
 void renderLobby(unsigned long now) {
     FastLED.clear();
-    int mouth = (now / 180) % 2;
+    // Die grosse, ikonische Darstellung ist auf 32x16 deutlich lesbarer als
+    // eine verkleinerte Labyrinthsimulation.
+    bool mouthOpen = ((now / 180UL) & 1) != 0;
     setPixel(5, 7, CRGB::Yellow);
     setPixel(6, 6, CRGB::Yellow);
     setPixel(6, 7, CRGB::Yellow);
     setPixel(6, 8, CRGB::Yellow);
-    setPixel(7, mouth ? 7 : 6, CRGB::Yellow);
-    setPixel(7, mouth ? 7 : 8, CRGB::Yellow);
-    CRGB ghostMode = CRGB::Cyan;
-    for (int gx = 21; gx <= 23; gx++)
-        for (int gy = 6; gy <= 9; gy++)
-            if (!(gy == 9 && gx == 22)) setPixel(gx, gy, ghostMode);
-    for (int x = 10; x < 19; x += 2) setPixel(x, 7, CRGB(70, 58, 22));
-    setPixel(14, 12, playerHuman[0] ? CRGB::Yellow : CRGB(70, 70, 20));
-    setPixel(17, 12, playerHuman[1] ? CRGB::Green : CRGB(20, 70, 20));
+    if (!mouthOpen) {
+        setPixel(7, 7, CRGB::Yellow);
+    } else {
+        setPixel(7, 6, CRGB::Yellow);
+        setPixel(7, 8, CRGB::Yellow);
+    }
+
+    for (int x = 10; x < 20; x += 2)
+        setPixel(x, 7, CRGB(80, 62, 18));
+
+    CRGB ghostColor = CRGB::Cyan;
+    for (int gx = 22; gx <= 25; gx++) {
+        for (int gy = 6; gy <= 9; gy++) {
+            if (gy == 9 && ((gx + (now / 220UL)) & 1)) continue;
+            setPixel(gx, gy, ghostColor);
+        }
+    }
+    setPixel(23, 7, CRGB::White);
+    setPixel(25, 7, CRGB::White);
+    setPixel(23, 8, CRGB(25, 55, 110));
+    setPixel(25, 8, CRGB(25, 55, 110));
+
+    setPixel(13, 12, playerHuman[0] ? CRGB::Yellow : CRGB(75, 68, 20));
+    setPixel(18, 12, playerHuman[1] ? CRGB::Green : CRGB(20, 75, 30));
 }
 
 void renderCountdown(unsigned long now) {

@@ -53,6 +53,48 @@ static bool snakeJoystickMoved(const GameStickState& stick) {
     return abs(stick.x) > 70 || abs(stick.y) > 70;
 }
 
+static Point snakePreviewRoutePoint(int step) {
+    const int left = 4;
+    const int right = 27;
+    const int top = 3;
+    const int bottom = 12;
+    const int horizontal = right - left;
+    const int vertical = bottom - top;
+    const int perimeter = 2 * (horizontal + vertical);
+    step %= perimeter;
+    if (step < 0) step += perimeter;
+    if (step <= horizontal) return {left + step, top};
+    step -= horizontal;
+    if (step <= vertical) return {right, top + step};
+    step -= vertical;
+    if (step <= horizontal) return {right - step, bottom};
+    step -= horizontal;
+    return {left, bottom - step};
+}
+
+void renderSnakeMenuPreview() {
+    FastLED.clear();
+    unsigned long now = millis();
+    int headStep = (now / 105UL) % 64;
+    Point apple = snakePreviewRoutePoint(20);
+    if (headStep != 20 && headStep != 21) {
+        setPixel(apple.x, apple.y, CRGB::Red);
+        if ((now / 180UL) & 1) setPixel(apple.x, apple.y - 1, CRGB(120, 18, 12));
+    }
+
+    for (int i = 11; i >= 0; i--) {
+        Point segment = snakePreviewRoutePoint(headStep - i);
+        CRGB color = i == 0 ? themeCol(now / 18, 255)
+                            : themeCol(now / 18 + i * 7, 190);
+        setPixel(segment.x, segment.y, color);
+    }
+    Point head = snakePreviewRoutePoint(headStep);
+    Point ahead = snakePreviewRoutePoint(headStep + 1);
+    int eyeX = constrain(head.x + (ahead.x - head.x), 0, WIDTH - 1);
+    int eyeY = constrain(head.y + (ahead.y - head.y), 0, HEIGHT_TOTAL - 1);
+    setPixel(eyeX, eyeY, CRGB::White);
+}
+
 void taskSnakeHandler(void *pvParameters) {
     GameRuntime runtime;
     static Point snakes[2][MAX_SNAKE_LENGTH];
@@ -61,6 +103,7 @@ void taskSnakeHandler(void *pvParameters) {
     bool playerJoined[2] = {true, false};
     bool playerAlive[2] = {true, false};
     bool playerHuman[2] = {false, false};
+    bool humanInputArmed[2] = {false, false};
     int8_t humanController[2] = {-1, -1};
     unsigned long playerJoinMs[2] = {0, 0};
     unsigned long playerDeathMs[2] = {0, 0};
@@ -158,10 +201,14 @@ void taskSnakeHandler(void *pvParameters) {
         currentScore = 0;
         configureItems();
     };
-    auto claimBot = [&](int8_t controller, int preferredPlayer) {
+    auto controllerInUse = [&](int8_t controller) {
         for (int player = 0; player < 2; player++) {
-            if (playerHuman[player] && humanController[player] == controller) return false;
+            if (playerHuman[player] && humanController[player] == controller) return true;
         }
+        return false;
+    };
+    auto claimBot = [&](int8_t controller, int preferredPlayer) {
+        if (controllerInUse(controller)) return false;
 
         int target = -1;
         if (playerJoined[preferredPlayer] && !playerHuman[preferredPlayer]) {
@@ -173,8 +220,46 @@ void taskSnakeHandler(void *pvParameters) {
         if (target < 0) return false;
 
         playerHuman[target] = true;
+        humanInputArmed[target] = false;
         humanController[target] = controller;
         playerJoinMs[target] = millis();
+        playSound(SND_POWERUP);
+        return true;
+    };
+    auto joinSecondHuman = [&](int8_t controller) {
+        if (playerJoined[1] || controllerInUse(controller)) return false;
+
+        dirs[1] = {-dirs[0].x, -dirs[0].y};
+        snakeLengths[1] = 3;
+        Point start = {23, 8};
+        bool found = false;
+        for (int y = 2; y < HEIGHT_TOTAL - 1 && !found; y++) {
+            for (int x = 3; x < WIDTH - 2; x++) {
+                bool clear = true;
+                for (int i = 0; i < snakeLengths[1]; i++) {
+                    Point segment = {x - dirs[1].x * i, y - dirs[1].y * i};
+                    if (segment.x < 0 || segment.x >= WIDTH || segment.y < 0 ||
+                        segment.y >= HEIGHT_TOTAL || onSnake(0, segment) || onAnyItem(segment)) {
+                        clear = false;
+                        break;
+                    }
+                }
+                if (!clear) continue;
+                start = {x, y};
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+
+        for (int i = 0; i < snakeLengths[1]; i++)
+            snakes[1][i] = {start.x - dirs[1].x * i, start.y - dirs[1].y * i};
+        playerJoined[1] = true;
+        playerAlive[1] = true;
+        playerHuman[1] = true;
+        humanInputArmed[1] = false;
+        humanController[1] = controller;
+        playerJoinMs[1] = millis();
         playSound(SND_POWERUP);
         return true;
     };
@@ -319,6 +404,8 @@ void taskSnakeHandler(void *pvParameters) {
             joystick3.reset();
             playerHuman[0] = false;
             playerHuman[1] = false;
+            humanInputArmed[0] = false;
+            humanInputArmed[1] = false;
             humanController[0] = -1;
             humanController[1] = -1;
             resetGame();
@@ -337,8 +424,8 @@ void taskSnakeHandler(void *pvParameters) {
         }
 
         GameControlEvents controls = runtime.poll(joystick1, joystick3);
-        if (controls.primaryDoubleClick) claimBot(0, 0);
-        if (controls.secondaryDoubleClick) claimBot(1, 1);
+        if (controls.primaryDoubleClick && !claimBot(0, 0)) joinSecondHuman(0);
+        if (controls.secondaryDoubleClick && !claimBot(1, 1)) joinSecondHuman(1);
         joystick1.einfacherKlickZaehler = 0;
         joystick3.einfacherKlickZaehler = 0;
         if (controls.pauseToggle &&
@@ -400,6 +487,10 @@ void taskSnakeHandler(void *pvParameters) {
                     if (!movingNow[player] || !playerHuman[player]) continue;
                     const GameStickState& stick = humanController[player] == 0
                         ? controls.primary : controls.secondary;
+                    if (!humanInputArmed[player]) {
+                        if (!snakeJoystickMoved(stick)) humanInputArmed[player] = true;
+                        continue;
+                    }
                     applySnakeInput(stick, dirs[player]);
                 }
 

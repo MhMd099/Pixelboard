@@ -2,5 +2,6 @@
 #define TASK_SNAKE_H
 
 void taskSnakeHandler(void *pvParameters);
+void renderSnakeMenuPreview();
 
 #endif

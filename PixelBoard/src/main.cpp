@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <ESPmDNS.h>
 #include <Wire.h>
+#include <esp_system.h>
 #include "time.h"
 #include "HardwareUtils.h"
 #include "SoundUtils.h"
@@ -219,6 +220,68 @@ static void handleMenuVolumeControls()
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
 // ==========================================
+static void renderPhonkVisualizer(unsigned long now)
+{
+    FastLED.clear();
+
+    // 140-BPM-artiger Bassimpuls. Die Anzeige ist absichtlich synthetisch:
+    // Das Board besitzt kein Mikrofon, wirkt aber trotzdem rhythmisch.
+    const uint16_t beatPhase = now % 428UL;
+    const uint8_t kick = beatPhase < 96 ? 255 - beatPhase * 2 : 35;
+
+    // Schnelle diagonale Neonspuren hinter dem Spektrum.
+    int sweep = (now / 24UL) % 48 - 8;
+    for (int trail = 0; trail < 8; trail++)
+    {
+        int x = sweep - trail * 2;
+        int y = 1 + trail * 2;
+        if (x >= 0 && x < 32 && y < 16)
+            setPixel(x, y, trail < 2 ? CRGB(255, 35, 150) : CRGB(70, 12, 95));
+
+        int mirrorX = 31 - x;
+        if (mirrorX >= 0 && mirrorX < 32 && y < 16)
+            setPixel(mirrorX, y, trail < 2 ? CRGB(35, 210, 255) : CRGB(12, 55, 90));
+    }
+
+    // Zehn breite Frequenzbaender mit wandernder Welle und starkem Kick.
+    for (int band = 0; band < 10; band++)
+    {
+        int bx = 1 + band * 3;
+        uint8_t wave = sin8((uint8_t)(band * 31 + now / 3UL + musicBeat * 17));
+        int height = 2 + (wave * 8) / 255 + (kick * 4) / 255;
+        height = min(height, 14);
+
+        for (int level = 0; level < height; level++)
+        {
+            int y = 15 - level;
+            CRGB color;
+            if (level < 4)
+                color = CRGB(85, 18, 155);
+            else if (level < 9)
+                color = ((band + level) & 1) ? CRGB(245, 25, 145) : CRGB(25, 185, 245);
+            else
+                color = CRGB(220, 255, 80);
+            setPixel(bx, y, color);
+            setPixel(bx + 1, y, color);
+        }
+
+        int peakY = 14 - height;
+        if (peakY >= 0)
+            setPixel(bx + ((now / 80UL + band) & 1), peakY, CRGB::White);
+    }
+
+    // Kurzer, heller Bassblitz an beiden Seiten statt eines statischen Rahmens.
+    if (beatPhase < 70)
+    {
+        CRGB flash = beatPhase < 28 ? CRGB::White : CRGB(170, 255, 40);
+        for (int y = 5; y <= 10; y++)
+        {
+            setPixel(0, y, flash);
+            setPixel(31, y, flash);
+        }
+    }
+}
+
 void drawIcon(int xOffset, int yOffset, uint32_t icon, CRGB color)
 {
     for (int i = 0; i < 15; i++)
@@ -340,57 +403,13 @@ void printMenu()
 
     case 3:
     {
-        const int len = 16;
-        int head = (int)((jetzt / 80) % 44) - 6;
-        for (int i = 0; i < len; i++)
-        {
-            int x = head - i;
-            if (x < 0 || x >= 32)
-                continue;
-            int y = 8 + (int)(sin(x / 3.2 + jetzt / 280.0) * 4.0);
-            if (y < 0 || y >= 16)
-                continue;
-
-            if (i == 0)
-            {
-                setPixel(x, y, themeCol(jetzt / 20, 255));
-                setPixel(x, y - 1, themeCol(jetzt / 20 + 64, 200));
-                if ((jetzt / 180) % 2)
-                    setPixel(x + 1, y, themeCol(jetzt / 20 + 128, 255));
-            }
-            else
-            {
-                uint8_t v = (uint8_t)map(i, 1, len, 235, 60);
-                setPixel(x, y, themeCol(jetzt / 35 + i * 8, v));
-            }
-        }
-
-        uint8_t puls = 150 + (uint8_t)(sin(jetzt / 200.0) * 90);
-        setPixel(27, 5, themeCol(jetzt / 20 + 160, puls));
-        setPixel(27, 4, themeCol(jetzt / 20 + 96, 220));
+        renderSnakeMenuPreview();
         break;
     }
 
     case 4:
     {
-        auto drawNote = [&](int nx, int ny, CRGB col)
-        {
-            setPixel(nx, ny + 2, col);
-            setPixel(nx + 1, ny + 2, col);
-            setPixel(nx, ny + 3, col);
-            setPixel(nx + 1, ny + 3, col);
-            for (int y = ny - 3; y <= ny + 2; y++)
-                setPixel(nx + 1, y, col);
-            setPixel(nx + 2, ny - 3, col);
-            setPixel(nx + 2, ny - 2, col);
-        };
-
-        int b1 = (int)(sin(jetzt / 180.0) * 2.0);
-        int b2 = (int)(sin(jetzt / 180.0 + 1.2) * 2.0);
-        int b3 = (int)(sin(jetzt / 180.0 + 2.4) * 2.0);
-        drawNote(5, 7 + b1, themeCol(jetzt / 12, 235));
-        drawNote(14, 8 + b2, themeCol(jetzt / 12 + 85, 235));
-        drawNote(23, 7 + b3, themeCol(jetzt / 12 + 170, 235));
+        renderPhonkVisualizer(jetzt);
         break;
     }
 
@@ -599,23 +618,8 @@ void taskMusik(void *pv)
             continue;
         }
 
-        FastLED.clear();
         unsigned long jetzt = millis();
-
-        for (int bar = 0; bar < 8; bar++)
-        {
-            int bx = 1 + bar * 4;
-            float phase = jetzt / 130.0 + bar * 0.8;
-            int h = 2 + (int)(fabs(sin(phase)) * 9) + (musicBeat % 4);
-            if (h > 15)
-                h = 15;
-            for (int y = 15; y > 15 - h; y--)
-            {
-                CRGB c = themeCol((15 - y) * 16 + jetzt / 20, 220);
-                setPixel(bx, y, c);
-                setPixel(bx + 1, y, c);
-            }
-        }
+        renderPhonkVisualizer(jetzt);
         FastLED.show();
         unlockDisplay();
         vTaskDelay(45 / portTICK_PERIOD_MS);
@@ -716,8 +720,9 @@ void taskI2CJoystickHandler(void *pv)
             }
         }
 
-        feedRuntimeWatchdog();
-        vTaskDelay(connected ? pdMS_TO_TICKS(15) : pdMS_TO_TICKS(1500));
+        // Poll a missing controller rarely, but never sleep past the 8-second
+        // watchdog deadline. Valid first packets are confirmed immediately.
+        delayWithRuntimeWatchdog(connected || validPackets > 0 ? 15 : 10000);
     }
 }
 
@@ -737,10 +742,32 @@ static bool createTaskChecked(TaskFunction_t function, const char *name,
 // ==========================================
 // 6. SETUP
 // ==========================================
+static const char* resetReasonName(esp_reset_reason_t reason)
+{
+    switch (reason)
+    {
+        case ESP_RST_POWERON: return "Einschalten";
+        case ESP_RST_EXT: return "Reset-Taster";
+        case ESP_RST_SW: return "Software-Neustart";
+        case ESP_RST_PANIC: return "Absturz/Panic";
+        case ESP_RST_INT_WDT: return "Interrupt-Watchdog";
+        case ESP_RST_TASK_WDT: return "Task-Watchdog";
+        case ESP_RST_WDT: return "Watchdog";
+        case ESP_RST_DEEPSLEEP: return "Deep-Sleep";
+        case ESP_RST_BROWNOUT: return "Unterspannung/Brownout";
+        case ESP_RST_SDIO: return "SDIO";
+        default: return "Unbekannt";
+    }
+}
+
 void setup()
 {
     Serial.begin(115200);
     vTaskDelay(pdMS_TO_TICKS(500));
+    esp_reset_reason_t resetReason = esp_reset_reason();
+    Serial.printf("[BOOT] Reset-Grund: %d (%s)\n", (int)resetReason,
+                  resetReasonName(resetReason));
+    Serial.printf("[BOOT] Build: %s %s\n", __DATE__, __TIME__);
 
     displayMutex = xSemaphoreCreateMutex();
     if (displayMutex == NULL)
@@ -759,10 +786,13 @@ void setup()
     loadDeviceProfile();
     Wire.begin(I2C_SDA, I2C_SCL);
     Serial.println("I2C-Bus aktiv auf GPIO 32 (SDA) und GPIO 33 (SCL).");
-    if (!hasWifiCredentials())
-        startCaptivePortal();
+    // With saved credentials use station mode only. Running AP and STA together
+    // costs sockets and RAM and made dashboard connections unstable. The Wi-Fi
+    // worker starts the secured AP after 20 seconds only if station mode fails.
     if (hasWifiCredentials())
         beginWifiConnection();
+    else
+        startCaptivePortal();
 
     FastLED.addLeds<CHIPSET, LED_PIN_OBEN, COLOR_ORDER>(ledsOben[0], ledsOben.Size());
     FastLED.addLeds<CHIPSET, LED_PIN_UNTEN, COLOR_ORDER>(ledsUnten[0], ledsUnten.Size());
@@ -781,7 +811,7 @@ void setup()
     setupWebServer();
 
     createTaskChecked(taskI2CJoystickHandler, "I2CJoy", 2048, 4, 1);
-    createTaskChecked(taskWebServerHandler, "Web", 4096, 1, 0);
+    createTaskChecked(taskWebServerHandler, "Web", 8192, 1, 0);
     createTaskChecked(taskMenuMusic, "MenuMP3", 10240, 2, 0);
     createTaskChecked(taskWifiManager, "WiFi", 4096, 1, 0);
     createTaskChecked(taskUhr, "Uhr", 4096, 1, 1);

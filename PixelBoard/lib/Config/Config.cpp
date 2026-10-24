@@ -4,6 +4,8 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <WiFi.h>
+#include <errno.h>
+#include <sys/socket.h>
 #include "HardwareUtils.h"
 #include "RaumschiffGame.h"
 #include "SoundUtils.h"
@@ -40,7 +42,7 @@ volatile uint16_t tetrisMinFallMs = 220;
 volatile uint16_t tetrisSpeedScoreStep = 250;
 volatile uint16_t tetrisSpeedStepMs = 35;
 volatile bool tetrisFastBotMode = false;
-volatile uint8_t pongBotMode = 1;
+volatile uint8_t pongBotMode = 0;
 static String standbyText = "NothinBL";
 bool forceWeatherUpdate = false;
 
@@ -49,7 +51,104 @@ String wifiPassword = "";
 int currentDhtPin = 21;
 int currentDhtType = 22;
 
-WebServer server(80);
+// Bound every response write, not just large HTML bodies: WebServer also
+// writes HTTP headers, JSON and flash-backed pages through these two hooks.
+class BoundedWebServer : public WebServer {
+public:
+    explicit BoundedWebServer(int port) : WebServer(port) {}
+
+    void handleClient() override {
+        responseStarted = false;
+        responseFailed = false;
+        WebServer::handleClient();
+    }
+
+    size_t streamFile(File& file, const String& contentType, const int code = 200) {
+        _streamFileCore(file.size(), file.name(), contentType, code);
+        size_t total = 0;
+        uint8_t buffer[384];
+        while (!responseFailed && file.available()) {
+            size_t count = file.read(buffer, sizeof(buffer));
+            if (count == 0) {
+                abortResponse(EIO);
+                break;
+            }
+            size_t written = writeBounded((const char*)buffer, count);
+            total += written;
+            if (written != count) break;
+        }
+        return total;
+    }
+
+protected:
+    size_t _currentClientWrite(const char* data, size_t length) override {
+        return writeBounded(data, length);
+    }
+
+    size_t _currentClientWrite_P(PGM_P data, size_t length) override {
+        // ESP32 flash is memory-mapped; no full-page RAM copy is necessary.
+        return writeBounded(data, length);
+    }
+
+private:
+    bool responseStarted = false;
+    bool responseFailed = false;
+    unsigned long responseStartedMs = 0;
+
+    void abortResponse(int error) {
+        if (!responseFailed) {
+            Serial.printf("[WEB] Antwort abgebrochen: %s (Socket/Timeout %d).\n",
+                          _currentUri.c_str(), error);
+        }
+        responseFailed = true;
+        _currentClient.stop();
+    }
+
+    size_t writeBounded(const char* data, size_t length) {
+        if (responseFailed || length == 0) return 0;
+        int socketFd = _currentClient.fd();
+        if (socketFd < 0) {
+            abortResponse(ENOTCONN);
+            return 0;
+        }
+        if (!responseStarted) {
+            responseStarted = true;
+            responseStartedMs = millis();
+        }
+
+        const size_t sliceSize = 384;
+        const unsigned long maxStallMs = 1500;
+        const unsigned long maxResponseMs = 5000;
+        unsigned long lastProgressMs = millis();
+        size_t offset = 0;
+        while (offset < length) {
+            unsigned long now = millis();
+            if (now - lastProgressMs >= maxStallMs ||
+                now - responseStartedMs >= maxResponseMs) {
+                abortResponse(ETIMEDOUT);
+                break;
+            }
+            size_t remaining = length - offset;
+            size_t pending = remaining < sliceSize ? remaining : sliceSize;
+            int written = ::send(socketFd, data + offset, pending, MSG_DONTWAIT);
+            if (written > 0) {
+                offset += (size_t)written;
+                lastProgressMs = millis();
+                vTaskDelay(1);
+                continue;
+            }
+            int error = written < 0 ? errno : EAGAIN;
+            if (error != EAGAIN && error != EWOULDBLOCK && error != EINTR) {
+                abortResponse(error);
+                break;
+            }
+            vTaskDelay(1);
+        }
+        return offset;
+    }
+};
+
+BoundedWebServer server(80);
 DNSServer dnsServer;
 bool captivePortalActive = false;
 static const byte DNS_PORT = 53;
@@ -58,6 +157,8 @@ static const char* captivePassword = "NothinBL";
 static const char* deviceHostNameValue = "pixelboard";
 static unsigned long lastWifiBeginMs = 0;
 static unsigned long firstWifiAttemptMs = 0;
+static volatile bool wifiReconnectRequested = false;
+static volatile unsigned long wifiReconnectNotBeforeMs = 0;
 
 extern volatile int aktiverTask;
 extern int fokusModus;
@@ -179,7 +280,16 @@ String deviceLocalUrl() {
 }
 
 void beginWifiConnection() {
-    if (!hasWifiCredentials()) return;
+    String ssid;
+    String password;
+    {
+        // The web task can replace the stored Strings while the Wi-Fi worker
+        // reconnects. Keep stable local buffers for the driver to copy from.
+        ConfigGuard guard;
+        if (!guard.ok() || wifiSsid.length() == 0) return;
+        ssid = wifiSsid;
+        password = wifiPassword;
+    }
 
     if (captivePortalActive) {
         // Keep the already secured portal online while trying the configured WLAN.
@@ -192,23 +302,34 @@ void beginWifiConnection() {
     WiFi.setAutoReconnect(true);
     WiFi.setHostname(deviceHostNameValue);
     WiFi.disconnect(false, false);
-    WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+    WiFi.begin(ssid.c_str(), password.c_str());
     lastWifiBeginMs = millis();
     if (firstWifiAttemptMs == 0) firstWifiAttemptMs = lastWifiBeginMs;
-    Serial.println("Verbinde mit WLAN: " + wifiSsid);
+    Serial.println("Verbinde mit WLAN: " + ssid);
 }
 
 void maintainWifiConnection() {
+    unsigned long now = millis();
+    if (wifiReconnectRequested &&
+        (long)(now - wifiReconnectNotBeforeMs) >= 0) {
+        wifiReconnectRequested = false;
+        lastWifiBeginMs = 0;
+        firstWifiAttemptMs = 0;
+        beginWifiConnection();
+        return;
+    }
+
     if (!hasWifiCredentials()) {
         startCaptivePortal();
         return;
     }
     if (WiFi.status() == WL_CONNECTED) {
-        stopCaptivePortal();
+        // The normal boot stays STA-only. If a fallback portal was necessary,
+        // leave it untouched here: DNS may currently be processed by the web
+        // task, so its state must not be destroyed from this worker.
         return;
     }
 
-    unsigned long now = millis();
     if (firstWifiAttemptMs != 0 && now - firstWifiAttemptMs > 20000UL) {
         startCaptivePortal();
     }
@@ -239,7 +360,10 @@ void saveWifiCredentials(String newSsid, String newPassword) {
         Serial.println("WLAN-Daten konnten nicht gespeichert werden.");
     }
 
-    beginWifiConnection();
+    // Erst nach der HTTP-Antwort umschalten. Ein sofortiger Wechsel des
+    // WLAN-Modus kann die Verbindung mitten in der POST-Antwort abbrechen.
+    wifiReconnectNotBeforeMs = millis() + 1500UL;
+    wifiReconnectRequested = true;
 }
 
 void loadDeviceSettings() {
@@ -260,7 +384,7 @@ void loadDeviceSettings() {
     tetrisSpeedScoreStep = 400;
     tetrisSpeedStepMs = 25;
     tetrisFastBotMode = false;
-    pongBotMode = 1;
+    pongBotMode = 0;
     standbyText = "NothinBL";
     setMasterVolume(100);
     setEffectsVolume(100);
@@ -355,23 +479,11 @@ body{padding-top:0!important}
 )HTML";
 
 static void sendDashboardHtml(String& html) {
-    const String bodyTag = F("<body>");
-    int bodyPos = html.indexOf(bodyTag);
-    if (bodyPos < 0) {
-        Serial.println("HTML-Seite ohne <body>-Tag; Sound-Regler konnte nicht eingefuegt werden.");
-        server.send(500, "text/plain; charset=utf-8", "HTML-Seite ist ungueltig.");
-        return;
-    }
-
-    // Stream the shared control from flash instead of duplicating every page.
-    int insertPos = bodyPos + bodyTag.length();
+    // Keep the dashboards compact. Injecting the global sound panel added more
+    // than 5 KB plus an immediate fetch to every page; on weak WLAN links that
+    // filled the ESP32 socket buffer and trapped WiFiClient in EAGAIN retries.
     server.sendHeader("Cache-Control", "no-store");
-    server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-    server.send(200, "text/html; charset=utf-8", "");
-    server.sendContent(html.substring(0, insertPos));
-    server.sendContent_P(globalSoundControl);
-    server.sendContent(html.substring(insertPos));
-    server.sendContent("");
+    server.send(200, "text/html; charset=utf-8", html);
 }
 
 static String soundStateJson(bool ok = true) {
@@ -464,7 +576,9 @@ void handleRoot() {
     bool wifiConnected = WiFi.status() == WL_CONNECTED;
     String savedSsid = configuredWifiSsid();
 
-    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+    String html;
+    html.reserve(6200);
+    html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'>";
     html += "<style>body{font-family:Arial,sans-serif;background:radial-gradient(circle at top,#162a46 0,#07111f 52%,#030712 100%);color:#f8fafc;text-align:center;margin:0;min-height:100vh;padding:22px;}";
     html += "h1{margin:10px 0 18px;font-size:32px;letter-spacing:.04em}h3{margin:0 0 14px;color:#7dd3fc}h4{margin:18px 0 4px;color:#cbd5e1}";
     html += "input[type='text'],input[type='password'],input[type='number'],select{box-sizing:border-box;width:100%;padding:12px;margin:7px 0;border-radius:10px;border:1px solid #334155;background:#081120;color:#fff;outline:none}input:focus,select:focus{border-color:#38bdf8;box-shadow:0 0 0 3px #38bdf822}";
@@ -520,9 +634,8 @@ void handleRoot() {
 
     html += "</div><div class='card'><h3>Bot-Modi</h3>";
     html += "<form action='/updatePongMode' method='POST'><h4>Pong</h4><select name='mode'>";
-    appendOption(html, 0, pongBotMode, "Normal");
-    appendOption(html, 1, pongBotMode, "Plausibel");
-    appendOption(html, 2, pongBotMode, "Super");
+    appendOption(html, 0, pongBotMode, "Wie jetzt");
+    appendOption(html, 1, pongBotMode, "Super");
     html += "</select><input type='submit' value='Pong anwenden'></form>";
     html += "<form action='/tetris/settings' method='POST'><h4>Tetris</h4><select name='botmode'>";
     appendOption(html, 0, tetrisFastBotMode ? 1 : 0, "Normal");
@@ -556,7 +669,7 @@ void handleShooterPage() {
 <div class='panel'><h2>Director</h2><div class='grid3'><button onclick='preset(0)'>Leicht</button><button onclick='preset(1)'>Normal</button><button class='warn' onclick='preset(2)'>Chaos</button></div><label><input type='checkbox' id='autoWeb'> Auto-Spawns auch mit Web-Gamemaster</label><div class='row'><label>Max Gegner</label><input id='maxA' type='range' min='1' max='16' value='8'><output id='maxAo'>8</output></div><div class='row'><label>Spawn ms</label><input id='spawnMs' type='range' min='80' max='8000' step='20' value='1200'><output id='spawnMso'>1200</output></div><div class='row'><label>Move ms</label><input id='moveMs' type='range' min='15' max='1500' step='5' value='220'><output id='moveMso'>220</output></div><div class='row'><label>Klein %</label><input id='smallP' type='range' min='0' max='100' step='5' value='35'><output id='smallPo'>35</output></div><div class='row'><label>PowerUp %</label><input id='powerP' type='range' min='0' max='100' step='5' value='25'><output id='powerPo'>25</output></div><button class='full' onclick='applyDirector()'>Director anwenden</button><div class='stat' id='directorStats'></div></div>
 <div class='panel'><h2>Gegner</h2><div class='grid2'><select id='spawnKind'><option value='0'>Small</option><option value='1'>Medium</option><option value='2'>Heavy</option><option value='3'>MiniBoss</option></select><select id='spawnSize'><option value='1'>1x1</option><option value='2'>2x2</option><option value='3'>3x3</option><option value='4'>4x4</option><option value='5'>5x5</option></select></div><div class='row'><label>Gegner HP</label><input id='spawnHp' type='range' min='1' max='8000' step='10' value='24'><output id='spawnHpo'>24</output></div><div class='row'><label>Speed</label><input id='spawnSpeed' type='range' min='1' max='16' value='2'><output id='spawnSpeedo'>2</output></div><button class='full danger' onclick='spawnAsteroid()'>Gegner spawnen</button></div>
 <div class='panel'><h2>Boss / Nerfs</h2><div id='bossStats' class='line'>Boss HP 0</div><div class='row'><label>Boss HP</label><input id='bossHp' type='range' min='50' max='20000' step='100' value='900'><output id='bossHpo'>900</output></div><div class='row'><label>Boss Size</label><input id='bossSize' type='range' min='3' max='7' value='4'><output id='bossSizeo'>4</output></div><button class='full warn' onclick='spawnBoss()'>Boss spawnen</button><div class='row'><label>Black Hole HP</label><input id='holeHp' type='range' min='10' max='6000' step='20' value='120'><output id='holeHpo'>120</output></div><div class='row'><label>Radius</label><input id='holeRadius' type='range' min='1' max='7' value='2'><output id='holeRadiuso'>2</output></div><div class='row'><label>Hole Speed</label><input id='holeSpeed' type='range' min='1' max='12' value='2'><output id='holeSpeedo'>2</output></div><button class='full power' onclick='spawnHazard()'>Black Hole spawnen</button><button class='full soft' onclick='spawnPowerUp()'>Random PowerUp droppen</button></div></div>
-<script>let synced=false,busy=false;const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function ping(){fetch('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function preset(m){let p=m==0?[5,1700,260,55,35]:m==1?[8,1150,190,40,25]:[13,520,95,20,45];by('maxA').value=p[0];by('spawnMs').value=p[1];by('moveMs').value=p[2];by('smallP').value=p[3];by('powerP').value=p[4];syncOut();applyDirector()}function applyDirector(){fetch('/shooter/director?'+q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function spawnAsteroid(){fetch('/shooter/spawn?'+q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){fetch('/shooter/boss?'+q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){fetch('/shooter/hazard?'+q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){fetch('/shooter/powerup').then(state).catch(()=>{})}function playerHtml(p,i){let input=i==0?'Controller 1':'I2C-Controller';let status=p.alive?'aktiv':'aus';let cls=p.alive?'':'dead';return `<div class='player p${i}'><b>${p.name}</b><div>${input} · <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Level ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>Next ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function state(){if(busy)return;busy=true;try{let r=await fetch('/shooter/state',{cache:'no-store'}),j=await r.json();by('score').textContent='Team Score '+j.score;by('energyText').textContent='Energie '+j.webEnergy+' / '+j.webEnergyMax;by('energyFill').style.width=Math.max(0,Math.min(100,j.webEnergy*100/j.webEnergyMax))+'%';by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Auto ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;let lm=j.lastMatch;by('lastMatch').textContent=lm.score>0?`${lm.name} · ${lm.score} · ${lm.duration}s`:'-';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;syncOut();synced=true}}catch(e){}finally{busy=false}}ping();state();setInterval(state,1200);setInterval(ping,3000);</script></body></html>)HTML";
+<script>let synced=false,busy=false;const outs=['maxA','spawnMs','moveMs','smallP','powerP','spawnHp','spawnSpeed','bossHp','bossSize','holeHp','holeRadius','holeSpeed'];function q(o){return Object.keys(o).map(k=>k+'='+encodeURIComponent(o[k])).join('&')}function post(path,body=''){return fetch(path,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body})}function ping(){post('/shooter/input').catch(()=>{})}function by(id){return document.getElementById(id)}function syncOut(){outs.forEach(id=>by(id+'o').value=by(id).value)}outs.forEach(id=>by(id).oninput=syncOut);syncOut();function preset(m){let p=m==0?[5,1700,260,55,35]:m==1?[8,1150,190,40,25]:[13,520,95,20,45];by('maxA').value=p[0];by('spawnMs').value=p[1];by('moveMs').value=p[2];by('smallP').value=p[3];by('powerP').value=p[4];syncOut();applyDirector()}function applyDirector(){post('/shooter/director',q({max:by('maxA').value,spawn:by('spawnMs').value,move:by('moveMs').value,small:by('smallP').value,power:by('powerP').value,auto:by('autoWeb').checked?1:0})).then(state).catch(()=>{})}function spawnAsteroid(){post('/shooter/spawn',q({kind:by('spawnKind').value,size:by('spawnSize').value,hp:by('spawnHp').value,speed:by('spawnSpeed').value})).then(state).catch(()=>{})}function spawnBoss(){post('/shooter/boss',q({hp:by('bossHp').value,size:by('bossSize').value})).then(state).catch(()=>{})}function spawnHazard(){post('/shooter/hazard',q({type:1,hp:by('holeHp').value,radius:by('holeRadius').value,speed:by('holeSpeed').value})).then(state).catch(()=>{})}function spawnPowerUp(){post('/shooter/powerup').then(state).catch(()=>{})}function playerHtml(p,i){let input=i==0?'Controller 1':'I2C-Controller';let status=p.alive?'aktiv':'aus';let cls=p.alive?'':'dead';return `<div class='player p${i}'><b>${p.name}</b><div>${input} · <span class='${cls}'>${status}</span></div><div class='stat'><span>HP ${p.hp}</span><span>Score ${p.score}</span><span>Kills ${p.kills}</span><span>Level ${p.level}</span><span>Basis ${p.baseDamage}</span><span>Shot ${p.damage}</span><span>Charge ${p.chargedDamage}</span><span>Next ${p.nextDamageScore}</span><span>Shield ${p.shield}</span><span>Boost ${p.boost}s</span><span>Multi ${p.multi}s</span><span>Invert ${p.invert}s</span></div></div>`}async function state(){if(busy)return;busy=true;try{let r=await fetch('/shooter/state',{cache:'no-store'}),j=await r.json();by('score').textContent='Team Score '+j.score;by('energyText').textContent='Energie '+j.webEnergy+' / '+j.webEnergyMax;by('energyFill').style.width=Math.max(0,Math.min(100,j.webEnergy*100/j.webEnergyMax))+'%';by('players').innerHTML=j.players.map(playerHtml).join('');by('bossStats').textContent=j.boss.active?`Boss HP ${j.boss.hp} / ${j.boss.maxHp} | Size ${j.boss.size} | Phase ${j.boss.phase||'-'}`:'Kein Boss aktiv';let d=j.director;by('directorStats').innerHTML=`<span>Auto ${d.autoWeb?'an':'aus'}</span><span>Gegner ${d.activeAsteroids}/${d.maxAsteroids}</span><span>PowerUps ${d.activePowerUps}</span><span>Hazards ${d.activeHazards}</span><span>Slow ${d.slow}s</span><span>Move ${d.moveMs}ms</span><span>Spawn ${d.spawnMs}ms</span>`;let lm=j.lastMatch;by('lastMatch').textContent=lm.score>0?`${lm.name} · ${lm.score} · ${lm.duration}s`:'-';if(!synced){by('maxA').value=d.maxAsteroids;by('spawnMs').value=d.spawnMs;by('moveMs').value=d.moveMs;by('smallP').value=d.smallPercent;by('powerP').value=d.powerChance;by('autoWeb').checked=!!d.autoWeb;syncOut();synced=true}}catch(e){}finally{busy=false}}ping();state();setInterval(state,1200);setInterval(ping,3000);</script></body></html>)HTML";
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", shooterHtml);
 }
@@ -631,7 +744,9 @@ void handleShooterNames() {
 }
 
 void handleSnakePage() {
-    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    String html;
+    html.reserve(3600);
+    html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
     html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
     html += ".wrap{max-width:520px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.row{display:grid;grid-template-columns:140px 1fr;gap:8px;align-items:center;margin:8px 0}label{font-size:13px;color:#bfdbfe}input,select,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:11px;font-size:15px}";
@@ -661,7 +776,9 @@ void handleSnakeSettings() {
 }
 
 void handleTetrisPage() {
-    String html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
+    String html;
+    html.reserve(4000);
+    html = "<html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>";
     html += "<style>body{margin:0;background:#07111f;color:#edf6ff;font-family:Arial,sans-serif;padding:18px;text-align:center}";
     html += ".wrap{max-width:520px;margin:0 auto}.nav{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:10px 0}.nav a{background:#17243a;border:1px solid #334155;border-radius:8px;padding:9px 12px;color:#93c5fd;text-decoration:none;font-weight:bold}.card{background:#101b2d;border:1px solid #2b3d55;border-radius:8px;padding:14px;margin:12px 0;text-align:left}";
     html += "h1{font-size:24px;margin:8px 0 12px}h2{font-size:17px;color:#93c5fd;margin:0 0 10px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}.row{display:grid;grid-template-columns:145px 1fr;gap:8px;align-items:center;margin:8px 0}.line{background:#17243a;border-radius:6px;padding:8px;margin:6px 0}.big{font-size:26px;color:#facc15;font-weight:bold}.muted{color:#94a3b8}input,button{box-sizing:border-box;width:100%;border-radius:8px;border:1px solid #3b4d65;background:#0b1424;color:#fff;padding:10px;font-size:15px}button{background:#2563eb;border:0;font-weight:bold;margin-top:8px}@media(max-width:460px){.grid,.row{grid-template-columns:1fr}}</style>";
@@ -730,7 +847,7 @@ void handleUpdateClock() {
 }
 
 void handleUpdatePongMode() {
-    if (server.hasArg("mode")) pongBotMode = constrain(server.arg("mode").toInt(), 0, 2);
+    if (server.hasArg("mode")) pongBotMode = constrain(server.arg("mode").toInt(), 0, 1);
     server.sendHeader("Location", "/");
     server.send(303);
 }
@@ -762,6 +879,8 @@ void startCaptivePortal() {
     WiFi.softAPdisconnect(true);
     vTaskDelay(pdMS_TO_TICKS(40));
     WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
     bool ok = WiFi.softAP(captiveSsid, captivePassword, 1, false, 4);
     IPAddress apIp = WiFi.softAPIP();
     if (ok) {
@@ -879,11 +998,11 @@ void setupWebServer() {
 }
 
 void taskWebServerHandler(void * pvParameters) {
-    registerCurrentTaskWithWatchdog();
+    // Netzwerk-Schreibvorgaenge duerfen bei einem langsamen Client laenger als
+    // das allgemeine Task-Watchdogfenster dauern, ohne das Board neu zu starten.
     for (;;) {
         if (captivePortalActive) dnsServer.processNextRequest();
         server.handleClient();
-        feedRuntimeWatchdog();
         vTaskDelay(20 / portTICK_PERIOD_MS);
     }
 }

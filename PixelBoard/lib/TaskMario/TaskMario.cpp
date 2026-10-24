@@ -147,6 +147,7 @@ uint32_t modeStartedMs = 0;
 bool lastUp1 = false;
 bool lastUp3 = false;
 bool humanControlled = false;
+bool humanInputArmed = false;
 uint32_t lastBotActionMs = 0;
 volatile bool restartRequested = false;
 
@@ -915,7 +916,25 @@ void applyMarioGravity(bool jumpHeld) {
 }
 
 void updatePlaying(const GameControlEvents& controls) {
-    InputState in = humanControlled ? readInput(controls) : readBotInput();
+    InputState in = {0, false, false, false, false};
+    if (humanControlled) {
+        if (!humanInputArmed) {
+            bool neutral = abs(controls.primary.x) <= INPUT_DEADZONE &&
+                           abs(controls.primary.y) <= INPUT_DEADZONE &&
+                           abs(controls.secondary.x) <= INPUT_DEADZONE &&
+                           abs(controls.secondary.y) <= INPUT_DEADZONE &&
+                           !joystick1.isPressed() && !joystick3.isPressed();
+            if (neutral) {
+                humanInputArmed = true;
+                lastUp1 = false;
+                lastUp3 = false;
+            }
+        } else {
+            in = readInput(controls);
+        }
+    } else {
+        in = readBotInput();
+    }
     if (!resolvePlayerEmbedding()) {
         respawnFromCheckpoint();
         return;
@@ -1048,33 +1067,56 @@ void renderPlaying() {
 
 void renderLobby() {
     uint32_t now = millis();
-    cameraX = (now / 220) % 72;
-    renderWorld();
+    FastLED.clear();
 
-    // Compact attract scene: Mario visibly runs, jumps and collects a coin.
-    // It is independent of the live level state and therefore stays
-    // smooth even after returning from a finished game.
-    uint8_t phase = (now / 95) % 48;
-    int sx = 4 + phase / 3;
-    int jumpPhase = phase % 24;
-    int jumpHeight = jumpPhase < 12 ? min(jumpPhase, 12 - jumpPhase) / 2 : 0;
-    int sy = 12 - jumpHeight;
-    CRGB marioCol = ((now / 180) & 1) ? CRGB::Red : CRGB::OrangeRed;
-    setPixel(sx, sy, marioCol);
-    setPixel(sx, sy + 1, marioCol);
-    setPixel(max(0, sx - 1), sy + 1, CRGB(85, 35, 18));
-    if (jumpHeight > 0) setPixel(sx, min(15, sy + 3), CRGB(35, 25, 12));
+    // Ruhige Mini-Level-Szene: Boden, Frageblock und Rohr bleiben fest,
+    // waehrend Mario sichtbar laeuft und ueber das Hindernis springt.
+    for (int x = 0; x < SCREEN_W; x++) {
+        setPixel(x, 14, CRGB(30, 150, 45));
+        setPixel(x, 15, CRGB(105, 53, 24));
+    }
 
-    int coinX = 19;
-    int coinY = 8 + ((now / 150) & 1);
-    if (abs(sx - coinX) > 1 || jumpHeight < 2) setPixel(coinX, coinY, CRGB::Yellow);
+    for (int x = 12; x <= 16; x++) setPixel(x, 9, CRGB(205, 105, 20));
+    CRGB questionColor = ((now / 220UL) & 1) ? CRGB::Yellow : CRGB::Orange;
+    setPixel(14, 9, questionColor);
+    setPixel(14, 8, questionColor);
 
-    CRGB cue = themeCol(now / 28, 210);
-    setPixel(27, 3, cue);
-    setPixel(28, 3, cue);
-    setPixel(29, 3, cue);
-    setPixel(29, 2, cue);
-    setPixel(30, 1, cue);
+    for (int x = 25; x <= 28; x++) setPixel(x, 12, CRGB(25, 190, 55));
+    for (int y = 10; y <= 13; y++) {
+        setPixel(26, y, CRGB(20, 145, 40));
+        setPixel(27, y, CRGB(35, 205, 60));
+    }
+
+    uint8_t phase = (now / 90UL) % 58;
+    int sx = 2 + phase / 2;
+    int jumpHeight = 0;
+    if (sx >= 10 && sx <= 19) {
+        int distance = abs(14 - sx);
+        jumpHeight = max(0, 5 - distance);
+    } else if (sx >= 23 && sx <= 30) {
+        int distance = abs(27 - sx);
+        jumpHeight = max(0, 5 - distance);
+    }
+
+    int feetY = 13 - jumpHeight;
+    CRGB marioColor = ((now / 150UL) & 1) ? CRGB::Red : CRGB::OrangeRed;
+    setPixel(sx, feetY - 1, marioColor);
+    setPixel(sx, feetY, CRGB(45, 80, 210));
+    if (jumpHeight == 0) {
+        int leg = ((now / 90UL) & 1) ? -1 : 1;
+        setPixel(sx + leg, feetY, CRGB(105, 52, 24));
+    }
+
+    bool coinCollected = sx >= 13 && sx <= 16 && jumpHeight >= 3;
+    if (!coinCollected) {
+        int coinY = 5 + ((now / 180UL) & 1);
+        setPixel(14, coinY, CRGB::Yellow);
+        setPixel(15, coinY, CRGB(255, 170, 20));
+    }
+
+    int goombaX = 20 + ((now / 260UL) & 1);
+    setPixel(goombaX, 13, CRGB(150, 65, 20));
+    setPixel(goombaX + 1, 13, CRGB(95, 42, 18));
     FastLED.show();
 }
 
@@ -1159,6 +1201,7 @@ void taskMarioHandler(void *pvParameters) {
         if (lastTask != 10 || restartRequested) {
             restartRequested = false;
             humanControlled = false;
+            humanInputArmed = false;
             joystick1.reset();
             joystick3.reset();
             resetLevel(true);
@@ -1176,10 +1219,13 @@ void taskMarioHandler(void *pvParameters) {
 
         uint32_t now = millis();
         GameControlEvents controls = runtime.poll(joystick1, joystick3);
-        if (controls.primaryDoubleClick && !humanControlled) {
+        if ((controls.primaryDoubleClick || controls.secondaryDoubleClick) && !humanControlled) {
             humanControlled = true;
+            humanInputArmed = false;
+            mario.vx = 0;
             controls.primaryDoubleClick = false;
-            controls.doubleClick = controls.secondaryDoubleClick;
+            controls.secondaryDoubleClick = false;
+            controls.doubleClick = false;
             playSound(SND_POWERUP);
         }
         if (controls.pauseToggle && (mode == GAME_PLAYING || mode == GAME_PAUSED))

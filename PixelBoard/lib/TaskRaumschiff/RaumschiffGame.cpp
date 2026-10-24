@@ -63,6 +63,7 @@ static bool highScoreSaved = false;
 static char playerNames[RAUMSCHIFF_MAX_PLAYERS][16] = {"NothinBL", "Guest"};
 static char lastMatchName[36] = "";
 static bool humanControlled[RAUMSCHIFF_MAX_PLAYERS] = {false, false};
+static bool humanInputArmed[RAUMSCHIFF_MAX_PLAYERS] = {false, false};
 
 static const uint8_t fieldWidth = 32;
 static const uint8_t fieldHeight = 16;
@@ -1817,10 +1818,23 @@ static void updatePlaying(const GameControlEvents& controls)
 {
     updateWebEnergy();
 
-    InputState p1 = humanControlled[0] ? readJoystickInput(0, joystick1) : buildBotInput(0);
-    InputState p2 = humanControlled[1] ? readJoystickInput(1, joystick3) : buildBotInput(1);
-    if (humanControlled[0]) applyCentralStick(p1, controls.primary);
-    if (humanControlled[1]) applyCentralStick(p2, controls.secondary);
+    if (humanControlled[0] && !humanInputArmed[0] &&
+        abs(controls.primary.x) <= inputThreshold &&
+        abs(controls.primary.y) <= inputThreshold && !joystick1.isPressed())
+        humanInputArmed[0] = true;
+    if (humanControlled[1] && !humanInputArmed[1] &&
+        abs(controls.secondary.x) <= inputThreshold &&
+        abs(controls.secondary.y) <= inputThreshold && !joystick3.isPressed())
+        humanInputArmed[1] = true;
+
+    InputState p1 = humanControlled[0]
+        ? (humanInputArmed[0] ? readJoystickInput(0, joystick1) : emptyInput())
+        : buildBotInput(0);
+    InputState p2 = humanControlled[1]
+        ? (humanInputArmed[1] ? readJoystickInput(1, joystick3) : emptyInput())
+        : buildBotInput(1);
+    if (humanControlled[0] && humanInputArmed[0]) applyCentralStick(p1, controls.primary);
+    if (humanControlled[1] && humanInputArmed[1]) applyCentralStick(p2, controls.secondary);
     p1.dash = p1.dash || controls.primaryDoubleClick;
     p2.dash = p2.dash || controls.secondaryDoubleClick;
     if (humanControlled[0]) p1.charge = p1.charge || controls.primary.longClick;
@@ -1857,12 +1871,16 @@ void raumschiffGameTick()
     if (controls.primaryDoubleClick && !humanControlled[0])
     {
         humanControlled[0] = true;
+        humanInputArmed[0] = false;
+        lastFireButtonState[0] = false;
         controls.primaryDoubleClick = false;
         Audio::playBuff();
     }
     if (controls.secondaryDoubleClick && !humanControlled[1])
     {
         humanControlled[1] = true;
+        humanInputArmed[1] = false;
+        lastFireButtonState[1] = false;
         controls.secondaryDoubleClick = false;
         Audio::playBuff();
     }
@@ -1958,6 +1976,8 @@ void raumschiffResetGame(bool keepHumanPlayers)
     {
         humanControlled[0] = false;
         humanControlled[1] = false;
+        humanInputArmed[0] = false;
+        humanInputArmed[1] = false;
     }
     strlcpy(playerNames[0], PRIMARY_PLAYER_NAME, sizeof(playerNames[0]));
     strlcpy(playerNames[1], SECONDARY_PLAYER_NAME, sizeof(playerNames[1]));

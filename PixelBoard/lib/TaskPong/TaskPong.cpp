@@ -60,12 +60,12 @@ int rallyHits = 0;
 int serveDir = 1;
 bool leftHuman = false;
 bool rightHuman = false;
+bool leftHumanInputArmed = false;
+bool rightHumanInputArmed = false;
 unsigned long lastLeftInputMs = 0;
 unsigned long lastRightInputMs = 0;
 unsigned long lastLeftBotMs = 0;
 unsigned long lastRightBotMs = 0;
-int leftBotAimError = 0;
-int rightBotAimError = 0;
 unsigned long stateStartedMs = 0;
 Particle particles[8];
 int previewBallX = 16 * SCALE;
@@ -120,6 +120,10 @@ int readVertical(const GameStickState& stick) {
     return 0;
 }
 
+bool pongStickNeutral(const GameStickState& stick) {
+    return abs(stick.x) <= INPUT_DEADZONE && abs(stick.y) <= INPUT_DEADZONE;
+}
+
 void resetPaddles() {
     leftY = 6;
     rightY = 6;
@@ -138,8 +142,6 @@ void serveBall(int dir) {
     int vy = 32 + (int)random(0, 34);
     if (random(0, 2) == 0) vy = -vy;
     ballVy = vy;
-    if (serveDir < 0) leftBotAimError = (int)random(-3, 4);
-    else rightBotAimError = (int)random(-3, 4);
     rallyHits = 0;
     clearParticles();
 }
@@ -165,8 +167,20 @@ void beginCountdown() {
 void applyInput(unsigned long now, const GameControlEvents& controls) {
     int leftMove = 0;
     int rightMove = 0;
-    if (leftHuman) leftMove = readVertical(controls.secondary);
-    if (rightHuman) rightMove = readVertical(controls.primary);
+    if (leftHuman) {
+        if (!leftHumanInputArmed) {
+            if (pongStickNeutral(controls.secondary)) leftHumanInputArmed = true;
+        } else {
+            leftMove = readVertical(controls.secondary);
+        }
+    }
+    if (rightHuman) {
+        if (!rightHumanInputArmed) {
+            if (pongStickNeutral(controls.primary)) rightHumanInputArmed = true;
+        } else {
+            rightMove = readVertical(controls.primary);
+        }
+    }
 
     auto predictedImpactY = [&](int targetX) {
         if (ballVx == 0) return HEIGHT / 2;
@@ -191,12 +205,11 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
 
         if (incoming) {
             int impact = predictedImpactY(ownTargetX);
-            if (pongBotMode == 2) {
+            if (pongBotMode == 1) {
                 return clampInt(impact, PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
             }
             int aimAway = opponentCenter < HEIGHT / 2 ? 1 : -1;
-            int aimError = leftSide ? leftBotAimError : rightBotAimError;
-            if (pongBotMode >= 1) aimError = 0;
+            int aimError = 0;
             return clampInt(impact - aimAway + aimError,
                             PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
         }
@@ -208,7 +221,7 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
                         PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
     };
 
-    const unsigned long botStepMs = pongBotMode == 2 ? 24 : (pongBotMode == 1 ? 50 : 90);
+    const unsigned long botStepMs = pongBotMode == 1 ? 24 : 50;
     if (!leftHuman && now - lastLeftBotMs >= botStepMs) {
         int target = botTargetCenter(true);
         int center = leftY + PADDLE_H / 2;
@@ -225,8 +238,8 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
         lastRightBotMs = now;
     }
 
-    const unsigned long leftStepMs = !leftHuman && pongBotMode == 2 ? 32 : INPUT_STEP_MS;
-    const unsigned long rightStepMs = !rightHuman && pongBotMode == 2 ? 32 : INPUT_STEP_MS;
+    const unsigned long leftStepMs = !leftHuman && pongBotMode == 1 ? 32 : INPUT_STEP_MS;
+    const unsigned long rightStepMs = !rightHuman && pongBotMode == 1 ? 32 : INPUT_STEP_MS;
     if (leftMove != 0 && now - lastLeftInputMs >= leftStepMs) {
         leftY = clampInt(leftY + leftMove, 0, HEIGHT - PADDLE_H);
         lastLeftInputMs = now;
@@ -281,8 +294,6 @@ void handlePaddleHit(bool leftPaddle, int hitY) {
                              SPEED_UP_EVERY_HITS, SPEED_STEP, MAX_VX);
     ballVx = leftPaddle ? ballVxAbs : -ballVxAbs;
     ballVy = clampInt(targetVy, -MAX_VY, MAX_VY);
-    if (leftPaddle) rightBotAimError = (int)random(-3, 4);
-    else leftBotAimError = (int)random(-3, 4);
     ballX = (leftPaddle ? (LEFT_X + 2) : (RIGHT_X - 2)) * SCALE;
 
     if (rallyHits > matchBestRally) matchBestRally = rallyHits;
@@ -467,10 +478,14 @@ void tickPong() {
     GameControlEvents controls = runtime.poll(joystick1, joystick3);
     if (controls.primaryDoubleClick && !rightHuman) {
         rightHuman = true;
+        rightHumanInputArmed = false;
+        lastRightMove = 0;
         playSound(SND_POWERUP);
     }
     if (controls.secondaryDoubleClick && !leftHuman) {
         leftHuman = true;
+        leftHumanInputArmed = false;
+        lastLeftMove = 0;
         playSound(SND_POWERUP);
     }
     joystick1.einfacherKlickZaehler = 0;
@@ -551,6 +566,8 @@ void taskPongHandler(void *pvParameters) {
         if (lastTask != 7) {
             leftHuman = false;
             rightHuman = false;
+            leftHumanInputArmed = false;
+            rightHumanInputArmed = false;
             runtime.begin();
             joystick1.reset();
             joystick3.reset();

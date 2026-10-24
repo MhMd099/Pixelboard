@@ -14,7 +14,12 @@ Joystick::Joystick(int pinX, int pinY, int pinTaster, int tasterModus)
   xAchse.setScaleRange(-100, 100);
   yAchse.setScaleRange(-100, 100);
 
-  kalibrieren();
+  // Globale Joystick-Objekte werden noch vor setup() konstruiert. Ein
+  // analogRead() an dieser Stelle greift zu frueh auf den ESP32-ADC-Lock zu
+  // und erzeugt beim Booten "adc1 lock release called before acquire".
+  // setup() kalibriert beide Hardware-Joysticks spaeter mit echten Messwerten.
+  xMitte = 2048;
+  yMitte = 2048;
   setDeadZonePercent(1);
 }
 

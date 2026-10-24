@@ -60,6 +60,7 @@ bool lastButton = false;
 bool holdTriggered = false;
 unsigned long buttonDownMs = 0;
 bool humanControlled = false;
+bool humanInputArmed = false;
 int8_t botTargetRot = 0;
 int8_t botTargetX = 3;
 unsigned long lastBotActionMs = 0;
@@ -642,6 +643,9 @@ void tickTetris() {
     GameControlEvents controls = runtime.poll(joystick1, joystick3);
     if (controls.primaryDoubleClick && !humanControlled) {
         humanControlled = true;
+        humanInputArmed = false;
+        lastUpHeld = false;
+        lastButton = false;
         playSound(SND_POWERUP);
     }
     joystick1.einfacherKlickZaehler = 0;
@@ -689,8 +693,15 @@ void tickTetris() {
     bool softDrop = false;
     bool didHardDrop = false;
     if (humanControlled) {
-        handleButton(now);
-        handleStick(now, controls.primary, softDrop, didHardDrop);
+        if (!humanInputArmed) {
+            bool neutral = abs(controls.primary.x) <= INPUT_DEADZONE &&
+                           abs(controls.primary.y) <= INPUT_DEADZONE &&
+                           !joystick1.isPressed();
+            if (neutral) humanInputArmed = true;
+        } else {
+            handleButton(now);
+            handleStick(now, controls.primary, softDrop, didHardDrop);
+        }
     } else {
         didHardDrop = runBot(now);
     }
@@ -731,6 +742,7 @@ void taskTetrisHandler(void *pvParameters) {
 
         if (lastTask != 9) {
             humanControlled = false;
+            humanInputArmed = false;
             runtime.begin();
             joystick1.reset();
             joystick3.reset();
