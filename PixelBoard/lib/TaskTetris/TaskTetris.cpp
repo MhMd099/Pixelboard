@@ -2,6 +2,7 @@
 
 #include <Arduino.h>
 #include <FastLED.h>
+#include <string.h>
 
 #include "Config.h"
 #include "HardwareUtils.h"
@@ -22,14 +23,18 @@ const int FIELD_H = 20;
 const int FIELD_X = 3;
 const int FIELD_Y = 9;
 const int HOLD_X = 0;
-const int HOLD_Y = 0;
-const int SCORE_X = 4;
+const int HOLD_Y = 5;
+const int SCORE_X = 0;
 const int SCORE_Y = 0;
 const int NEXT_X = 12;
 const int NEXT_Y = 5;
 const int INPUT_DEADZONE = 62;
 const unsigned long MOVE_REPEAT_MS = 125;
 const unsigned long BUTTON_HOLD_MS = 700;
+const unsigned long BOT_ACTION_MS = 150;
+const unsigned long FAST_BOT_ACTION_MS = 75;
+const unsigned long BOT_DROP_DELAY_MS = 700;
+const uint32_t MAX_TETRIS_SCORE = 999999UL;
 
 struct Piece {
     int8_t type;
@@ -53,8 +58,13 @@ unsigned long lastMoveMs = 0;
 bool lastUpHeld = false;
 bool lastButton = false;
 bool holdTriggered = false;
-bool scoreSaved = false;
 unsigned long buttonDownMs = 0;
+bool humanControlled = false;
+int8_t botTargetRot = 0;
+int8_t botTargetX = 3;
+unsigned long lastBotActionMs = 0;
+unsigned long botAlignedSinceMs = 0;
+unsigned long gameOverStartedMs = 0;
 
 const CRGB pieceColors[7] = {
     CRGB::Cyan,
@@ -99,14 +109,15 @@ void drawLogicalChar(int x, int y, char c, CRGB color) {
 }
 
 void drawNumberSmall(uint32_t value, int x, int y, CRGB color) {
-    if (value > 999) value = 999;
-    char buf[4];
-    buf[0] = '0' + (value / 100) % 10;
-    buf[1] = '0' + (value / 10) % 10;
-    buf[2] = '0' + value % 10;
-    buf[3] = '\0';
-    int start = value >= 100 ? 0 : (value >= 10 ? 1 : 2);
-    for (int i = start; i < 3; i++) drawLogicalChar(x + (i - start) * 4, y, buf[i], color);
+    if (value > 9999) value = 9999;
+    char buf[5];
+    buf[0] = '0' + (value / 1000) % 10;
+    buf[1] = '0' + (value / 100) % 10;
+    buf[2] = '0' + (value / 10) % 10;
+    buf[3] = '0' + value % 10;
+    buf[4] = '\0';
+    int start = value >= 1000 ? 0 : (value >= 100 ? 1 : (value >= 10 ? 2 : 3));
+    for (int i = start; i < 4; i++) drawLogicalChar(x + (i - start) * 4, y, buf[i], color);
 }
 
 bool pieceCell(const Piece& p, int i, int& x, int& y) {
@@ -126,12 +137,112 @@ bool validPiece(const Piece& p) {
     return true;
 }
 
+void planBotPlacement() {
+    long bestValue = -2147483647L;
+    botTargetRot = 0;
+    botTargetX = 3;
+    botAlignedSinceMs = 0;
+
+    for (int8_t rot = 0; rot < 4; rot++) {
+        for (int8_t targetX = -2; targetX < FIELD_W; targetX++) {
+            Piece test = {current.type, rot, targetX, 0};
+            if (!validPiece(test)) continue;
+            while (true) {
+                Piece next = test;
+                next.y++;
+                if (!validPiece(next)) break;
+                test = next;
+            }
+
+            uint8_t simulated[FIELD_H][FIELD_W];
+            memcpy(simulated, board, sizeof(simulated));
+            for (int i = 0; i < 4; i++) {
+                int x, y;
+                pieceCell(test, i, x, y);
+                if (x >= 0 && x < FIELD_W && y >= 0 && y < FIELD_H)
+                    simulated[y][x] = current.type + 1;
+            }
+
+            int completed = 0;
+            for (int y = FIELD_H - 1; y >= 0; y--) {
+                bool full = true;
+                for (int x = 0; x < FIELD_W; x++) {
+                    if (simulated[y][x] == 0) {
+                        full = false;
+                        break;
+                    }
+                }
+                if (!full) continue;
+
+                completed++;
+                for (int yy = y; yy > 0; yy--)
+                    memcpy(simulated[yy], simulated[yy - 1], FIELD_W);
+                memset(simulated[0], 0, FIELD_W);
+                y++;
+            }
+
+            int heights[FIELD_W] = {0};
+            int holes = 0;
+            int coveredHoleDepth = 0;
+            int aggregateHeight = 0;
+            int maximumHeight = 0;
+            for (int x = 0; x < FIELD_W; x++) {
+                bool blockSeen = false;
+                int blocksAbove = 0;
+                for (int y = 0; y < FIELD_H; y++) {
+                    if (simulated[y][x] != 0) {
+                        if (!blockSeen) heights[x] = FIELD_H - y;
+                        blockSeen = true;
+                        blocksAbove++;
+                    } else if (blockSeen) {
+                        holes++;
+                        coveredHoleDepth += blocksAbove;
+                    }
+                }
+                aggregateHeight += heights[x];
+                maximumHeight = max(maximumHeight, heights[x]);
+            }
+            int bumpiness = 0;
+            for (int x = 0; x < FIELD_W - 1; x++)
+                bumpiness += abs(heights[x] - heights[x + 1]);
+
+            int wells = 0;
+            for (int x = 0; x < FIELD_W; x++) {
+                int leftHeight = x == 0 ? FIELD_H : heights[x - 1];
+                int rightHeight = x == FIELD_W - 1 ? FIELD_H : heights[x + 1];
+                int depth = min(leftHeight, rightHeight) - heights[x];
+                if (depth > 0) wells += depth * (depth + 1) / 2;
+            }
+
+            int minPieceY = FIELD_H;
+            int maxPieceY = 0;
+            for (int i = 0; i < 4; i++) {
+                int x, y;
+                pieceCell(test, i, x, y);
+                minPieceY = min(minPieceY, y);
+                maxPieceY = max(maxPieceY, y);
+            }
+            int landingHeight = FIELD_H - (minPieceY + maxPieceY) / 2;
+
+            long value = completed * 14000L - holes * 6500L -
+                         coveredHoleDepth * 700L - aggregateHeight * 45L -
+                         bumpiness * 40L - maximumHeight * 110L -
+                         wells * 75L - landingHeight * 20L;
+            if (value > bestValue) {
+                bestValue = value;
+                botTargetRot = rot;
+                botTargetX = targetX;
+            }
+        }
+    }
+}
+
 int8_t randomPiece() {
     return (int8_t)random(0, 7);
 }
 
 uint32_t visibleScore() {
-    return score % 1000UL;
+    return score % 10000UL;
 }
 
 void syncDashboardScore() {
@@ -145,20 +256,20 @@ unsigned long currentFallInterval() {
     uint16_t minMs = constrain((int)tetrisMinFallMs, 80, normalMs);
     uint16_t scoreStep = constrain((int)tetrisSpeedScoreStep, 50, 2000);
     uint16_t speedStep = constrain((int)tetrisSpeedStepMs, 0, 250);
+    if (speedStep == 0) return normalMs;
     uint32_t steps = score / scoreStep;
+    unsigned long maximumReduction = normalMs - minMs;
+    uint32_t stepsToMinimum = (maximumReduction + speedStep - 1) / speedStep;
+    if (steps >= stepsToMinimum) return minMs;
     unsigned long reduction = steps * (unsigned long)speedStep;
-    if (reduction >= normalMs - minMs) return minMs;
     return normalMs - reduction;
 }
 
-void saveTetrisScoreIfNeeded() {
-    if (scoreSaved || score == 0) return;
-    String user = currentUserSnapshot();
-    user.trim();
-    if (user == "") user = "Gast";
-    saveTetrisHighScore(user, (int)min(score, (uint32_t)2147483647UL));
-    tetrisLastScore = score;
-    scoreSaved = true;
+void addScoreSafe(uint32_t points) {
+    if (score >= MAX_TETRIS_SCORE - min(points, MAX_TETRIS_SCORE))
+        score = MAX_TETRIS_SCORE;
+    else
+        score += points;
 }
 
 void spawnPiece(int8_t type) {
@@ -170,8 +281,11 @@ void spawnPiece(int8_t type) {
     if (!validPiece(current)) {
         runtime.animateTransition(CRGB::Red);
         state = GAME_GAME_OVER;
+        gameOverStartedMs = millis();
         playSound(SND_DIE);
+        return;
     }
+    planBotPlacement();
 }
 
 void clearBoard() {
@@ -192,7 +306,6 @@ void resetGame() {
     lastUpHeld = false;
     lastButton = false;
     holdTriggered = false;
-    scoreSaved = false;
     buttonDownMs = 0;
     countdownStartedMs = millis();
     state = GAME_COUNTDOWN;
@@ -228,8 +341,8 @@ void clearLines() {
         y++;
     }
     if (cleared > 0) {
-        linesCleared += cleared;
-        score += (cleared == 1 ? 100 : cleared == 2 ? 300 : cleared == 3 ? 500 : 800);
+        linesCleared = (uint16_t)min(65535UL, (unsigned long)linesCleared + cleared);
+        addScoreSafe(cleared == 1 ? 100 : cleared == 2 ? 300 : cleared == 3 ? 500 : 800);
         playSound(SND_EXPLOSION);
     }
 }
@@ -243,27 +356,30 @@ void bakeAndSpawn() {
     lastFallMs = millis();
 }
 
-void movePiece(int dx) {
+bool movePiece(int dx) {
     Piece moved = current;
     moved.x += dx;
     if (validPiece(moved)) {
         current = moved;
         playSound(SND_UI);
+        return true;
     }
+    return false;
 }
 
-void rotatePiece() {
+bool rotatePiece() {
     Piece rotated = current;
     rotated.rot = (rotated.rot + 1) & 3;
     if (!validPiece(rotated)) {
         rotated.x--;
         if (!validPiece(rotated)) {
             rotated.x += 2;
-            if (!validPiece(rotated)) return;
+            if (!validPiece(rotated)) return false;
         }
     }
     current = rotated;
     playSound(SND_SELECT);
+    return true;
 }
 
 void holdPiece() {
@@ -281,7 +397,7 @@ void holdPiece() {
     playSound(SND_BUFF);
 }
 
-void hardDrop() {
+void hardDrop(bool awardScore = true) {
     Piece dropped = current;
     while (true) {
         Piece next = dropped;
@@ -290,9 +406,55 @@ void hardDrop() {
         dropped = next;
     }
     current = dropped;
-    score += 2;
+    if (awardScore) addScoreSafe(2);
     bakeAndSpawn();
     playSound(SND_SHOOT);
+}
+
+bool runBot(unsigned long now) {
+    unsigned long actionMs = tetrisFastBotMode ? FAST_BOT_ACTION_MS : BOT_ACTION_MS;
+    if (now - lastBotActionMs < actionMs) return false;
+    lastBotActionMs = now;
+    if ((current.rot & 3) != (botTargetRot & 3)) {
+        botAlignedSinceMs = 0;
+        if (rotatePiece()) return false;
+
+        // Manche Stellungen (besonders der lange I-Stein nahe am oberen
+        // Stapel) lassen sich erst nach einer seitlichen Bewegung drehen.
+        if (current.x < botTargetX && movePiece(1)) return false;
+        if (current.x > botTargetX && movePiece(-1)) return false;
+
+        // Ist auch der Ausweichschritt blockiert, wird nicht endlos derselbe
+        // Zug versucht. Der Stein faellt weiter und kann sauber Game-over
+        // ausloesen.
+        botTargetRot = current.rot;
+        botTargetX = current.x;
+        botAlignedSinceMs = now;
+        return false;
+    }
+    if (current.x < botTargetX) {
+        botAlignedSinceMs = 0;
+        movePiece(1);
+        return false;
+    }
+    if (current.x > botTargetX) {
+        botAlignedSinceMs = 0;
+        movePiece(-1);
+        return false;
+    }
+    if (tetrisFastBotMode) {
+        botAlignedSinceMs = 0;
+        hardDrop(false);
+        return true;
+    }
+    if (botAlignedSinceMs == 0) {
+        botAlignedSinceMs = now;
+        return false;
+    }
+    if (now - botAlignedSinceMs < BOT_DROP_DELAY_MS) return false;
+    botAlignedSinceMs = 0;
+    hardDrop(false);
+    return true;
 }
 
 void fallOne() {
@@ -406,7 +568,7 @@ void drawNext() {
     drawPreviewPiece(nextType, NEXT_X, NEXT_Y, false);
 }
 
-void renderPlaying() {
+void renderPlaying(bool showFrame = true) {
     FastLED.clear();
     drawHold();
     drawNext();
@@ -426,7 +588,7 @@ void renderPlaying() {
     drawPieceAt(current, pieceColors[current.type]);
     syncDashboardScore();
     drawNumberSmall(visibleScore(), SCORE_X, SCORE_Y, CRGB(120, 180, 255));
-    FastLED.show();
+    if (showFrame) FastLED.show();
 }
 
 void renderMenu() {
@@ -468,7 +630,7 @@ void renderMenu() {
 void renderGameOver() {
     FastLED.clear();
     syncDashboardScore();
-    drawNumberSmall(visibleScore(), 3, 8, CRGB::Red);
+    drawNumberSmall(visibleScore(), 0, 8, CRGB::Red);
     for (int y = 20; y < 28; y++)
         for (int x = 4; x < 12; x++)
             if (((x + y) & 1) == 0) setRotatedPixel(x, y, CRGB(60, 0, 0));
@@ -478,7 +640,10 @@ void renderGameOver() {
 void tickTetris() {
     unsigned long now = millis();
     GameControlEvents controls = runtime.poll(joystick1, joystick3);
-    bool startDoubleClick = controls.doubleClick;
+    if (controls.primaryDoubleClick && !humanControlled) {
+        humanControlled = true;
+        playSound(SND_POWERUP);
+    }
     joystick1.einfacherKlickZaehler = 0;
     joystick3.einfacherKlickZaehler = 0;
     if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
@@ -487,16 +652,14 @@ void tickTetris() {
     if (state == GAME_MENU) {
         tetrisPlaying = false;
         renderMenu();
-        if (startDoubleClick) {
-            runtime.animateTransition(CRGB::Blue);
-            resetGame();
-        }
         return;
     }
 
     if (state == GAME_COUNTDOWN) {
         tetrisPlaying = false;
-        renderPlaying();
+        // Nur ein einziges Display-Update pro Frame verhindert das Flackern
+        // zwischen Spielfeld und Countdown-Zahl.
+        renderPlaying(false);
         unsigned long elapsed = now - countdownStartedMs;
         runtime.drawCountdownOverlay(3 - min(2UL, elapsed / 700UL));
         FastLED.show();
@@ -515,27 +678,35 @@ void tickTetris() {
 
     if (state == GAME_GAME_OVER) {
         tetrisPlaying = false;
-        saveTetrisScoreIfNeeded();
         renderGameOver();
-        if (startDoubleClick) {
+        if (now - gameOverStartedMs >= 1800UL) {
             runtime.animateTransition(CRGB::Blue);
             resetGame();
         }
         return;
     }
 
-    handleButton(now);
     bool softDrop = false;
     bool didHardDrop = false;
-    handleStick(now, controls.primary, softDrop, didHardDrop);
+    if (humanControlled) {
+        handleButton(now);
+        handleStick(now, controls.primary, softDrop, didHardDrop);
+    } else {
+        didHardDrop = runBot(now);
+    }
 
     if (!didHardDrop) {
         unsigned long interval = softDrop ? constrain((int)tetrisSoftFallMs, 20, 500) : currentFallInterval();
         if (now - lastFallMs >= interval) {
             fallOne();
             lastFallMs = now;
-            if (softDrop) score++;
+            if (softDrop) addScoreSafe(1);
         }
+    }
+
+    if (state == GAME_GAME_OVER) {
+        renderGameOver();
+        return;
     }
 
     renderPlaying();
@@ -559,10 +730,11 @@ void taskTetrisHandler(void *pvParameters) {
         }
 
         if (lastTask != 9) {
-            state = GAME_MENU;
+            humanControlled = false;
             runtime.begin();
             joystick1.reset();
             joystick3.reset();
+            resetGame();
             lastTask = 9;
             Serial.println("Tetris gestartet.");
         }

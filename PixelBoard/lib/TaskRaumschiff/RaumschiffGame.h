@@ -158,7 +158,7 @@ struct Boss
 ========================= */
 
 void raumschiffGameTick();
-void raumschiffResetGame();
+void raumschiffResetGame(bool keepHumanPlayers = false);
 void raumschiffRenderMenuPreview();
 
 UnifiedGameState getGameState();

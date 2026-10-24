@@ -25,6 +25,7 @@ const int WORLD_W = 176;
 const int FLAG_X = 168;
 const int INPUT_DEADZONE = 58;
 const uint32_t TICK_MS = 33;
+const uint32_t END_SCREEN_MS = 3500;
 const uint8_t MAX_SEGMENTS = 26;
 const uint8_t MAX_BLOCKS = 20;
 const uint8_t MAX_COINS = 48;
@@ -145,6 +146,8 @@ uint32_t lastTickMs = 0;
 uint32_t modeStartedMs = 0;
 bool lastUp1 = false;
 bool lastUp3 = false;
+bool humanControlled = false;
+uint32_t lastBotActionMs = 0;
 volatile bool restartRequested = false;
 
 int pixelX(int16_t fixedValue) { return fixedValue / SCALE; }
@@ -584,6 +587,9 @@ void resetLevel(bool fullReset) {
 
 void startNextLevel() {
     if (marioLevel < 99) marioLevel++;
+    // Jede neue Runde beginnt wieder mit vollen Leben. Der erreichte Score
+    // bleibt als fortlaufender Gesamtstand erhalten.
+    marioLives = 3;
     checkpointIndex = 0;
     generateLevel();
     for (uint8_t i = 0; i < blockCount; i++) blockAlive[i] = true;
@@ -613,7 +619,7 @@ void loseLifeAndRespawn() {
         levelWon = false;
         runtime.animateTransition(CRGB::Red);
         mode = GAME_GAME_OVER;
-        modeStartedMs = now;
+        modeStartedMs = millis();
         return;
     }
     respawnFromCheckpoint();
@@ -642,6 +648,43 @@ InputState readInput(const GameControlEvents& controls) {
 
     if (controls.primary.simpleClick || controls.secondary.simpleClick) {
         in.action = true;
+    }
+    return in;
+}
+
+InputState readBotInput() {
+    InputState in = {1, false, false, false, false};
+    int px = pixelX(mario.x);
+    int py = pixelY(mario.y);
+    int feetY = py + playerHeight() - 1;
+
+    bool obstacleAhead = false;
+    for (uint8_t h = 0; h < playerHeight(); h++) {
+        if (solidAt(px + 1, py + h) || solidAt(px + 2, py + h)) {
+            obstacleAhead = true;
+            break;
+        }
+    }
+    bool gapAhead = !solidAt(px + 2, feetY + 1) ||
+                    !solidAt(px + 3, feetY + 1);
+    bool enemyAhead = false;
+    for (uint8_t i = 0; i < 8; i++) {
+        if (!enemies[i].active) continue;
+        int ex = pixelX(enemies[i].x);
+        int ey = pixelY(enemies[i].y);
+        if (ex > px && ex - px <= 5 && abs(ey - feetY) <= 3) {
+            enemyAhead = true;
+            break;
+        }
+    }
+
+    bool shouldJump = mario.onGround && (obstacleAhead || gapAhead || enemyAhead);
+    in.jumpPressed = shouldJump;
+    in.jumpHeld = shouldJump || (mario.vy < 0 && mario.jumpHoldTicks < 6);
+    uint32_t now = millis();
+    if (mario.power == MARIO_FIRE && enemyAhead && now - lastBotActionMs >= 520UL) {
+        in.action = true;
+        lastBotActionMs = now;
     }
     return in;
 }
@@ -872,7 +915,7 @@ void applyMarioGravity(bool jumpHeld) {
 }
 
 void updatePlaying(const GameControlEvents& controls) {
-    InputState in = readInput(controls);
+    InputState in = humanControlled ? readInput(controls) : readBotInput();
     if (!resolvePlayerEmbedding()) {
         respawnFromCheckpoint();
         return;
@@ -1004,26 +1047,68 @@ void renderPlaying() {
 }
 
 void renderLobby() {
-    FastLED.clear();
     uint32_t now = millis();
-    cameraX = (now / 160) % 40;
+    cameraX = (now / 220) % 72;
     renderWorld();
-    int bob = (now / 240) % 2;
-    int sx = 8;
-    int sy = 11 - bob;
-    setPixel(sx, sy, CRGB::Red);
-    setPixel(sx, sy + 1, CRGB::Red);
-    setPixel(18, 9, CRGB::Yellow);
-    setPixel(24, 12, CRGB::DarkOrange);
-    setPixel(28, 6, CRGB(120, 90, 220));
+
+    // Compact attract scene: Mario visibly runs, jumps and collects a coin.
+    // It is independent of the live level state and therefore stays
+    // smooth even after returning from a finished game.
+    uint8_t phase = (now / 95) % 48;
+    int sx = 4 + phase / 3;
+    int jumpPhase = phase % 24;
+    int jumpHeight = jumpPhase < 12 ? min(jumpPhase, 12 - jumpPhase) / 2 : 0;
+    int sy = 12 - jumpHeight;
+    CRGB marioCol = ((now / 180) & 1) ? CRGB::Red : CRGB::OrangeRed;
+    setPixel(sx, sy, marioCol);
+    setPixel(sx, sy + 1, marioCol);
+    setPixel(max(0, sx - 1), sy + 1, CRGB(85, 35, 18));
+    if (jumpHeight > 0) setPixel(sx, min(15, sy + 3), CRGB(35, 25, 12));
+
+    int coinX = 19;
+    int coinY = 8 + ((now / 150) & 1);
+    if (abs(sx - coinX) > 1 || jumpHeight < 2) setPixel(coinX, coinY, CRGB::Yellow);
+
+    CRGB cue = themeCol(now / 28, 210);
+    setPixel(27, 3, cue);
+    setPixel(28, 3, cue);
+    setPixel(29, 3, cue);
+    setPixel(29, 2, cue);
+    setPixel(30, 1, cue);
     FastLED.show();
 }
 
-void renderEnd(CRGB col) {
+void drawCenteredWord(const char* word, int y, CRGB color) {
+    int length = strlen(word);
+    int width = length > 0 ? length * 4 - 1 : 0;
+    int startX = max(0, (SCREEN_W - width) / 2);
+    for (int i = 0; i < length; i++)
+        drawChar3x5(startX + i * 4, y, word[i], color);
+}
+
+void drawCenteredScore(uint16_t value, int y, CRGB color) {
+    uint16_t shown = value;
+    uint16_t divisor = 1;
+    int digits = 1;
+    while (shown / divisor >= 10 && digits < 5) {
+        divisor *= 10;
+        digits++;
+    }
+    int width = digits * 4 - 1;
+    int x = (SCREEN_W - width) / 2;
+    while (divisor > 0) {
+        drawDigitW(x, y, (shown / divisor) % 10, color);
+        x += 4;
+        divisor /= 10;
+    }
+}
+
+void renderEnd(bool won) {
     FastLED.clear();
-    for (int x = 8; x < 24; x++) setPixel(x, 5, col);
-    for (int x = 10; x < 22; x++) setPixel(x, 8, CRGB::Yellow);
-    drawHud();
+    CRGB resultColor = won ? CRGB::Green : CRGB::Red;
+    drawCenteredWord(won ? "WIN" : "LOSE", 0, resultColor);
+    drawCenteredWord("SCORE", 6, CRGB::Yellow);
+    drawCenteredScore(marioScore, 11, CRGB::White);
     FastLED.show();
 }
 }
@@ -1073,9 +1158,12 @@ void taskMarioHandler(void *pvParameters) {
 
         if (lastTask != 10 || restartRequested) {
             restartRequested = false;
+            humanControlled = false;
             joystick1.reset();
             joystick3.reset();
             resetLevel(true);
+            mode = GAME_COUNTDOWN;
+            modeStartedMs = millis();
             runtime.begin();
             lastTask = 10;
             Serial.println("Mario gestartet.");
@@ -1088,7 +1176,12 @@ void taskMarioHandler(void *pvParameters) {
 
         uint32_t now = millis();
         GameControlEvents controls = runtime.poll(joystick1, joystick3);
-        bool gameStartDoubleClick = controls.doubleClick;
+        if (controls.primaryDoubleClick && !humanControlled) {
+            humanControlled = true;
+            controls.primaryDoubleClick = false;
+            controls.doubleClick = controls.secondaryDoubleClick;
+            playSound(SND_POWERUP);
+        }
         if (controls.pauseToggle && (mode == GAME_PLAYING || mode == GAME_PAUSED))
             runtime.applyPause(mode);
         if (mode != GAME_PLAYING) {
@@ -1102,14 +1195,6 @@ void taskMarioHandler(void *pvParameters) {
 
         if (mode == GAME_MENU) {
             renderLobby();
-            if (gameStartDoubleClick) {
-                runtime.animateTransition(CRGB::Green);
-                mode = GAME_COUNTDOWN;
-                modeStartedMs = millis();
-                lastUp1 = false;
-                lastUp3 = false;
-                playSound(SND_SELECT);
-            }
         } else if (mode == GAME_COUNTDOWN) {
             renderPlaying();
             uint32_t elapsed = now - modeStartedMs;
@@ -1124,15 +1209,13 @@ void taskMarioHandler(void *pvParameters) {
         } else if (mode == GAME_PAUSED) {
             runtime.drawPauseOverlay();
         } else if (levelWon) {
-            renderEnd(CRGB::Green);
-            if (millis() - modeStartedMs > 1800UL) {
+            renderEnd(true);
+            if (millis() - modeStartedMs > END_SCREEN_MS) {
                 startNextLevel();
             }
         } else {
-            renderEnd(CRGB::Red);
-            // Nach sichtbarem Game-over startet ein neuer Doppelklick direkt eine
-            // neue Runde, ohne Umweg ueber Lobby oder Menue-Joystick.
-            if (now - modeStartedMs >= 400UL && gameStartDoubleClick) {
+            renderEnd(false);
+            if (now - modeStartedMs >= END_SCREEN_MS) {
                 resetLevel(true);
                 runtime.animateTransition(CRGB::Green);
                 mode = GAME_COUNTDOWN;

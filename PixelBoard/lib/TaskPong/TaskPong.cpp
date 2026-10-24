@@ -24,12 +24,11 @@ const int LEFT_X = 1;
 const int RIGHT_X = 30;
 const int INPUT_DEADZONE = 60;
 const int INPUT_STEP_MS = 55;
-const int BOT_ERROR_REFRESH_MS = 420;
-const int INITIAL_VX = 92;
+const int INITIAL_VX = 108;
 const int SPEED_UP_EVERY_HITS = 2;
-const int SPEED_STEP = 12;
-const int MAX_VX = 188;
-const int MAX_VY = 185;
+const int SPEED_STEP = 14;
+const int MAX_VX = 286;
+const int MAX_VY = 215;
 const int WIN_SCORE = 7;
 
 struct Particle {
@@ -59,20 +58,26 @@ int lastRightMove = 0;
 int matchBestRally = 0;
 int rallyHits = 0;
 int serveDir = 1;
-bool savedMatch = false;
-int cachedBestRally = 0;
-int leftBotAimError = 0;
-int rightBotAimError = 0;
+bool leftHuman = false;
+bool rightHuman = false;
 unsigned long lastLeftInputMs = 0;
 unsigned long lastRightInputMs = 0;
 unsigned long lastLeftBotMs = 0;
 unsigned long lastRightBotMs = 0;
-unsigned long lastLeftBotErrorMs = 0;
-unsigned long lastRightBotErrorMs = 0;
+int leftBotAimError = 0;
+int rightBotAimError = 0;
 unsigned long stateStartedMs = 0;
 Particle particles[8];
-String activeLeftUser;
-String activeRightUser;
+int previewBallX = 16 * SCALE;
+int previewBallY = 8 * SCALE;
+int previewLastBallX = 16 * SCALE;
+int previewLastBallY = 8 * SCALE;
+int previewBallVx = 88;
+int previewBallVy = 54;
+int previewLeftY = 6;
+int previewRightY = 6;
+unsigned long previewLastStepMs = 0;
+unsigned long previewLastPaddleMs = 0;
 
 int clampInt(int value, int low, int high) {
     if (value < low) return low;
@@ -133,6 +138,8 @@ void serveBall(int dir) {
     int vy = 32 + (int)random(0, 34);
     if (random(0, 2) == 0) vy = -vy;
     ballVy = vy;
+    if (serveDir < 0) leftBotAimError = (int)random(-3, 4);
+    else rightBotAimError = (int)random(-3, 4);
     rallyHits = 0;
     clearParticles();
 }
@@ -141,17 +148,10 @@ void resetMatch() {
     leftScore = 0;
     rightScore = 0;
     matchBestRally = 0;
-    savedMatch = false;
     pointPause = false;
     nextServeVxAbs = INITIAL_VX;
     resetPaddles();
     serveBall(random(0, 2) == 0 ? -1 : 1);
-}
-
-void refreshCachedBest() {
-    cachedBestRally = 0;
-    if (activeLeftUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(activeLeftUser));
-    if (activeRightUser != "") cachedBestRally = max(cachedBestRally, getPongHighScore(activeRightUser));
 }
 
 void beginCountdown() {
@@ -165,44 +165,69 @@ void beginCountdown() {
 void applyInput(unsigned long now, const GameControlEvents& controls) {
     int leftMove = 0;
     int rightMove = 0;
-    int currentBallY = clampInt((ballY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
+    if (leftHuman) leftMove = readVertical(controls.secondary);
+    if (rightHuman) rightMove = readVertical(controls.primary);
 
-    if (activeLeftUser != "") leftMove = readVertical(controls.secondary);
-    if (activeRightUser != "") rightMove = readVertical(controls.primary);
+    auto predictedImpactY = [&](int targetX) {
+        if (ballVx == 0) return HEIGHT / 2;
+        long distance = abs(targetX * SCALE - ballX);
+        long projected = ballY + (long)ballVy * distance / abs(ballVx);
+        long edge = (HEIGHT - 1) * SCALE;
+        long period = edge * 2;
+        projected %= period;
+        if (projected < 0) projected += period;
+        if (projected > edge) projected = period - projected;
+        return clampInt((projected + SCALE / 2) / SCALE, 0, HEIGHT - 1);
+    };
 
-    const int botStepMs[3] = {125, 96, 76};
-    const int botError[3] = {3, 2, 1};
-    int difficulty = clampInt(pongBotDifficulty, 0, 2);
+    // Der verteidigende Bot trifft bewusst seitlich, um den Ball in die vom
+    // Gegner freie Haelfte zu lenken. Der andere verfolgt schon den Ball und
+    // bereitet den naechsten Return vor, statt unbeweglich in der Mitte zu stehen.
+    auto botTargetCenter = [&](bool leftSide) {
+        bool incoming = leftSide ? ballVx < 0 : ballVx > 0;
+        int ownTargetX = leftSide ? LEFT_X + 1 : RIGHT_X - 1;
+        int opponentTargetX = leftSide ? RIGHT_X - 1 : LEFT_X + 1;
+        int opponentCenter = (leftSide ? rightY : leftY) + PADDLE_H / 2;
 
-    if (activeLeftUser == "" && now - lastLeftBotMs >= (unsigned long)botStepMs[difficulty]) {
-        if (now - lastLeftBotErrorMs >= BOT_ERROR_REFRESH_MS) {
-            leftBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
-            lastLeftBotErrorMs = now;
+        if (incoming) {
+            int impact = predictedImpactY(ownTargetX);
+            if (pongBotMode == 2) {
+                return clampInt(impact, PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
+            }
+            int aimAway = opponentCenter < HEIGHT / 2 ? 1 : -1;
+            int aimError = leftSide ? leftBotAimError : rightBotAimError;
+            if (pongBotMode >= 1) aimError = 0;
+            return clampInt(impact - aimAway + aimError,
+                            PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
         }
-        int target = (ballVx < 0) ? currentBallY + leftBotAimError : (HEIGHT / 2);
-        target = clampInt(target, 0, HEIGHT - 1);
+
+        int nextImpact = predictedImpactY(opponentTargetX);
+        int ballPixelY = clampInt((ballY + SCALE / 2) / SCALE, 0, HEIGHT - 1);
+        int motionLead = ballVy >= 0 ? 2 : -2;
+        return clampInt((nextImpact + ballPixelY) / 2 + motionLead,
+                        PADDLE_H / 2, HEIGHT - PADDLE_H / 2);
+    };
+
+    const unsigned long botStepMs = pongBotMode == 2 ? 24 : (pongBotMode == 1 ? 50 : 90);
+    if (!leftHuman && now - lastLeftBotMs >= botStepMs) {
+        int target = botTargetCenter(true);
         int center = leftY + PADDLE_H / 2;
-        int tolerance = difficulty == 0 ? 2 : 1;
-        if (target < center - tolerance) leftMove = -1;
-        else if (target > center + tolerance) leftMove = 1;
+        if (target < center) leftMove = -1;
+        else if (target > center) leftMove = 1;
         lastLeftBotMs = now;
     }
 
-    if (activeRightUser == "" && now - lastRightBotMs >= (unsigned long)botStepMs[difficulty]) {
-        if (now - lastRightBotErrorMs >= BOT_ERROR_REFRESH_MS) {
-            rightBotAimError = (int)random(-botError[difficulty], botError[difficulty] + 1);
-            lastRightBotErrorMs = now;
-        }
-        int target = (ballVx > 0) ? currentBallY + rightBotAimError : (HEIGHT / 2);
-        target = clampInt(target, 0, HEIGHT - 1);
+    if (!rightHuman && now - lastRightBotMs >= botStepMs) {
+        int target = botTargetCenter(false);
         int center = rightY + PADDLE_H / 2;
-        int tolerance = difficulty == 0 ? 2 : 1;
-        if (target < center - tolerance) rightMove = -1;
-        else if (target > center + tolerance) rightMove = 1;
+        if (target < center) rightMove = -1;
+        else if (target > center) rightMove = 1;
         lastRightBotMs = now;
     }
 
-    if (leftMove != 0 && now - lastLeftInputMs >= INPUT_STEP_MS) {
+    const unsigned long leftStepMs = !leftHuman && pongBotMode == 2 ? 32 : INPUT_STEP_MS;
+    const unsigned long rightStepMs = !rightHuman && pongBotMode == 2 ? 32 : INPUT_STEP_MS;
+    if (leftMove != 0 && now - lastLeftInputMs >= leftStepMs) {
         leftY = clampInt(leftY + leftMove, 0, HEIGHT - PADDLE_H);
         lastLeftInputMs = now;
         lastLeftMove = leftMove;
@@ -210,7 +235,7 @@ void applyInput(unsigned long now, const GameControlEvents& controls) {
         lastLeftMove = 0;
     }
 
-    if (rightMove != 0 && now - lastRightInputMs >= INPUT_STEP_MS) {
+    if (rightMove != 0 && now - lastRightInputMs >= rightStepMs) {
         rightY = clampInt(rightY + rightMove, 0, HEIGHT - PADDLE_H);
         lastRightInputMs = now;
         lastRightMove = rightMove;
@@ -246,10 +271,18 @@ void handlePaddleHit(bool leftPaddle, int hitY) {
     int targetVy = rel2 * (move == 0 ? 26 : 34) + move * 44;
 
     rallyHits++;
-    ballVxAbs = steppedCappedSpeed(ballVxAbs, rallyHits,
-                                   SPEED_UP_EVERY_HITS, SPEED_STEP, MAX_VX);
+    bool botsOnly = !leftHuman && !rightHuman;
+    // In an attract match the paddles keep a fixed physical speed. The ball
+    // accelerates on every return, so even perfect prediction cannot create an
+    // endless rally. Human matches retain the gentler two-hit progression.
+    ballVxAbs = botsOnly
+        ? min(ballVxAbs + 16, MAX_VX)
+        : steppedCappedSpeed(ballVxAbs, rallyHits,
+                             SPEED_UP_EVERY_HITS, SPEED_STEP, MAX_VX);
     ballVx = leftPaddle ? ballVxAbs : -ballVxAbs;
     ballVy = clampInt(targetVy, -MAX_VY, MAX_VY);
+    if (leftPaddle) rightBotAimError = (int)random(-3, 4);
+    else leftBotAimError = (int)random(-3, 4);
     ballX = (leftPaddle ? (LEFT_X + 2) : (RIGHT_X - 2)) * SCALE;
 
     if (rallyHits > matchBestRally) matchBestRally = rallyHits;
@@ -310,8 +343,8 @@ void renderField() {
     FastLED.clear();
     for (int y = 1; y < HEIGHT; y += 3) setPixel(15, y, CRGB(20, 28, 38));
 
-    drawNumber2(leftScore, 9, 0, CRGB(70, 90, 120));
-    drawNumber2(rightScore, 18, 0, CRGB(70, 90, 120));
+    drawNumber2(leftScore, 4, 0, CRGB(70, 90, 120));
+    drawNumber2(rightScore, 20, 0, CRGB(70, 90, 120));
 
     drawPaddle(LEFT_X, leftY, CRGB::Cyan);
     drawPaddle(RIGHT_X, rightY, CRGB::Orange);
@@ -334,20 +367,83 @@ void renderField() {
 }
 
 void renderMenu() {
-    FastLED.clear();
     unsigned long now = millis();
-    int leftPreview = 4 + (int)(sin(now / 260.0) * 3.0);
-    int rightPreview = 8 + (int)(sin(now / 260.0 + 1.5) * 3.0);
-    for (int y = 0; y < PADDLE_H; y++) {
-        setPixel(2, leftPreview + y, activeLeftUser == "" ? CRGB(20, 80, 90) : CRGB::Cyan);
-        setPixel(29, rightPreview + y, activeRightUser == "" ? CRGB(90, 55, 20) : CRGB::Orange);
+    if (previewLastStepMs == 0 || now - previewLastStepMs > 250UL) {
+        previewLastStepMs = now;
+        previewLastPaddleMs = now;
     }
-    int bx = 15 + (int)(sin(now / 180.0) * 8.0);
-    int by = 7 + (int)(sin(now / 230.0) * 4.0);
+
+    auto predictedPreviewImpact = [&](int targetX) {
+        long distance = abs(targetX * SCALE - previewBallX);
+        long projected = previewBallY +
+                         (long)previewBallVy * distance / max(1, abs(previewBallVx));
+        long edge = (HEIGHT - 1) * SCALE;
+        long period = edge * 2;
+        projected %= period;
+        if (projected < 0) projected += period;
+        if (projected > edge) projected = period - projected;
+        return clampInt((projected + SCALE / 2) / SCALE, 0, HEIGHT - 1);
+    };
+
+    if (now - previewLastPaddleMs >= 40UL) {
+        int leftTarget = previewBallVx < 0 ? predictedPreviewImpact(3) : HEIGHT / 2;
+        int rightTarget = previewBallVx > 0 ? predictedPreviewImpact(28) : HEIGHT / 2;
+        int leftCenter = previewLeftY + PADDLE_H / 2;
+        int rightCenter = previewRightY + PADDLE_H / 2;
+        if (leftTarget < leftCenter) previewLeftY--;
+        else if (leftTarget > leftCenter) previewLeftY++;
+        if (rightTarget < rightCenter) previewRightY--;
+        else if (rightTarget > rightCenter) previewRightY++;
+        previewLeftY = clampInt(previewLeftY, 0, HEIGHT - PADDLE_H);
+        previewRightY = clampInt(previewRightY, 0, HEIGHT - PADDLE_H);
+        previewLastPaddleMs = now;
+    }
+
+    uint8_t steps = 0;
+    while (now - previewLastStepMs >= 16UL && steps++ < 4) {
+        previewLastStepMs += 16UL;
+        previewLastBallX = previewBallX;
+        previewLastBallY = previewBallY;
+        previewBallX += previewBallVx;
+        previewBallY += previewBallVy;
+
+        if (previewBallY < 0) {
+            previewBallY = -previewBallY;
+            previewBallVy = -previewBallVy;
+        } else if (previewBallY > (HEIGHT - 1) * SCALE) {
+            previewBallY = (HEIGHT - 1) * SCALE -
+                           (previewBallY - (HEIGHT - 1) * SCALE);
+            previewBallVy = -previewBallVy;
+        }
+
+        int hitY = clampInt(previewBallY / SCALE, 0, HEIGHT - 1);
+        if (previewBallVx < 0 && previewBallX <= 3 * SCALE) {
+            previewLeftY = clampInt(hitY - PADDLE_H / 2, 0, HEIGHT - PADDLE_H);
+            previewBallX = 3 * SCALE;
+            previewBallVx = abs(previewBallVx);
+            int offset = hitY - (previewLeftY + PADDLE_H / 2);
+            previewBallVy = clampInt(previewBallVy + offset * 12, -96, 96);
+        } else if (previewBallVx > 0 && previewBallX >= 28 * SCALE) {
+            previewRightY = clampInt(hitY - PADDLE_H / 2, 0, HEIGHT - PADDLE_H);
+            previewBallX = 28 * SCALE;
+            previewBallVx = -abs(previewBallVx);
+            int offset = hitY - (previewRightY + PADDLE_H / 2);
+            previewBallVy = clampInt(previewBallVy + offset * 12, -96, 96);
+        }
+    }
+
+    FastLED.clear();
+    for (int y = 1; y < HEIGHT; y += 3) setPixel(15, y, CRGB(18, 28, 42));
+    for (int y = 0; y < PADDLE_H; y++) {
+        setPixel(2, previewLeftY + y, CRGB::Cyan);
+        setPixel(29, previewRightY + y, CRGB::Orange);
+    }
+    int trailX = clampInt(previewLastBallX / SCALE, 0, WIDTH - 1);
+    int trailY = clampInt(previewLastBallY / SCALE, 0, HEIGHT - 1);
+    setPixel(trailX, trailY, CRGB(45, 48, 60));
+    int bx = clampInt(previewBallX / SCALE, 0, WIDTH - 1);
+    int by = clampInt(previewBallY / SCALE, 0, HEIGHT - 1);
     setPixel(bx, by, CRGB::White);
-    setPixel(15, 14, activeLeftUser == "" ? CRGB(30, 60, 70) : CRGB::Cyan);
-    setPixel(17, 14, activeRightUser == "" ? CRGB(70, 45, 30) : CRGB::Orange);
-    if (cachedBestRally > 0) drawNumber2(min(cachedBestRally, 99), 11, 1, CRGB(70, 120, 220));
 }
 
 void renderCountdown(unsigned long now) {
@@ -366,21 +462,17 @@ void renderGameOver() {
     drawNumber2(matchBestRally, 11, 9, CRGB::Yellow);
 }
 
-void ensureDefaultPlayers() {
-    if (activeLeftUser == "") activeLeftUser = "P1";
-    if (activeRightUser == "") activeRightUser = "P2";
-}
-
-void saveMatchHighscores() {
-    if (activeLeftUser != "") savePongHighScore(activeLeftUser, matchBestRally);
-    if (activeRightUser != "" && activeRightUser != activeLeftUser) savePongHighScore(activeRightUser, matchBestRally);
-    if (matchBestRally > cachedBestRally) cachedBestRally = matchBestRally;
-}
-
 void tickPong() {
     unsigned long now = millis();
     GameControlEvents controls = runtime.poll(joystick1, joystick3);
-    bool startDoubleClick = controls.doubleClick;
+    if (controls.primaryDoubleClick && !rightHuman) {
+        rightHuman = true;
+        playSound(SND_POWERUP);
+    }
+    if (controls.secondaryDoubleClick && !leftHuman) {
+        leftHuman = true;
+        playSound(SND_POWERUP);
+    }
     joystick1.einfacherKlickZaehler = 0;
     joystick3.einfacherKlickZaehler = 0;
     if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
@@ -389,12 +481,6 @@ void tickPong() {
     switch (state) {
     case GAME_MENU:
         renderMenu();
-        if (startDoubleClick) {
-            if (activeLeftUser == "" && activeRightUser == "") ensureDefaultPlayers();
-            resetMatch();
-            runtime.animateTransition(CRGB::Blue);
-            beginCountdown();
-        }
         break;
 
     case GAME_COUNTDOWN:
@@ -411,10 +497,6 @@ void tickPong() {
             updateParticles();
             renderField();
             if (leftScore >= WIN_SCORE || rightScore >= WIN_SCORE) {
-                if (!savedMatch) {
-                    saveMatchHighscores();
-                    savedMatch = true;
-                }
                 if (now - stateStartedMs >= 900) {
                     runtime.animateTransition(CRGB::Red);
                     state = GAME_GAME_OVER;
@@ -439,7 +521,7 @@ void tickPong() {
 
     case GAME_GAME_OVER:
         renderGameOver();
-        if (startDoubleClick) {
+        if (now - stateStartedMs >= 1800UL) {
             resetMatch();
             runtime.animateTransition(CRGB::Blue);
             beginCountdown();
@@ -467,14 +549,13 @@ void taskPongHandler(void *pvParameters) {
         }
 
         if (lastTask != 7) {
-            activeLeftUser = pongLeftUserSnapshot();
-            activeRightUser = pongRightUserSnapshot();
-            state = GAME_MENU;
+            leftHuman = false;
+            rightHuman = false;
             runtime.begin();
             joystick1.reset();
             joystick3.reset();
             resetMatch();
-            refreshCachedBest();
+            beginCountdown();
             lastTask = 7;
             Serial.println("Pong gestartet.");
         }

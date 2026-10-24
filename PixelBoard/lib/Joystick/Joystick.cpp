@@ -8,8 +8,6 @@ Joystick::Joystick(int pinX, int pinY, int pinTaster, int tasterModus)
   this->isI2C = false;
   this->i2cInvertX = false;
   this->i2cInvertY = false;
-  this->lastDriftXMs = 0;
-  this->lastDriftYMs = 0;
 
   xAchse.setInputRange(0, 4095);
   yAchse.setInputRange(0, 4095);
@@ -31,8 +29,6 @@ Joystick::Joystick()
   this->i2cButtonPressed = false;
   this->i2cInvertX = false;
   this->i2cInvertY = false;
-  this->lastDriftXMs = 0;
-  this->lastDriftYMs = 0;
 
   // Ein Arduino Nano arbeitet mit 10-Bit ADC (0 - 1023)
   xAchse.setInputRange(0, 1023);
@@ -62,21 +58,6 @@ void Joystick::kalibrieren() {
     xMitte = xAchse.readRaw();
     yMitte = yAchse.readRaw();
   }
-  lastDriftXMs = millis();
-  lastDriftYMs = lastDriftXMs;
-}
-
-void Joystick::updateCenterDrift(int rawValue, bool xAxis) {
-  int& center = xAxis ? xMitte : yMitte;
-  unsigned long& lastUpdate = xAxis ? lastDriftXMs : lastDriftYMs;
-  unsigned long now = millis();
-  if (now - lastUpdate < 250UL) return;
-  lastUpdate = now;
-
-  int delta = rawValue - center;
-  if (abs(delta) > deadZone) return;
-  if (delta > 0) center++;
-  else if (delta < 0) center--;
 }
 
 int Joystick::readXRaw() {
@@ -105,7 +86,6 @@ int Joystick::readYRaw() {
 
 int Joystick::readXPercent() {
   int rawValue = readXRaw();
-  updateCenterDrift(rawValue, true);
   int raw = rawValue - xMitte;
   if (abs(raw) < deadZone) raw = 0;
   
@@ -116,7 +96,6 @@ int Joystick::readXPercent() {
 
 int Joystick::readYPercent() {
   int rawValue = readYRaw();
-  updateCenterDrift(rawValue, false);
   int raw = rawValue - yMitte;
   if (abs(raw) < deadZone) raw = 0;
   
@@ -212,7 +191,7 @@ void Joystick::update() {
             ignoreBisLoslassen = false;
           } else {
             unsigned long klickDauer = jetzt - klickStartZeit;
-            if (klickDauer >= langKlickZeit) {
+            if (klickDauer >= langKlickZeit && !langKlickErkannt) {
               langKlickZaehler++;
               ersterKlickErkannt = false;
             }

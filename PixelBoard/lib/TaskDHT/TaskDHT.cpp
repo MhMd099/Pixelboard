@@ -16,6 +16,9 @@ static float lastHumidity = 0.0f;
 static bool lastReadingOk = false;
 static unsigned long lastReadMs = 0;
 static unsigned long lastErrorLogMs = 0;
+static unsigned long sensorReadyAfterMs = 0;
+static uint8_t consecutiveFailures = 0;
+static uint8_t typeSwitchesWithoutReading = 0;
 
 static uint8_t dhtLibraryType(int type) {
     return (type == 11) ? DHT11 : DHT22;
@@ -33,9 +36,10 @@ static void ensureSensor() {
     activeType = currentDhtType;
     pinMode(activePin, INPUT_PULLUP);
     dht = new DHT((uint8_t)activePin, dhtLibraryType(activeType));
+    if (dht == nullptr) return;
     dht->begin();
-    lastReadingOk = false;
     lastReadMs = 0;
+    sensorReadyAfterMs = millis() + 2200UL;
     Serial.print("TaskDHT: Sensor aktiv auf GPIO ");
     Serial.print(activePin);
     Serial.print(" als DHT");
@@ -51,6 +55,7 @@ static void readSensorIfDue() {
     if (dht == nullptr) return;
 
     unsigned long now = millis();
+    if ((long)(now - sensorReadyAfterMs) < 0) return;
     if (lastReadMs != 0 && now - lastReadMs < 2300UL) return;
     lastReadMs = now;
 
@@ -72,14 +77,23 @@ static void readSensorIfDue() {
         lastTemp = t;
         lastHumidity = h;
         lastReadingOk = true;
+        consecutiveFailures = 0;
+        typeSwitchesWithoutReading = 0;
     } else {
-        lastReadingOk = false;
+        consecutiveFailures++;
         if (now - lastErrorLogMs > 10000UL) {
             Serial.print("TaskDHT: Keine gueltige Messung auf GPIO ");
             Serial.print(activePin);
             Serial.print(" als DHT");
             Serial.println(activeType);
             lastErrorLogMs = now;
+        }
+        if (consecutiveFailures >= 2) {
+            consecutiveFailures = 0;
+            typeSwitchesWithoutReading++;
+            currentDhtType = activeType == 22 ? 11 : 22;
+            Serial.print("TaskDHT: Automatischer Wechsel auf DHT");
+            Serial.println(currentDhtType);
         }
     }
 }
@@ -165,6 +179,13 @@ static void drawError(CRGB col) {
     drawChar3x5(16, 10, 'T', col);
 }
 
+static void drawWaiting(CRGB col) {
+    drawChar3x5(8, 5, 'W', col);
+    drawChar3x5(12, 5, 'A', col);
+    drawChar3x5(16, 5, 'I', col);
+    drawChar3x5(20, 5, 'T', col);
+}
+
 void taskDHTHandler(void *pvParameters) {
     registerCurrentTaskWithWatchdog();
     ensureSensor();
@@ -188,6 +209,8 @@ void taskDHTHandler(void *pvParameters) {
                 if (lastReadingOk) {
                     drawTempLine(1, lastTemp, labelCol, valueCol);
                     drawHumidityLine(10, lastHumidity, labelCol, valueCol);
+                } else if (typeSwitchesWithoutReading < 2) {
+                    drawWaiting(labelCol);
                 } else {
                     drawError(labelCol);
                 }

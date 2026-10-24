@@ -60,7 +60,7 @@ void Taster_v2::klickenErkennen() {
           ignoreBisLoslassen = false;
         } else {
           unsigned long klickDauer = jetzt - klickStartZeit;
-          if (klickDauer >= langKlickZeit) {
+          if (klickDauer >= langKlickZeit && !langKlickErkannt) {
             langKlickZaehler++;
             ersterKlickErkannt = false;
           }

@@ -28,6 +28,7 @@
 #include "TaskPacman.h"
 #include "TaskTetris.h"
 #include "TaskMario.h"
+#include "TaskStandby.h"
 #include "MenuMusic.h"
 #include <LittleFS.h>
 
@@ -38,7 +39,7 @@
 #define LED_PIN_UNTEN 25
 #define COLOR_ORDER GRB
 #define CHIPSET WS2812B
-static const int APP_COUNT = 11;
+static const int APP_COUNT = 12;
 static const SoundType APP_ENTRY_SOUNDS[APP_COUNT] = {
     SND_CHECKPOINT, // Uhr
     SND_BUFF,       // Wetter
@@ -50,7 +51,8 @@ static const SoundType APP_ENTRY_SOUNDS[APP_COUNT] = {
     SND_HIT,        // Pong
     SND_COIN,       // Pacman
     SND_EXPLOSION,  // Tetris
-    SND_JUMP        // Mario
+    SND_JUMP,       // Mario
+    SND_CHECKPOINT  // Standby
 };
 
 // --- Joystick 1 (Für Snake) ---
@@ -83,6 +85,136 @@ bool navigationsSperre = false;
 unsigned long eventSperreBis = 0;
 static portMUX_TYPE navigationRequestMux = portMUX_INITIALIZER_UNLOCKED;
 static volatile int requestedAppTask = -1;
+
+static const uint8_t MENU_VOLUME_STEP = 5;
+static const uint8_t MENU_VOLUME_DEADZONE = 70;
+static const unsigned long MENU_VOLUME_REPEAT_MS = 150;
+static const unsigned long MENU_VOLUME_OVERLAY_MS = 2200;
+static uint8_t lastAudibleMusicVolume = 100;
+static uint8_t lastAudibleEffectsVolume = 100;
+static unsigned long volumeOverlayUntilMs = 0;
+static unsigned long lastVolumeStepMs[2] = {0, 0};
+static bool volumeStepArmed[2] = {true, true};
+
+static void showVolumeOverlay()
+{
+    volumeOverlayUntilMs = millis() + MENU_VOLUME_OVERLAY_MS;
+}
+
+static bool volumeOverlayVisible(unsigned long now)
+{
+    return (long)(volumeOverlayUntilMs - now) > 0;
+}
+
+static void drawMenuVolumeBar(int y, uint8_t volume, CRGB activeColor)
+{
+    CRGB trackColor = activeColor;
+    trackColor.nscale8_video(22);
+    for (int x = 0; x < 32; x++)
+        setPixel(x, y, trackColor);
+
+    int filled = (volume * 32 + 99) / 100;
+    for (int x = 0; x < filled; x++)
+        setPixel(x, y, activeColor);
+
+    if (volume == 0)
+    {
+        setPixel(0, y, CRGB::Red);
+        setPixel(1, y, CRGB::Red);
+    }
+}
+
+static void drawMenuVolumeOverlay(unsigned long now)
+{
+    if (!volumeOverlayVisible(now))
+        return;
+
+    // Zwei getrennte, horizontale Balken: oben Musik, darunter Spieleffekte.
+    drawMenuVolumeBar(0, getMusicVolume(), CRGB(30, 190, 255));
+    drawMenuVolumeBar(2, getEffectsVolume(), CRGB(255, 150, 20));
+}
+
+static void toggleMenuChannelMute(bool music)
+{
+    uint8_t current = music ? getMusicVolume() : getEffectsVolume();
+    uint8_t &lastAudible = music ? lastAudibleMusicVolume : lastAudibleEffectsVolume;
+    if (current > 0)
+    {
+        lastAudible = current;
+        if (music)
+            setMusicVolume(0);
+        else
+            setEffectsVolume(0);
+    }
+    else
+    {
+        uint8_t restored = lastAudible > 0 ? lastAudible : 100;
+        if (music)
+            setMusicVolume(restored);
+        else
+            setEffectsVolume(restored);
+    }
+    showVolumeOverlay();
+}
+
+static void adjustMenuChannelVolume(Joystick &stick, bool music, uint8_t slot)
+{
+    // Die Joysticks sind am Board um 90 Grad montiert: X entspricht hoch/runter.
+    int vertical = stick.readXPercent();
+    int direction = vertical >= MENU_VOLUME_DEADZONE ? 1 :
+                    vertical <= -MENU_VOLUME_DEADZONE ? -1 : 0;
+    unsigned long now = millis();
+    if (direction == 0)
+    {
+        volumeStepArmed[slot] = true;
+        return;
+    }
+    if (!volumeStepArmed[slot] && now - lastVolumeStepMs[slot] < MENU_VOLUME_REPEAT_MS)
+        return;
+
+    volumeStepArmed[slot] = false;
+    lastVolumeStepMs[slot] = now;
+    uint8_t current = music ? getMusicVolume() : getEffectsVolume();
+    uint8_t next = (uint8_t)constrain((int)current + direction * MENU_VOLUME_STEP, 0, 100);
+    if (next == current)
+    {
+        showVolumeOverlay();
+        return;
+    }
+
+    if (music)
+    {
+        setMusicVolume(next);
+        if (next > 0)
+            lastAudibleMusicVolume = next;
+    }
+    else
+    {
+        setEffectsVolume(next);
+        if (next > 0)
+            lastAudibleEffectsVolume = next;
+    }
+    showVolumeOverlay();
+}
+
+static void handleMenuVolumeControls()
+{
+    // Controller 1 regelt Musik, der I2C-Controller nur Spieleffekte.
+    adjustMenuChannelVolume(joystick1, true, 0);
+    adjustMenuChannelVolume(joystick3, false, 1);
+
+    if (joystick1.einfacherKlickZaehler > 0)
+        toggleMenuChannelMute(true);
+    if (joystick3.einfacherKlickZaehler > 0)
+        toggleMenuChannelMute(false);
+
+    joystick1.einfacherKlickZaehler = 0;
+    joystick1.doppelklickZaehler = 0;
+    joystick1.langKlickZaehler = 0;
+    joystick3.einfacherKlickZaehler = 0;
+    joystick3.doppelklickZaehler = 0;
+    joystick3.langKlickZaehler = 0;
+}
 
 // ==========================================
 // 3. MENÜ-ICONS & DISPLAY-FUNKTIONEN
@@ -132,6 +264,7 @@ void printMenu()
             if (((x + jetzt / 90) % 5) == 0)
                 setPixel(x, 14, themeCol(jetzt / 25 + x * 6, pulse));
 
+        drawMenuVolumeOverlay(jetzt);
         FastLED.show();
         unlockDisplay();
         return;
@@ -314,8 +447,15 @@ void printMenu()
         renderMarioMenuPreview();
         break;
     }
+
+    case 12:
+    {
+        renderStandbyMenuPreview();
+        break;
+    }
     }
 
+    drawMenuVolumeOverlay(jetzt);
     FastLED.show();
     unlockDisplay();
 }
@@ -431,18 +571,7 @@ struct ClickEvent readAndClearClicks()
 
 struct ClickEvent readAppClicks()
 {
-    struct ClickEvent result = {0, 0, 0};
-    result.doppelklick = joystick2.doppelklickZaehler;
-    joystick2.doppelklickZaehler = 0;
-
-    if (aktiverTask != 8)
-    {
-        result.einfacherKlick = joystick2.einfacherKlickZaehler;
-        result.langKlick = joystick2.langKlickZaehler;
-        joystick2.einfacherKlickZaehler = 0;
-        joystick2.langKlickZaehler = 0;
-    }
-    return result;
+    return readAndClearClicks();
 }
 
 // ==========================================
@@ -627,7 +756,7 @@ void setup()
     initLittleFS();
     loadWifiCredentials();
     loadDeviceSettings();
-    loadConfigForUser("");
+    loadDeviceProfile();
     Wire.begin(I2C_SDA, I2C_SCL);
     Serial.println("I2C-Bus aktiv auf GPIO 32 (SDA) und GPIO 33 (SCL).");
     if (!hasWifiCredentials())
@@ -640,8 +769,8 @@ void setup()
     initLedColorCorrection();
     FastLED.setCorrection(TypicalLEDStrip);
     FastLED.setDither(true);
-    FastLED.setBrightness(18);
     FastLED.setMaxPowerInVoltsAndMilliamps(5, 2400);
+    FastLED.setBrightness(255);
 
     AnzeigeOben.SetFont(MatriseFontData);
     AnzeigeOben.Init(&ledsOben, ledsOben.Width(), AnzeigeOben.FontHeight() + 1, 1, 0);
@@ -667,11 +796,16 @@ void setup()
     createTaskChecked(taskPacmanHandler, "Pacman", 4096, 1, 1);
     createTaskChecked(taskTetrisHandler, "Tetris", 4096, 1, 1);
     createTaskChecked(taskMarioHandler, "Mario", 6144, 1, 1);
+    createTaskChecked(taskStandbyHandler, "Standby", 4096, 1, 1);
     joystick2.setInverted(true, true);
     vTaskDelay(pdMS_TO_TICKS(50));
     joystick1.kalibrieren();
     joystick2.kalibrieren();
     joystick3.kalibrieren();
+    if (getMusicVolume() > 0)
+        lastAudibleMusicVolume = getMusicVolume();
+    if (getEffectsVolume() > 0)
+        lastAudibleEffectsVolume = getEffectsVolume();
     printMenu();
 }
 
@@ -703,6 +837,7 @@ void loop()
     if (aktiverTask == -1)
     {
         // IM MENÜ
+        handleMenuVolumeControls();
         if (clicks.einfacherKlick > 0 || clicks.langKlick > 0)
         {
             if (fokusModus > 0)
@@ -743,7 +878,7 @@ void loop()
             playSound(SND_DIE);
             zurueckZumMenue();
         }
-        else if (clicks.langKlick > 0 && aktiverTask != 8)
+        else if (clicks.langKlick > 0)
         {
             playSound(SND_SELECT);
             int next = (aktiverTask + 1) % APP_COUNT;

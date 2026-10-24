@@ -60,7 +60,8 @@ void taskSnakeHandler(void *pvParameters) {
     Point dirs[2] = {{1, 0}, {-1, 0}};
     bool playerJoined[2] = {true, false};
     bool playerAlive[2] = {true, false};
-    bool secondPlayerNeedsInitialMove = false;
+    bool playerHuman[2] = {false, false};
+    int8_t humanController[2] = {-1, -1};
     unsigned long playerJoinMs[2] = {0, 0};
     unsigned long playerDeathMs[2] = {0, 0};
     unsigned long allLostSinceMs = 0;
@@ -138,15 +139,17 @@ void taskSnakeHandler(void *pvParameters) {
         snakes[0][0] = {15, 8};
         snakes[0][1] = {14, 8};
         snakes[0][2] = {13, 8};
+        snakes[1][0] = {23, 8};
+        snakes[1][1] = {24, 8};
+        snakes[1][2] = {25, 8};
         dirs[0] = {1, 0};
         dirs[1] = {-1, 0};
         playerJoined[0] = true;
-        playerJoined[1] = false;
+        playerJoined[1] = snakeBotCount >= 2 || playerHuman[1];
         playerAlive[0] = true;
-        playerAlive[1] = false;
-        secondPlayerNeedsInitialMove = false;
+        playerAlive[1] = playerJoined[1];
         playerJoinMs[0] = millis();
-        playerJoinMs[1] = 0;
+        playerJoinMs[1] = playerJoined[1] ? millis() : 0;
         playerDeathMs[0] = 0;
         playerDeathMs[1] = 0;
         allLostSinceMs = 0;
@@ -155,60 +158,88 @@ void taskSnakeHandler(void *pvParameters) {
         currentScore = 0;
         configureItems();
     };
-    auto activateSecondPlayer = [&]() {
-        dirs[1] = {-dirs[0].x, -dirs[0].y};
-        snakeLengths[1] = 3;
+    auto claimBot = [&](int8_t controller, int preferredPlayer) {
+        for (int player = 0; player < 2; player++) {
+            if (playerHuman[player] && humanController[player] == controller) return false;
+        }
 
-        Point preferred;
-        if (dirs[1].x != 0) {
-            preferred.x = dirs[1].x > 0 ? 4 : WIDTH - 5;
-            preferred.y = HEIGHT_TOTAL - 1 - snakes[0][0].y;
+        int target = -1;
+        if (playerJoined[preferredPlayer] && !playerHuman[preferredPlayer]) {
+            target = preferredPlayer;
         } else {
-            preferred.x = WIDTH - 1 - snakes[0][0].x;
-            preferred.y = dirs[1].y > 0 ? 4 : HEIGHT_TOTAL - 5;
+            int other = 1 - preferredPlayer;
+            if (playerJoined[other] && !playerHuman[other]) target = other;
         }
+        if (target < 0) return false;
 
-        auto canPlace = [&](Point head) {
-            for (int i = 0; i < snakeLengths[1]; i++) {
-                Point segment = {head.x - dirs[1].x * i, head.y - dirs[1].y * i};
-                if (segment.x < 0 || segment.x >= WIDTH || segment.y < 0 || segment.y >= HEIGHT_TOTAL) {
-                    return false;
-                }
-                if (onSnake(0, segment) || onAnyItem(segment)) return false;
-            }
-
-            Point ahead = {
-                wrapGameCoordinate(head.x + dirs[1].x, WIDTH),
-                wrapGameCoordinate(head.y + dirs[1].y, HEIGHT_TOTAL)
-            };
-            return !onSnake(0, ahead) && !onItems(obstacles, MAX_SNAKE_OBSTACLES, ahead);
-        };
-
-        Point start = preferred;
-        bool found = canPlace(start);
-        for (int radius = 1; !found && radius < WIDTH + HEIGHT_TOTAL; radius++) {
-            for (int y = 0; y < HEIGHT_TOTAL && !found; y++) {
-                for (int x = 0; x < WIDTH; x++) {
-                    if (abs(x - preferred.x) + abs(y - preferred.y) != radius) continue;
-                    Point candidate = {x, y};
-                    if (!canPlace(candidate)) continue;
-                    start = candidate;
-                    found = true;
-                    break;
-                }
-            }
-        }
-        if (!found) return false;
-
-        for (int i = 0; i < snakeLengths[1]; i++) {
-            snakes[1][i] = {start.x - dirs[1].x * i, start.y - dirs[1].y * i};
-        }
-        playerJoined[1] = true;
-        playerAlive[1] = true;
-        secondPlayerNeedsInitialMove = true;
-        playerJoinMs[1] = millis();
+        playerHuman[target] = true;
+        humanController[target] = controller;
+        playerJoinMs[target] = millis();
         playSound(SND_POWERUP);
         return true;
+    };
+    auto chooseBotDirection = [&](int player, Point reservedNext, bool hasReservation) {
+        static const Point choices[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+        Point best = dirs[player];
+        int bestScore = 100000;
+        for (int i = 0; i < 4; i++) {
+            Point candidate = choices[i];
+            if (candidate.x == -dirs[player].x && candidate.y == -dirs[player].y) continue;
+            Point next = {
+                wrapGameCoordinate(snakes[player][0].x + candidate.x, WIDTH),
+                wrapGameCoordinate(snakes[player][0].y + candidate.y, HEIGHT_TOTAL)
+            };
+            int score = 0;
+            if (onItems(obstacles, MAX_SNAKE_OBSTACLES, next) || onSnake(player, next)) score += 50000;
+            int other = 1 - player;
+            if (playerAlive[other] && onSnake(other, next)) score += 50000;
+            if (hasReservation && pointEquals(next, reservedNext)) score += 60000;
+
+            int otherDx = abs(next.x - snakes[other][0].x);
+            int otherDy = abs(next.y - snakes[other][0].y);
+            int otherDistance = min(otherDx, WIDTH - otherDx) +
+                                min(otherDy, HEIGHT_TOTAL - otherDy);
+            if (playerAlive[other] && otherDistance <= 2) score += (3 - otherDistance) * 900;
+
+            int safeExits = 0;
+            for (int look = 0; look < 4; look++) {
+                Point follow = choices[look];
+                if (follow.x == -candidate.x && follow.y == -candidate.y) continue;
+                Point after = {
+                    wrapGameCoordinate(next.x + follow.x, WIDTH),
+                    wrapGameCoordinate(next.y + follow.y, HEIGHT_TOTAL)
+                };
+                bool blocked = onItems(obstacles, MAX_SNAKE_OBSTACLES, after) ||
+                               onSnake(player, after) ||
+                               (playerAlive[other] && onSnake(other, after)) ||
+                               (hasReservation && pointEquals(after, reservedNext));
+                if (!blocked) safeExits++;
+            }
+            if (safeExits == 0) score += 20000;
+            else score += (3 - min(3, safeExits)) * 450;
+
+            int nearestReward = 100;
+            for (int f = 0; f < MAX_SNAKE_FOOD; f++) {
+                if (!foods[f].active) continue;
+                int dx = abs(next.x - foods[f].p.x);
+                int dy = abs(next.y - foods[f].p.y);
+                nearestReward = min(nearestReward, min(dx, WIDTH - dx) + min(dy, HEIGHT_TOTAL - dy));
+            }
+            for (int p = 0; p < MAX_SNAKE_POWERUPS; p++) {
+                if (!powerups[p].active) continue;
+                int dx = abs(next.x - powerups[p].p.x);
+                int dy = abs(next.y - powerups[p].p.y);
+                nearestReward = min(nearestReward, min(dx, WIDTH - dx) + min(dy, HEIGHT_TOTAL - dy) - 2);
+            }
+            score += nearestReward * 10;
+            if (onItems(foods, MAX_SNAKE_FOOD, next)) score -= 300;
+            if (onItems(powerups, MAX_SNAKE_POWERUPS, next)) score -= 500;
+            if (score < bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        return best;
     };
     auto renderGame = [&]() {
         FastLED.clear();
@@ -267,10 +298,6 @@ void taskSnakeHandler(void *pvParameters) {
         currentScore = snakeLengths[0];
         if (playerJoined[1] && snakeLengths[1] > currentScore) currentScore = snakeLengths[1];
 
-        String snakeUser = currentUserSnapshot();
-        snakeUser.trim();
-        if (snakeUser == "") snakeUser = "Gast";
-        saveSnakeHighScore(snakeUser, currentScore);
         runtime.animateTransition(CRGB::Red);
         currentState = GAME_GAME_OVER;
     };
@@ -290,9 +317,14 @@ void taskSnakeHandler(void *pvParameters) {
             taskWasActive = true;
             joystick1.reset();
             joystick3.reset();
+            playerHuman[0] = false;
+            playerHuman[1] = false;
+            humanController[0] = -1;
+            humanController[1] = -1;
             resetGame();
             runtime.begin();
-            currentState = GAME_MENU;
+            countdownStartedMs = millis();
+            currentState = GAME_COUNTDOWN;
         }
 
         if (!lockDisplay(20)) {
@@ -305,7 +337,8 @@ void taskSnakeHandler(void *pvParameters) {
         }
 
         GameControlEvents controls = runtime.poll(joystick1, joystick3);
-        bool startDoubleClick = controls.doubleClick;
+        if (controls.primaryDoubleClick) claimBot(0, 0);
+        if (controls.secondaryDoubleClick) claimBot(1, 1);
         joystick1.einfacherKlickZaehler = 0;
         joystick3.einfacherKlickZaehler = 0;
         if (controls.pauseToggle &&
@@ -345,13 +378,6 @@ void taskSnakeHandler(void *pvParameters) {
                     setPixel(25, 11, cueCol);
                 }
                 FastLED.show();
-                if (startDoubleClick) {
-                    resetGame();
-                    countdownStartedMs = millis();
-                    currentState = GAME_COUNTDOWN;
-                    runtime.animateTransition(CRGB::Green);
-                    playSound(SND_SELECT);
-                }
                 break;
             }
 
@@ -369,11 +395,28 @@ void taskSnakeHandler(void *pvParameters) {
             }
 
             case GAME_PLAYING: {
-                if (playerAlive[0]) applySnakeInput(controls.primary, dirs[0]);
-                if (!playerJoined[1]) {
-                    if (snakeJoystickMoved(controls.secondary)) activateSecondPlayer();
-                } else if (playerAlive[1] && !secondPlayerNeedsInitialMove) {
-                    applySnakeInput(controls.secondary, dirs[1]);
+                bool movingNow[2] = {playerAlive[0], playerJoined[1] && playerAlive[1]};
+                for (int player = 0; player < 2; player++) {
+                    if (!movingNow[player] || !playerHuman[player]) continue;
+                    const GameStickState& stick = humanController[player] == 0
+                        ? controls.primary : controls.secondary;
+                    applySnakeInput(stick, dirs[player]);
+                }
+
+                Point plannedNext[2] = {snakes[0][0], snakes[1][0]};
+                for (int player = 0; player < 2; player++) {
+                    if (!movingNow[player]) continue;
+                    plannedNext[player].x = wrapGameCoordinate(snakes[player][0].x + dirs[player].x, WIDTH);
+                    plannedNext[player].y = wrapGameCoordinate(snakes[player][0].y + dirs[player].y, HEIGHT_TOTAL);
+                }
+
+                if (movingNow[0] && !playerHuman[0]) {
+                    dirs[0] = chooseBotDirection(0, plannedNext[1], movingNow[1]);
+                    plannedNext[0].x = wrapGameCoordinate(snakes[0][0].x + dirs[0].x, WIDTH);
+                    plannedNext[0].y = wrapGameCoordinate(snakes[0][0].y + dirs[0].y, HEIGHT_TOTAL);
+                }
+                if (movingNow[1] && !playerHuman[1]) {
+                    dirs[1] = chooseBotDirection(1, plannedNext[0], movingNow[0]);
                 }
 
                 unsigned long now = millis();
@@ -451,8 +494,6 @@ void taskSnakeHandler(void *pvParameters) {
                         if (eatenPower[player] >= 0) spawnOne(powerups, eatenPower[player]);
                     }
 
-                    if (moving[1]) secondPlayerNeedsInitialMove = false;
-
                     renderGame();
 
                     bool allPlayersLost = !playerAlive[0] &&
@@ -488,7 +529,7 @@ void taskSnakeHandler(void *pvParameters) {
                 drawDigitW(20, 8, scores[1] / 10, playerCols[1]);
                 drawDigitW(26, 8, scores[1] % 10, playerCols[1]);
                 FastLED.show();
-                if (startDoubleClick) {
+                if (now - allLostSinceMs >= 1800UL) {
                     resetGame();
                     countdownStartedMs = millis();
                     currentState = GAME_COUNTDOWN;

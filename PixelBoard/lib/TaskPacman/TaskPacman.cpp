@@ -24,12 +24,7 @@ const int GHOST_COUNT = 4;
 const int PLAYER_MAX_HP = 3;
 const int DEADZONE = 60;
 const unsigned long PLAYER_STEP_MS = 145;
-const unsigned long GHOST_STEP_MS = 220;
-const unsigned long GHOST_AUTO_STEP_MS = 430;
-const unsigned long GHOST_SPRINT_STEP_MS = 105;
-const unsigned long GHOST_SWITCH_MS = 200;
-const unsigned long GHOST_SPRINT_MS = 900;
-const unsigned long GHOST_SPRINT_COOLDOWN_MS = 3200;
+const unsigned long GHOST_AUTO_STEP_MS = 300;
 const unsigned long POWER_MS = 7000;
 
 enum Tile : uint8_t {
@@ -76,28 +71,32 @@ bool wonGame = false;
 Tile mapTiles[HEIGHT][WIDTH];
 Player players[PLAYER_COUNT];
 Ghost ghosts[GHOST_COUNT];
-uint8_t activeGhostIndex = 0;
 int dotsLeft = 0;
-int cachedBestScore = 0;
-bool highscoreSaved = false;
-bool defaultPlayersActive = false;
+bool playerHuman[PLAYER_COUNT] = {false, false};
+bool humanInputArmed[PLAYER_COUNT] = {false, false};
 unsigned long stateStartedMs = 0;
 unsigned long lastPlayerMoveMs = 0;
-unsigned long lastGhostSwitchMs = 0;
 unsigned long frightenedUntilMs = 0;
-unsigned long sprintUntilMs = 0;
-unsigned long sprintCooldownUntilMs = 0;
 unsigned long ghostAbilityUntilMs[GHOST_COUNT];
 unsigned long playerInvertUntilMs = 0;
 int8_t tempWallX = -1;
 int8_t tempWallY = -1;
 unsigned long tempWallUntilMs = 0;
-String activeP1User;
-String activeP2User;
 
 Vec makeVec(int8_t x, int8_t y) {
     Vec v = {x, y};
     return v;
+}
+
+bool stickIsNeutral(const GameStickState& stick) {
+    return abs(stick.x) <= DEADZONE && abs(stick.y) <= DEADZONE;
+}
+
+void takeOverPlayer(uint8_t playerIndex) {
+    playerHuman[playerIndex] = true;
+    humanInputArmed[playerIndex] = false;
+    players[playerIndex].dir = makeVec(0, 0);
+    players[playerIndex].wanted = makeVec(0, 0);
 }
 
 bool samePos(int x1, int y1, int x2, int y2) {
@@ -289,9 +288,9 @@ void initPlayers() {
     players[0].startY = 1;
     players[0].dir = makeVec(1, 0);
     players[0].wanted = makeVec(1, 0);
-    players[0].active = activeP1User != "" || defaultPlayersActive;
-    players[0].alive = players[0].active;
-    players[0].hp = players[0].active ? PLAYER_MAX_HP : 0;
+    players[0].active = true;
+    players[0].alive = true;
+    players[0].hp = PLAYER_MAX_HP;
     players[0].score = 0;
     players[0].invulnerableUntilMs = 0;
     players[0].color = CRGB::Yellow;
@@ -302,9 +301,9 @@ void initPlayers() {
     players[1].startY = 14;
     players[1].dir = makeVec(-1, 0);
     players[1].wanted = makeVec(-1, 0);
-    players[1].active = activeP2User != "";
-    players[1].alive = players[1].active;
-    players[1].hp = players[1].active ? PLAYER_MAX_HP : 0;
+    players[1].active = true;
+    players[1].alive = true;
+    players[1].hp = PLAYER_MAX_HP;
     players[1].score = 0;
     players[1].invulnerableUntilMs = 0;
     players[1].color = CRGB(80, 255, 80);
@@ -323,19 +322,6 @@ void initGhosts() {
         ghosts[i].respawnUntilMs = 0;
         ghosts[i].color = colors[i];
     }
-    activeGhostIndex = 0;
-}
-
-bool hasAnyPlayer() {
-    return defaultPlayersActive || activeP1User != "" || activeP2User != "";
-}
-
-void ensureDefaultPlayers() {
-    defaultPlayersActive = true;
-}
-
-void clearDefaultPlayersIfNeeded() {
-    defaultPlayersActive = false;
 }
 
 bool anyPlayerAlive() {
@@ -365,17 +351,13 @@ void resetGame() {
     buildMap();
     initPlayers();
     initGhosts();
-    highscoreSaved = false;
     frightenedUntilMs = 0;
-    sprintUntilMs = 0;
-    sprintCooldownUntilMs = 0;
     playerInvertUntilMs = 0;
     tempWallX = -1;
     tempWallY = -1;
     tempWallUntilMs = 0;
     for (uint8_t i = 0; i < GHOST_COUNT; i++) ghostAbilityUntilMs[i] = 0;
     lastPlayerMoveMs = 0;
-    lastGhostSwitchMs = 0;
 }
 
 void consumeTile(Player& player, unsigned long now) {
@@ -394,8 +376,65 @@ void consumeTile(Player& player, unsigned long now) {
     }
 }
 
-void updateOnePlayer(Player& player, const GameStickState& stick,
-                     unsigned long now, bool invertX, bool invertY) {
+Vec choosePacmanBotDir(uint8_t playerIndex, unsigned long now) {
+    static const Vec dirs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+    static uint16_t queue[WIDTH * HEIGHT];
+    static bool visited[HEIGHT][WIDTH];
+    static int8_t firstDir[HEIGHT][WIDTH];
+    Player& player = players[playerIndex];
+    Player& other = players[1 - playerIndex];
+
+    // First search avoids cells next to a dangerous ghost. If that makes the
+    // remaining pellets unreachable, a second pass relaxes only that rule.
+    for (uint8_t pass = 0; pass < 2; pass++) {
+        memset(visited, 0, sizeof(visited));
+        int head = 0;
+        int tail = 0;
+        queue[tail++] = (uint16_t)(player.y * WIDTH + player.x);
+        visited[player.y][player.x] = true;
+        firstDir[player.y][player.x] = -1;
+
+        while (head < tail) {
+            uint16_t packed = queue[head++];
+            int x = packed % WIDTH;
+            int y = packed / WIDTH;
+            if ((x != player.x || y != player.y) &&
+                (mapTiles[y][x] == TILE_DOT || mapTiles[y][x] == TILE_POWER)) {
+                int8_t selected = firstDir[y][x];
+                if (selected >= 0) return dirs[selected];
+            }
+
+            for (int8_t d = 0; d < 4; d++) {
+                int nx = x + dirs[d].x;
+                int ny = y + dirs[d].y;
+                if (!inBounds(nx, ny) || visited[ny][nx] || isWall(nx, ny)) continue;
+                if (other.active && other.alive && nx == other.x && ny == other.y) continue;
+
+                bool dangerous = false;
+                if (pass == 0 && now >= frightenedUntilMs) {
+                    for (uint8_t g = 0; g < GHOST_COUNT; g++) {
+                        if (now < ghosts[g].respawnUntilMs) continue;
+                        if (manhattan(nx, ny, ghosts[g].x, ghosts[g].y) <= 1) {
+                            dangerous = true;
+                            break;
+                        }
+                    }
+                }
+                if (dangerous) continue;
+
+                visited[ny][nx] = true;
+                firstDir[ny][nx] = (x == player.x && y == player.y)
+                    ? d : firstDir[y][x];
+                queue[tail++] = (uint16_t)(ny * WIDTH + nx);
+            }
+        }
+    }
+    return player.dir;
+}
+
+void updateOnePlayer(uint8_t playerIndex, const GameStickState& stick,
+                     unsigned long now, bool invertX, bool invertY, bool human) {
+    Player& player = players[playerIndex];
     if (!player.active || !player.alive) return;
 
     if ((long)(now - playerInvertUntilMs) < 0) {
@@ -403,19 +442,54 @@ void updateOnePlayer(Player& player, const GameStickState& stick,
         invertY = !invertY;
     }
 
-    Vec input = readGridDirValues(stick.x, stick.y, invertX, invertY);
+    Vec input = makeVec(0, 0);
+    if (human) {
+        // Nach dem Doppelklick erst loslassen. So wird weder die letzte
+        // Bot-Richtung noch eine Bewegung waehrend des Klicks uebernommen.
+        if (!humanInputArmed[playerIndex]) {
+            player.dir = makeVec(0, 0);
+            player.wanted = makeVec(0, 0);
+            if (stickIsNeutral(stick)) humanInputArmed[playerIndex] = true;
+            return;
+        }
+        input = readGridDirValues(stick.x, stick.y, invertX, invertY);
+    } else {
+        input = choosePacmanBotDir(playerIndex, now);
+    }
     if (input.x != 0 || input.y != 0) player.wanted = input;
 
-    if (canMove(player.x, player.y, player.wanted)) player.dir = player.wanted;
-    moveEntity(player.x, player.y, player.dir);
+    Player& other = players[1 - playerIndex];
+    auto canEnter = [&](Vec direction) {
+        int nx = player.x + direction.x;
+        int ny = player.y + direction.y;
+        return canMove(player.x, player.y, direction) &&
+               !(other.active && other.alive && nx == other.x && ny == other.y);
+    };
+    if (canEnter(player.wanted)) player.dir = player.wanted;
+    if (!canEnter(player.dir)) {
+        if (human) {
+            player.dir = makeVec(0, 0);
+        } else {
+            static const Vec escapeDirs[4] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
+            for (uint8_t d = 0; d < 4; d++) {
+                if (!canEnter(escapeDirs[d])) continue;
+                player.dir = escapeDirs[d];
+                break;
+            }
+        }
+    }
+    if (canEnter(player.dir)) {
+        player.x += player.dir.x;
+        player.y += player.dir.y;
+    }
     consumeTile(player, now);
 }
 
 void updatePlayers(unsigned long now, const GameControlEvents& controls) {
     if (now - lastPlayerMoveMs < PLAYER_STEP_MS) return;
     lastPlayerMoveMs = now;
-    updateOnePlayer(players[0], controls.primary, now, false, false);
-    updateOnePlayer(players[1], controls.secondary, now, false, false);
+    updateOnePlayer(0, controls.primary, now, false, false, playerHuman[0]);
+    updateOnePlayer(1, controls.secondary, now, false, false, playerHuman[1]);
 }
 
 Vec targetForGhost(uint8_t idx) {
@@ -456,68 +530,9 @@ Vec chooseAutoDir(uint8_t idx) {
     return best;
 }
 
-void cycleGhost(unsigned long now) {
-    if (now - lastGhostSwitchMs < GHOST_SWITCH_MS) return;
-    activeGhostIndex = (activeGhostIndex + 1) % GHOST_COUNT;
-    lastGhostSwitchMs = now;
-    playSound(SND_SELECT);
-}
-
-void readGhostClicks(unsigned long now) {
-    if (!pacmanGhostManual) {
-        joystick2.einfacherKlickZaehler = 0;
-        joystick2.langKlickZaehler = 0;
-        return;
-    }
-
-    int clicks = joystick2.einfacherKlickZaehler;
-    int holds = joystick2.langKlickZaehler;
-    joystick2.einfacherKlickZaehler = 0;
-    joystick2.langKlickZaehler = 0;
-
-    if (clicks > 0) cycleGhost(now);
-    if (holds > 0 && now >= sprintCooldownUntilMs) {
-        if (activeGhostIndex == 0) {
-            sprintUntilMs = now + GHOST_SPRINT_MS;
-            ghostAbilityUntilMs[0] = sprintUntilMs;
-        } else if (activeGhostIndex == 1) {
-            ghostAbilityUntilMs[1] = now + 3000UL;
-        } else if (activeGhostIndex == 2) {
-            playerInvertUntilMs = now + 3500UL;
-            ghostAbilityUntilMs[2] = now + 3500UL;
-        } else {
-            int bx = ghosts[3].x - ghosts[3].dir.x;
-            int by = ghosts[3].y - ghosts[3].dir.y;
-            if (inBounds(bx, by) && mapTiles[by][bx] != TILE_WALL) {
-                tempWallX = bx;
-                tempWallY = by;
-                tempWallUntilMs = now + 4500UL;
-            }
-            ghostAbilityUntilMs[3] = now + 4500UL;
-        }
-        sprintCooldownUntilMs = now + GHOST_SPRINT_COOLDOWN_MS;
-        playSound(SND_SHOOT);
-    }
-}
-
-void updateControlledGhost(unsigned long now) {
-    Ghost& g = ghosts[activeGhostIndex];
-    if (now < g.respawnUntilMs) return;
-
-    unsigned long interval = (now < sprintUntilMs || now < ghostAbilityUntilMs[1]) ? GHOST_SPRINT_STEP_MS : GHOST_STEP_MS;
-    if (now - g.lastMoveMs < interval) return;
-
-    Vec input = readGridDir(joystick2, true, true);
-    if (input.x != 0 || input.y != 0) g.dir = input;
-    else if (activeGhostIndex == 1 && now < ghostAbilityUntilMs[1]) g.dir = chooseAutoDir(activeGhostIndex);
-    moveEntity(g.x, g.y, g.dir);
-    g.lastMoveMs = now;
-}
-
 void updateAutoGhost(uint8_t idx, unsigned long now) {
     Ghost& g = ghosts[idx];
     if (now < g.respawnUntilMs) return;
-    if (pacmanGhostManual && idx == activeGhostIndex) return;
     if (now - g.lastMoveMs < GHOST_AUTO_STEP_MS) return;
 
     g.dir = chooseAutoDir(idx);
@@ -526,8 +541,6 @@ void updateAutoGhost(uint8_t idx, unsigned long now) {
 }
 
 void updateGhosts(unsigned long now) {
-    readGhostClicks(now);
-    if (pacmanGhostManual) updateControlledGhost(now);
     for (uint8_t i = 0; i < GHOST_COUNT; i++) updateAutoGhost(i, now);
 }
 
@@ -581,17 +594,6 @@ void checkCollisions(unsigned long now) {
         state = GAME_GAME_OVER;
         stateStartedMs = now;
     }
-}
-
-void saveScoreIfNeeded() {
-    if (highscoreSaved) return;
-    if (!defaultPlayersActive) {
-        if (players[0].active && activeP1User != "") savePacmanHighScore(activeP1User, players[0].score);
-        if (players[1].active && activeP2User != "" && activeP2User != activeP1User) savePacmanHighScore(activeP2User, players[1].score);
-        cachedBestScore = max(cachedBestScore, players[0].score);
-        cachedBestScore = max(cachedBestScore, players[1].score);
-    }
-    highscoreSaved = true;
 }
 
 void drawNumber(int value, int x, int y, CRGB color) {
@@ -666,20 +668,13 @@ void renderLobby(unsigned long now) {
     setPixel(6, 8, CRGB::Yellow);
     setPixel(7, mouth ? 7 : 6, CRGB::Yellow);
     setPixel(7, mouth ? 7 : 8, CRGB::Yellow);
-    CRGB ghostMode = pacmanGhostManual ? CRGB::Red : CRGB::Cyan;
+    CRGB ghostMode = CRGB::Cyan;
     for (int gx = 21; gx <= 23; gx++)
         for (int gy = 6; gy <= 9; gy++)
             if (!(gy == 9 && gx == 22)) setPixel(gx, gy, ghostMode);
     for (int x = 10; x < 19; x += 2) setPixel(x, 7, CRGB(70, 58, 22));
-    if (!hasAnyPlayer()) {
-        if ((now / 300) % 2 == 0) {
-            for (int y = 11; y <= 13; y++) setPixel(15, y, CRGB::Orange);
-            setPixel(14, 12, CRGB::Orange);
-            setPixel(16, 12, CRGB::Orange);
-        }
-    } else {
-        drawNumber(cachedBestScore / 10, 10, 10, CRGB(80, 160, 255));
-    }
+    setPixel(14, 12, playerHuman[0] ? CRGB::Yellow : CRGB(70, 70, 20));
+    setPixel(17, 12, playerHuman[1] ? CRGB::Green : CRGB(20, 70, 20));
 }
 
 void renderCountdown(unsigned long now) {
@@ -716,15 +711,20 @@ void beginCountdown() {
 }
 
 void tickPacman() {
-    //ich musste es hier selber einfügenb, weil der joystick i2c invertiert war
-        //ich musste es hier selber einfügenb, weil der joystick invertiert war
-
-    //es geht aber nicht, i2c funktioniert,aber joystick eins ist immer ncoh invertiert
     unsigned long now = millis();
     // Start/Neustart ist in allen Spielen ein Doppelklick am Spiel-Joystick.
     // Ein Doppelklick auf Joystick 2 bleibt global "zurueck zum Menue".
     GameControlEvents controls = runtime.poll(joystick1, joystick3);
-    bool startDoubleClick = controls.doubleClick;
+    if (controls.primaryDoubleClick && !playerHuman[0]) {
+        takeOverPlayer(0);
+        lastPlayerMoveMs = now;
+        playSound(SND_POWERUP);
+    }
+    if (controls.secondaryDoubleClick && !playerHuman[1]) {
+        takeOverPlayer(1);
+        lastPlayerMoveMs = now;
+        playSound(SND_POWERUP);
+    }
     if (controls.pauseToggle && (state == GAME_PLAYING || state == GAME_PAUSED))
         runtime.applyPause(state);
     joystick1.einfacherKlickZaehler = 0;
@@ -735,13 +735,6 @@ void tickPacman() {
     switch (state) {
     case GAME_MENU:
         renderLobby(now);
-        if (startDoubleClick) {
-            if (!hasAnyPlayer()) {
-                ensureDefaultPlayers();
-            }
-            runtime.animateTransition(CRGB::Yellow);
-            beginCountdown();
-        }
         break;
 
     case GAME_COUNTDOWN:
@@ -767,7 +760,6 @@ void tickPacman() {
             stateStartedMs = now;
             playSound(SND_BUFF);
         }
-        if (state == GAME_GAME_OVER) saveScoreIfNeeded();
         renderGame(now);
         break;
 
@@ -776,10 +768,9 @@ void tickPacman() {
         break;
 
     case GAME_GAME_OVER:
-        saveScoreIfNeeded();
         if (wonGame) renderWin();
         else renderGameOver();
-        if (startDoubleClick) {
+        if (now - stateStartedMs >= 1800UL) {
             runtime.animateTransition(CRGB::Yellow);
             beginCountdown();
         }
@@ -789,11 +780,6 @@ void tickPacman() {
     FastLED.show();
 }
 
-void refreshCachedBest() {
-    cachedBestScore = 0;
-    if (activeP1User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(activeP1User));
-    if (activeP2User != "") cachedBestScore = max(cachedBestScore, getPacmanHighScore(activeP2User));
-}
 }
 
 void renderPacmanMenuPreview() {
@@ -812,15 +798,16 @@ void taskPacmanHandler(void *pvParameters) {
         }
 
         if (lastTask != 8) {
-            activeP1User = pacmanP1UserSnapshot();
-            activeP2User = pacmanP2UserSnapshot();
+            playerHuman[0] = false;
+            playerHuman[1] = false;
+            humanInputArmed[0] = false;
+            humanInputArmed[1] = false;
             joystick1.reset();
             joystick3.reset();
-            clearDefaultPlayersIfNeeded();
-            state = GAME_MENU;
             runtime.begin();
             resetGame();
-            refreshCachedBest();
+            state = GAME_COUNTDOWN;
+            stateStartedMs = millis();
             joystick2.einfacherKlickZaehler = 0;
             joystick2.langKlickZaehler = 0;
             lastTask = 8;

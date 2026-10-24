@@ -1,19 +1,37 @@
 #include "ConfigStorage.h"
 
 #include <LittleFS.h>
+#include <sys/stat.h>
 
 namespace {
 SemaphoreHandle_t configMutex = NULL;
 
+bool pathExistsQuiet(const String& path) {
+    String mountedPath = String("/littlefs") + path;
+    struct stat info;
+    return stat(mountedPath.c_str(), &info) == 0;
+}
+
 void recoverAtomicFile(const char *path) {
     String temporary = String(path) + ".tmp";
     String backup = String(path) + ".bak";
-    if (!LittleFS.exists(path) && LittleFS.exists(backup)) {
+    bool originalExists = pathExistsQuiet(String(path));
+    bool backupExists = pathExistsQuiet(backup);
+    if (!originalExists && backupExists) {
         LittleFS.rename(backup.c_str(), path);
-    } else if (LittleFS.exists(path) && LittleFS.exists(backup)) {
+    } else if (originalExists && backupExists) {
         LittleFS.remove(backup.c_str());
     }
-    if (LittleFS.exists(temporary)) LittleFS.remove(temporary.c_str());
+    if (pathExistsQuiet(temporary)) LittleFS.remove(temporary.c_str());
+}
+
+void removeObsoleteRuntimeFile(const char *path) {
+    String original(path);
+    String temporary = original + ".tmp";
+    String backup = original + ".bak";
+    if (pathExistsQuiet(original)) LittleFS.remove(original.c_str());
+    if (pathExistsQuiet(temporary)) LittleFS.remove(temporary.c_str());
+    if (pathExistsQuiet(backup)) LittleFS.remove(backup.c_str());
 }
 }
 
@@ -47,15 +65,16 @@ bool beginConfigStorage() {
         Serial.println("LittleFS wurde wiederhergestellt.");
     }
     recoverAtomicFile("/wifi.json");
-    recoverAtomicFile("/device.json");
-    recoverAtomicFile("/config.json");
+    // Alte Laufzeit-Einstellungen und Ranglisten werden nicht mehr benutzt.
+    removeObsoleteRuntimeFile("/device.json");
+    removeObsoleteRuntimeFile("/config.json");
     return true;
 }
 
 bool writeJsonAtomically(const char *path, JsonDocument& doc) {
     String temporary = String(path) + ".tmp";
     String backup = String(path) + ".bak";
-    if (LittleFS.exists(temporary)) LittleFS.remove(temporary.c_str());
+    if (pathExistsQuiet(temporary)) LittleFS.remove(temporary.c_str());
 
     File file = LittleFS.open(temporary.c_str(), "w");
     if (!file) return false;
@@ -67,8 +86,8 @@ bool writeJsonAtomically(const char *path, JsonDocument& doc) {
         return false;
     }
 
-    if (LittleFS.exists(backup)) LittleFS.remove(backup.c_str());
-    bool hadOriginal = LittleFS.exists(path);
+    if (pathExistsQuiet(backup)) LittleFS.remove(backup.c_str());
+    bool hadOriginal = pathExistsQuiet(String(path));
     if (hadOriginal && !LittleFS.rename(path, backup.c_str())) {
         LittleFS.remove(temporary.c_str());
         return false;
@@ -77,6 +96,6 @@ bool writeJsonAtomically(const char *path, JsonDocument& doc) {
         if (hadOriginal) LittleFS.rename(backup.c_str(), path);
         return false;
     }
-    if (LittleFS.exists(backup)) LittleFS.remove(backup.c_str());
+    if (pathExistsQuiet(backup)) LittleFS.remove(backup.c_str());
     return true;
 }

@@ -60,8 +60,9 @@ static uint8_t bossVolleyCounter = 0;
 static uint32_t lastWebEnergyRegenMs = 0;
 static bool lastFireButtonState[RAUMSCHIFF_MAX_PLAYERS];
 static bool highScoreSaved = false;
-static char playerNames[RAUMSCHIFF_MAX_PLAYERS][16] = {"P1", "P2"};
+static char playerNames[RAUMSCHIFF_MAX_PLAYERS][16] = {"NothinBL", "Guest"};
 static char lastMatchName[36] = "";
+static bool humanControlled[RAUMSCHIFF_MAX_PLAYERS] = {false, false};
 
 static const uint8_t fieldWidth = 32;
 static const uint8_t fieldHeight = 16;
@@ -401,6 +402,7 @@ void raumschiffGameOver()
 
     gameRuntime.animateTransition(CRGB::Red);
     gameState = GAME_GAME_OVER;
+    countdownStartedMs = millis();
     Audio::playExplosion();
 
     if (!highScoreSaved)
@@ -414,23 +416,6 @@ void raumschiffGameOver()
         lastMatchDurationSec = matchStartMs == 0 ? 0 : (millis() - matchStartMs) / 1000UL;
         String team = teamName();
         team.toCharArray(lastMatchName, sizeof(lastMatchName));
-        bool p1Default = isDefaultPlayerName(String(playerNames[0]), 0);
-        bool p2Default = isDefaultPlayerName(String(playerNames[1]), 1);
-        if (!(p1Default && p2Default))
-            saveHighScore(team, (int)score);
-
-        for (uint8_t i = 0; i < RAUMSCHIFF_MAX_PLAYERS; i++)
-        {
-            String name = String(playerNames[i]);
-            name.trim();
-            if (isDefaultPlayerName(name, i))
-                continue;
-            String signedInUser = currentUserSnapshot();
-            if (i == 0 && name == "P1" && signedInUser != "")
-                name = signedInUser;
-            if (name != "")
-                saveHighScore(name, (int)spieler[i].score);
-        }
         highScoreSaved = true;
     }
 }
@@ -875,6 +860,69 @@ static bool dashDirectionFromInput(const InputState& input, bool inverted, int8_
 static InputState emptyInput()
 {
     InputState input = {0, 0, 0, 0, false, false, false, false};
+    return input;
+}
+
+static InputState buildBotInput(uint8_t playerIndex)
+{
+    InputState input = emptyInput();
+    Spieler& player = spieler[playerIndex];
+    int targetY = playerIndex == 0 ? 5 : 10;
+    int targetX = 5 + playerIndex * 2;
+    int nearestX = fieldWidth + 20;
+
+    if (boss.active)
+    {
+        targetY = boss.y;
+        targetX = 6;
+        input.charge = true;
+    }
+    for (uint8_t i = 0; i < asteroidCount; i++)
+    {
+        if (!asteroiden[i].active || asteroiden[i].x >= nearestX) continue;
+        nearestX = asteroiden[i].x;
+        targetY = asteroiden[i].y;
+    }
+    for (uint8_t i = 0; i < powerUpCount; i++)
+    {
+        if (!powerUps[i].active || powerUps[i].x > 18) continue;
+        targetY = powerUps[i].y;
+        targetX = powerUps[i].x;
+        break;
+    }
+
+    int dangerY = 0;
+    for (uint8_t i = 0; i < projectileCount; i++)
+    {
+        if (!enemyProjectiles[i].active) continue;
+        int dx = enemyProjectiles[i].x - player.x;
+        int dy = enemyProjectiles[i].y - player.y;
+        if (dx >= 0 && dx <= 6 && abs(dy) <= 1)
+            dangerY += dy <= 0 ? 1 : -1;
+    }
+    for (uint8_t i = 0; i < hazardCount; i++)
+    {
+        if (!hazards[i].active) continue;
+        if (abs(hazards[i].x - player.x) <= hazards[i].radius + 2 &&
+            abs(hazards[i].y - player.y) <= hazards[i].radius + 2)
+            dangerY += player.y <= hazards[i].y ? -2 : 2;
+    }
+
+    if (dangerY != 0)
+    {
+        input.dy = dangerY > 0 ? 1 : -1;
+        input.dash = true;
+    }
+    else if (targetY < player.y) input.dy = -1;
+    else if (targetY > player.y) input.dy = 1;
+    if (targetX < player.x - 1) input.dx = -1;
+    else if (targetX > player.x + 1 && targetX < 14) input.dx = 1;
+
+    input.axisX = input.dy > 0 ? -100 : (input.dy < 0 ? 100 : 0);
+    input.axisY = input.dx > 0 ? 100 : (input.dx < 0 ? -100 : 0);
+
+    input.shoot = true;
+    input.touched = true;
     return input;
 }
 
@@ -1769,14 +1817,14 @@ static void updatePlaying(const GameControlEvents& controls)
 {
     updateWebEnergy();
 
-    InputState p1 = readJoystickInput(0, joystick1);
-    InputState p2 = readP2Input();
-    applyCentralStick(p1, controls.primary);
-    if (p2InputMode != p2InputEsp32) applyCentralStick(p2, controls.secondary);
+    InputState p1 = humanControlled[0] ? readJoystickInput(0, joystick1) : buildBotInput(0);
+    InputState p2 = humanControlled[1] ? readJoystickInput(1, joystick3) : buildBotInput(1);
+    if (humanControlled[0]) applyCentralStick(p1, controls.primary);
+    if (humanControlled[1]) applyCentralStick(p2, controls.secondary);
     p1.dash = p1.dash || controls.primaryDoubleClick;
     p2.dash = p2.dash || controls.secondaryDoubleClick;
-    p1.charge = p1.charge || controls.primary.longClick;
-    p2.charge = p2.charge || controls.secondary.longClick;
+    if (humanControlled[0]) p1.charge = p1.charge || controls.primary.longClick;
+    if (humanControlled[1]) p2.charge = p2.charge || controls.secondary.longClick;
 
     applyInput(0, p1);
     applyInput(1, p2);
@@ -1806,6 +1854,19 @@ static void beginMatch()
 void raumschiffGameTick()
 {
     GameControlEvents controls = gameRuntime.poll(joystick1, joystick3);
+    if (controls.primaryDoubleClick && !humanControlled[0])
+    {
+        humanControlled[0] = true;
+        controls.primaryDoubleClick = false;
+        Audio::playBuff();
+    }
+    if (controls.secondaryDoubleClick && !humanControlled[1])
+    {
+        humanControlled[1] = true;
+        controls.secondaryDoubleClick = false;
+        Audio::playBuff();
+    }
+    controls.doubleClick = controls.primaryDoubleClick || controls.secondaryDoubleClick;
     if (controls.pauseToggle && (gameState == GAME_PLAYING || gameState == GAME_PAUSED))
         gameRuntime.applyPause(gameState);
 
@@ -1877,27 +1938,30 @@ void raumschiffGameTick()
     if (gameState == GAME_GAME_OVER)
     {
         renderGameOver();
-        InputState p2 = readP2Input();
-        if (controls.doubleClick)
+        if (millis() - countdownStartedMs >= 1800UL)
         {
-            bool keepSecondPlayer = spieler[1].active || p2.touched || controls.secondaryDoubleClick;
-            raumschiffResetGame();
-            spieler[1].active = keepSecondPlayer;
+            raumschiffResetGame(true);
             gameRuntime.animateTransition(CRGB::Cyan);
-            countdownStartedMs = millis();
-            gameState = GAME_COUNTDOWN;
         }
         return;
     }
 }
 
-void raumschiffResetGame()
+void raumschiffResetGame(bool keepHumanPlayers)
 {
-    gameState = GAME_MENU;
+    gameState = GAME_COUNTDOWN;
     gameRuntime.begin();
 
     resetPlayer(0, true);
-    resetPlayer(1, false);
+    resetPlayer(1, true);
+    if (!keepHumanPlayers)
+    {
+        humanControlled[0] = false;
+        humanControlled[1] = false;
+    }
+    strlcpy(playerNames[0], PRIMARY_PLAYER_NAME, sizeof(playerNames[0]));
+    strlcpy(playerNames[1], SECONDARY_PLAYER_NAME, sizeof(playerNames[1]));
+    countdownStartedMs = millis();
 
     score = 0;
     lastProjectileMoveMs = 0;
